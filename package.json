@@ -1,0 +1,21 @@
+{
+  "name": "raro-monorepo",
+  "version": "0.1.0",
+  "description": "Reconfigurable Agentic Runtime Operator - Gemini 3 Hackathon Project",
+  "private": true,
+  "workspaces": [
+    "apps/web-console",
+    "apps/agent-service"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "scripts": {
+    "dev": "concurrently \"npm run dev --workspace=apps/web-console\" \"npm run dev --workspace=apps/agent-service\"",
+    "build": "npm run build --workspaces",
+    "test": "npm test --workspaces"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

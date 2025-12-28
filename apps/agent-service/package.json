@@ -1,0 +1,6 @@
+{
+  "name": "raro-agent-service",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Python-based agent service for RARO"
+}

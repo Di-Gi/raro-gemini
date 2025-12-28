@@ -1,0 +1,94 @@
+version: '3.8'
+
+services:
+  # Rust Kernel Server (Orchestration Layer)
+  kernel:
+    build:
+      context: ./apps/kernel-server
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - RUST_LOG=debug
+      - KERNEL_PORT=3000
+    networks:
+      - raro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Python Agent Service (Execution Layer)
+  agents:
+    build:
+      context: ./apps/agent-service
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    depends_on:
+      - kernel
+    networks:
+      - raro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # SvelteKit Web Console (UI Layer)
+  web:
+    build:
+      context: ./apps/web-console
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:3000
+    depends_on:
+      - kernel
+      - agents
+    networks:
+      - raro
+
+  # Redis for caching (Optional)
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - raro
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL for persistence (Optional)
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=raro
+      - POSTGRES_USER=raro
+      - POSTGRES_PASSWORD=raro
+    networks:
+      - raro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U raro"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+networks:
+  raro:
+    driver: bridge
+
+volumes:
+  postgres_data:
