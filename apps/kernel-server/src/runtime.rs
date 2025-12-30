@@ -2,7 +2,6 @@ use crate::dag::DAG;
 use crate::models::*;
 use chrono::Utc;
 use dashmap::DashMap;
-use std::sync::Arc;
 use uuid::Uuid;
 use serde::{Deserialize, Serialize};
 
@@ -98,7 +97,7 @@ impl RARORuntime {
 
     /// Get current runtime state
     pub fn get_state(&self, run_id: &str) -> Option<RuntimeState> {
-        self.runtime_states.get(run_id).map(|r| r.clone())
+        self.runtime_states.get(run_id).map(|r| (*r).clone())
     }
 
     /// Record an agent invocation
@@ -149,7 +148,7 @@ impl RARORuntime {
     }
 
     pub fn get_all_signatures(&self, run_id: &str) -> Option<ThoughtSignatureStore> {
-        self.thought_signatures.get(run_id).map(|s| s.clone())
+        self.thought_signatures.get(run_id).map(|s| (*s).clone())
     }
 
     /// Prepare invocation payload with signature routing
@@ -178,7 +177,7 @@ impl RARORuntime {
             .ok_or_else(|| format!("Agent {} not found", agent_id))?;
 
         // Get the DAG to find dependencies
-        let dag = self
+        let _dag = self
             .dag_store
             .get(run_id)
             .ok_or_else(|| "DAG not found for run".to_string())?;
@@ -195,7 +194,7 @@ impl RARORuntime {
         };
 
         // Get cached content if available
-        let cached_content_id = self.cache_resources.get(run_id).map(|c| c.clone());
+        let cached_content_id = self.cache_resources.get(run_id).map(|c| (*c).clone());
 
         // Determine model variant and thinking level
         let model = match agent_config.model {
