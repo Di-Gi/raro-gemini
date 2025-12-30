@@ -4,11 +4,27 @@ use chrono::Utc;
 use dashmap::DashMap;
 use std::sync::Arc;
 use uuid::Uuid;
+use serde::{Deserialize, Serialize};
+
+/// Payload for invoking an agent with signature routing and caching
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InvocationPayload {
+    pub agent_id: String,
+    pub model: String,
+    pub prompt: String,
+    pub parent_signature: Option<String>,
+    pub cached_content_id: Option<String>,
+    pub thinking_level: Option<i32>,
+    pub file_paths: Vec<String>,
+    pub tools: Vec<String>,
+}
 
 pub struct RARORuntime {
     workflows: DashMap<String, WorkflowConfig>,
     runtime_states: DashMap<String, RuntimeState>,
     thought_signatures: DashMap<String, ThoughtSignatureStore>,
+    dag_store: DashMap<String, DAG>,
+    cache_resources: DashMap<String, String>, // run_id -> cached_content_id
 }
 
 impl RARORuntime {
@@ -17,6 +33,8 @@ impl RARORuntime {
             workflows: DashMap::new(),
             runtime_states: DashMap::new(),
             thought_signatures: DashMap::new(),
+            dag_store: DashMap::new(),
+            cache_resources: DashMap::new(),
         }
     }
 
@@ -47,8 +65,9 @@ impl RARORuntime {
         let workflow_id = config.id.clone();
         let run_id = Uuid::new_v4().to_string();
 
-        // Store workflow
-        self.workflows.insert(workflow_id.clone(), config);
+        // Store workflow and DAG
+        self.workflows.insert(workflow_id.clone(), config.clone());
+        self.dag_store.insert(run_id.clone(), dag);
 
         // Initialize runtime state
         let state = RuntimeState {
@@ -132,29 +151,92 @@ impl RARORuntime {
     pub fn get_all_signatures(&self, run_id: &str) -> Option<ThoughtSignatureStore> {
         self.thought_signatures.get(run_id).map(|s| s.clone())
     }
-}
 
-impl Clone for RuntimeState {
-    fn clone(&self) -> Self {
-        RuntimeState {
-            run_id: self.run_id.clone(),
-            workflow_id: self.workflow_id.clone(),
-            status: self.status.clone(),
-            active_agents: self.active_agents.clone(),
-            completed_agents: self.completed_agents.clone(),
-            failed_agents: self.failed_agents.clone(),
-            invocations: self.invocations.clone(),
-            total_tokens_used: self.total_tokens_used,
-            start_time: self.start_time.clone(),
-            end_time: self.end_time.clone(),
+    /// Prepare invocation payload with signature routing
+    /// This implements the core RARO pattern: passing parent's signature to child
+    pub fn prepare_invocation_payload(
+        &self,
+        run_id: &str,
+        agent_id: &str,
+    ) -> Result<InvocationPayload, String> {
+        // Get the workflow and agent config
+        let state = self
+            .runtime_states
+            .get(run_id)
+            .ok_or_else(|| "Run not found".to_string())?;
+
+        let workflow = self
+            .workflows
+            .get(&state.workflow_id)
+            .ok_or_else(|| "Workflow not found".to_string())?;
+
+        // Find the agent config
+        let agent_config = workflow
+            .agents
+            .iter()
+            .find(|a| a.id == agent_id)
+            .ok_or_else(|| format!("Agent {} not found", agent_id))?;
+
+        // Get the DAG to find dependencies
+        let dag = self
+            .dag_store
+            .get(run_id)
+            .ok_or_else(|| "DAG not found for run".to_string())?;
+
+        // Fetch parent's signature for continuity
+        // The immediate parent's signature becomes this agent's input context
+        let parent_signature = if !agent_config.depends_on.is_empty() {
+            agent_config
+                .depends_on
+                .iter()
+                .find_map(|parent_id| self.get_thought_signature(run_id, parent_id))
+        } else {
+            None
+        };
+
+        // Get cached content if available
+        let cached_content_id = self.cache_resources.get(run_id).map(|c| c.clone());
+
+        // Determine model variant and thinking level
+        let model = match agent_config.model {
+            ModelVariant::GeminiFlash => "gemini-3-flash",
+            ModelVariant::GeminiPro => "gemini-3-pro",
+            ModelVariant::GeminiDeepThink => "gemini-3-deep-think",
         }
+        .to_string();
+
+        // Deep Think agents get thinking budget (default 5, can be 1-10)
+        let thinking_level = if matches!(agent_config.model, ModelVariant::GeminiDeepThink) {
+            Some(5) // Default thinking depth for deep-think model
+        } else {
+            None
+        };
+
+        Ok(InvocationPayload {
+            agent_id: agent_id.to_string(),
+            model,
+            prompt: agent_config.prompt.clone(),
+            parent_signature,
+            cached_content_id,
+            thinking_level,
+            file_paths: Vec::new(), // Set by upstream (e.g., from research project)
+            tools: agent_config.tools.clone(),
+        })
     }
-}
 
-impl Clone for ThoughtSignatureStore {
-    fn clone(&self) -> Self {
-        ThoughtSignatureStore {
-            signatures: self.signatures.clone(),
-        }
+    /// Store a cache resource ID for this run (e.g., from orchestrator's PDF uploads)
+    pub fn set_cache_resource(&self, run_id: &str, cached_content_id: String) -> Result<(), String> {
+        self.cache_resources.insert(run_id.to_string(), cached_content_id);
+        Ok(())
+    }
+
+    /// Retrieve the cache resource ID for cost-optimized subsequent invocations
+    pub fn get_cache_resource(&self, run_id: &str) -> Option<String> {
+        self.cache_resources.get(run_id).map(|c| c.clone())
+    }
+
+    /// Get the DAG for a workflow run (for debugging/visualization)
+    pub fn has_dag(&self, run_id: &str) -> bool {
+        self.dag_store.contains_key(run_id)
     }
 }

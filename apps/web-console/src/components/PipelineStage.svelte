@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { agentNodes, selectedNode, selectNode, deselectNode } from '$lib/stores'
+  import { agentNodes, pipelineEdges, selectedNode, selectNode, deselectNode } from '$lib/stores'
 
   // 1. Define Props and Callbacks (replacing export let and dispatch)
   let { expanded, ontoggle }: { expanded: boolean, ontoggle: () => void } = $props();
@@ -7,14 +7,6 @@
   // 2. Define reactive state for element bindings
   let svgElement = $state<SVGSVGElement | undefined>();
   let nodesLayer = $state<HTMLDivElement | undefined>();
-
-  // 3. Static data can just be a const (or $derived if it depended on other state)
-  const links = [
-    { from: 'n1', to: 'n2' },
-    { from: 'n1', to: 'n3' },
-    { from: 'n2', to: 'n4' },
-    { from: 'n3', to: 'n4' },
-  ]
 
   function renderGraph() {
     if (!svgElement || !nodesLayer) return
@@ -25,7 +17,7 @@
 
     svg.innerHTML = ''
 
-    links.forEach((link) => {
+    $pipelineEdges.forEach((link) => {
       const fromNode = $agentNodes.find((n) => n.id === link.from)
       const toNode = $agentNodes.find((n) => n.id === link.to)
 
@@ -43,8 +35,15 @@
       const d = `M ${x1} ${y1} C ${x1 + 60} ${y1}, ${x2 - 60} ${y2}, ${x2} ${y2}`
 
       path.setAttribute('d', d)
-      path.setAttribute('class', 'cable')
+      path.setAttribute('class', `cable ${link.active ? 'active' : ''} ${link.pulseAnimation ? 'pulse' : ''}`)
       path.setAttribute('id', `link-${link.from}-${link.to}`)
+
+      // Add signature hash as a data attribute for hover tooltips
+      if (link.signatureHash) {
+        path.setAttribute('data-signature', link.signatureHash)
+        path.setAttribute('title', `Signature: ${link.signatureHash.substring(0, 16)}...`)
+      }
+
       svg.appendChild(path)
     })
 
@@ -266,9 +265,23 @@
     animation: flow 0.8s linear infinite;
   }
 
+  :global(.cable.active.pulse) {
+    stroke-width: 2.5px;
+    filter: drop-shadow(0 0 4px var(--arctic-cyan));
+  }
+
   @keyframes flow {
     to {
       stroke-dashoffset: -12;
+    }
+  }
+
+  @keyframes pulse {
+    0%, 100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.6;
     }
   }
 </style>

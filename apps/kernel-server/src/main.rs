@@ -7,7 +7,6 @@ mod observability;
 use axum::{
     Router,
     routing::{get, post},
-    Json,
 };
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
@@ -33,8 +32,9 @@ async fn main() {
         .route("/health", get(handlers::health))
         .route("/runtime/start", post(handlers::start_workflow))
         .route("/runtime/state", get(handlers::get_runtime_state))
-        .route("/runtime/agent/:id/invoke", post(handlers::invoke_agent))
+        .route("/runtime/:run_id/agent/:agent_id/invoke", post(handlers::invoke_agent))
         .route("/runtime/signatures", get(handlers::get_signatures))
+        .route("/ws/runtime/:run_id", axum::routing::get(handlers::ws_runtime_stream))
         .layer(CorsLayer::permissive())
         .with_state(runtime);
 

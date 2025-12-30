@@ -9,6 +9,7 @@
   let activePane = $state('input')
   let currentModel = $state('GEMINI-3-PRO')
   let currentPrompt = $state('')
+  let thinkingBudget = $state(5) // Deep Think budget: 1-10
 
   // 3. Reactive statements ($:) are replaced by $effect()
   $effect(() => {
@@ -163,6 +164,31 @@
         <label>System Instruction (Prompt)</label>
         <textarea class="input-std" bind:value={currentPrompt} style="height:80px; resize:none;"></textarea>
       </div>
+
+      {#if currentModel === 'GEMINI-3-DEEP-THINK'}
+        <div class="form-group deep-think-config">
+          <label>Thinking Budget (Extended Reasoning Depth)</label>
+          <div class="slider-container">
+            <input
+              type="range"
+              min="1"
+              max="10"
+              bind:value={thinkingBudget}
+              class="thinking-slider"
+            />
+            <span class="slider-value">{thinkingBudget}</span>
+          </div>
+          <div class="slider-description">
+            {#if thinkingBudget <= 3}
+              <span>Fast reasoning with focused hypothesis generation</span>
+            {:else if thinkingBudget <= 6}
+              <span>Balanced reasoning depth for synthesis tasks</span>
+            {:else}
+              <span>Extended thinking for complex cross-paper analysis</span>
+            {/if}
+          </div>
+        </div>
+      {/if}
     </div>
   {/if}
 </div>
@@ -356,5 +382,65 @@
     text-transform: uppercase;
     margin-top: 4px;
     display: block;
+  }
+
+  .deep-think-config {
+    margin-top: 20px;
+    padding: 12px;
+    background: #f9f9f9;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+  }
+
+  .slider-container {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 10px 0;
+  }
+
+  .thinking-slider {
+    flex: 1;
+    height: 6px;
+    border-radius: 3px;
+    background: linear-gradient(to right, #888, #1a1918);
+    outline: none;
+    -webkit-appearance: none;
+  }
+
+  .thinking-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #1a1918;
+    cursor: pointer;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  }
+
+  .thinking-slider::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #1a1918;
+    cursor: pointer;
+    border: none;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+  }
+
+  .slider-value {
+    font-weight: 700;
+    font-size: 14px;
+    color: #1a1918;
+    min-width: 30px;
+    text-align: center;
+  }
+
+  .slider-description {
+    font-size: 11px;
+    color: #666;
+    font-style: italic;
+    margin-top: 8px;
   }
 </style>
