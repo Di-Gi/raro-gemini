@@ -3,7 +3,8 @@ FROM rust:latest as builder
 WORKDIR /usr/src/raro
 
 COPY Cargo.toml Cargo.toml
-COPY Cargo.lock Cargo.lock
+# Copy lock file if it exists, otherwise cargo will generate a new one
+COPY Cargo.lock* Cargo.lock
 COPY src src
 
 RUN cargo build --release

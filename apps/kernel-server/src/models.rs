@@ -65,7 +65,8 @@ pub enum InvocationStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+// FIX: Removed 'Clone' from derive because it is manually implemented in runtime.rs
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RuntimeState {
     pub run_id: String,
     pub workflow_id: String,
@@ -88,7 +89,7 @@ pub enum RuntimeStatus {
     Failed,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ThoughtSignatureStore {
     pub signatures: HashMap<String, String>,
 }

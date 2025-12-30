@@ -1,9 +1,10 @@
 [package]
 name = "raro-kernel"
-version.workspace = true
-edition.workspace = true
-authors.workspace = true
-license.workspace = true
+# FIX: Explicitly define these instead of using .workspace = true
+version = "0.1.0"
+edition = "2021"
+authors = ["RARO Team"]
+license = "MIT"
 
 [dependencies]
 tokio = { version = "1.35", features = ["full"] }
