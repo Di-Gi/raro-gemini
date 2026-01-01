@@ -1,39 +1,47 @@
 <script lang="ts">
   import { selectedNode, agentNodes, addLog, updateNodeStatus, deselectNode } from '$lib/stores'
 
-  // 1. Props are now destuctured from $props()
   let { expanded }: { expanded: boolean } = $props();
 
-  // 2. Local reactive state uses $state()
   let cmdInput = $state('')
-  let activePane = $state('input')
+  let activePane = $state('input') // 'input' | 'overview' | 'sim' | 'stats' | 'node-config'
   let currentModel = $state('GEMINI-3-PRO')
   let currentPrompt = $state('')
-  let thinkingBudget = $state(5) // Deep Think budget: 1-10
+  let thinkingBudget = $state(5)
 
-  // 3. Reactive statements ($:) are replaced by $effect()
+  // === STATE SYNCHRONIZATION ===
+  // This effect ensures strict view exclusivity based on selection
   $effect(() => {
     if ($selectedNode && expanded) {
+      // 1. Node selected -> FORCE view to Config
+      // Load node specific data
       const node = $agentNodes.find((n) => n.id === $selectedNode)
       if (node) {
         currentModel = node.model
         currentPrompt = node.prompt
       }
+      
+      // Force switch to node-config if not already there
+      if (activePane !== 'node-config') {
+        activePane = 'node-config'
+      }
+    } else if (!$selectedNode && activePane === 'node-config') {
+      // 2. Node deselected while in config -> Fallback to Overview
+      activePane = 'overview'
+    } else if (!expanded && activePane !== 'input') {
+      // 3. If collapsed, ensure we return to input mode
+      activePane = 'input'
     }
   });
 
   function executeRun() {
     if (!cmdInput) return
-
     addLog('OPERATOR', `<strong>${cmdInput}</strong>`, 'USER_INPUT')
     cmdInput = ''
 
     if (!expanded) {
       highlightNode('n1')
-      setTimeout(() => {
-        highlightNode('n2')
-        highlightNode('n3')
-      }, 800)
+      setTimeout(() => { highlightNode('n2'); highlightNode('n3') }, 800)
       setTimeout(() => highlightNode('n4'), 1600)
       setTimeout(() => addLog('SYSTEM', 'Synthesis complete. 1284 tokens consumed.'), 2400)
     }
@@ -46,151 +54,174 @@
 
   function handlePaneSelect(pane: string) {
     activePane = pane
+    // Safety: If user manually clicks a tab, ensure no node is selected
+    if ($selectedNode) {
+      deselectNode()
+    }
+  }
+
+  function handleCloseNode() {
+    // Deselecting triggers the $effect above, which sets activePane = 'overview'
+    deselectNode()
   }
 </script>
 
 <div id="control-deck" class:architect-mode={expanded}>
   {#if expanded}
     <div id="deck-nav">
-      <!-- 4. Event listeners are now attributes (onclick instead of on:click) -->
-      <div class="nav-item {activePane === 'overview' ? 'active' : ''}" onclick={() => handlePaneSelect('overview')}>
-        Overview
-      </div>
-      <div class="nav-item {activePane === 'sim' ? 'active' : ''}" onclick={() => handlePaneSelect('sim')}>Simulation</div>
-      <div class="nav-item {activePane === 'stats' ? 'active' : ''}" onclick={() => handlePaneSelect('stats')}>
-        Telemetry
-      </div>
-      {#if $selectedNode}
-        <div class="nav-item-label">COMPONENT SETTINGS</div>
-        <div class="nav-item action-close" onclick={() => deselectNode()}>×</div>
-      {/if}
-    </div>
-  {/if}
-
-  {#if !expanded || activePane === 'input'}
-    <div id="pane-input" class="deck-pane">
-      <textarea
-        id="cmd-input"
-        placeholder=">> Enter research directive or click pipeline to configure..."
-        bind:value={cmdInput}
-      ></textarea>
-      <button id="btn-run" onclick={executeRun}>INITIATE RUN</button>
-    </div>
-  {/if}
-
-  {#if expanded && activePane === 'overview'}
-    <div id="pane-overview" class="deck-pane">
-      <div class="form-grid">
-        <div class="form-group">
-          <label>Pipeline Identifier</label>
-          <input class="input-std" value="Research_Synthesis_Alpha" />
+      <!-- === NAVIGATION LOGIC === -->
+      <!-- Strict If/Else ensures tabs and settings never appear simultaneously -->
+      {#if activePane === 'node-config'}
+        <!-- MODE A: NODE CONFIGURATION (Exclusive) -->
+        <div class="nav-item node-tab active">
+          COMPONENT SETTINGS // {$selectedNode}
         </div>
-        <div class="form-group">
-          <label>Max Token Budget</label>
-          <input class="input-std" value="128,000" />
+        <div class="nav-item action-close" onclick={handleCloseNode}>
+          ×
         </div>
-        <div class="form-group">
-          <label>Latency Timeout (ms)</label>
-          <input class="input-std" value="15000" />
-        </div>
-        <div class="form-group">
-          <label>Persistence Layer</label>
-          <select class="input-std">
-            <option>Redis (Hot)</option>
-            <option>PostgreSQL (Cold)</option>
-          </select>
-        </div>
-      </div>
-    </div>
-  {/if}
-
-  {#if expanded && activePane === 'sim'}
-    <div id="pane-sim" class="deck-pane">
-      <div style="display:flex; gap:10px; margin-bottom:15px;">
-        <button class="input-std action-btn" onclick={() => addLog('SYSTEM', 'Simulating step 1...')}
-          >▶ STEP EXECUTION</button
+      {:else}
+        <!-- MODE B: STANDARD TABS (Exclusive) -->
+        <div 
+          class="nav-item {activePane === 'overview' ? 'active' : ''}" 
+          onclick={() => handlePaneSelect('overview')}
         >
-        <button class="input-std action-btn" onclick={() => addLog('SYSTEM', 'Resetting context...')}>
-          ↺ RESET CONTEXT
-        </button>
-      </div>
-      <div style="font-family:var(--font-code); font-size:11px; color:#555; background:white; border:1px solid var(--paper-line); padding:10px; height:100px; overflow-y:auto;">
-        > Ready for test vector injection...<br />
-        > Agents loaded: 4
-      </div>
-    </div>
-  {/if}
-
-  {#if expanded && activePane === 'stats'}
-    <div id="pane-stats" class="deck-pane">
-      <div class="stat-grid">
-        <div class="stat-card">
-          <span class="stat-val">98ms</span>
-          <span class="stat-lbl">P99 Latency</span>
+          Overview
         </div>
-        <div class="stat-card">
-          <span class="stat-val">94.2%</span>
-          <span class="stat-lbl">Cache Hit</span>
+        <div 
+          class="nav-item {activePane === 'sim' ? 'active' : ''}" 
+          onclick={() => handlePaneSelect('sim')}
+        >
+          Simulation
         </div>
-        <div class="stat-card">
-          <span class="stat-val">$0.002</span>
-          <span class="stat-lbl">Cost/Run</span>
-        </div>
-        <div class="stat-card">
-          <span class="stat-val">0</span>
-          <span class="stat-lbl">Errors</span>
-        </div>
-      </div>
-    </div>
-  {/if}
-
-  {#if expanded && $selectedNode}
-    <div id="pane-node-config" class="deck-pane">
-      <div class="form-grid">
-        <div class="form-group">
-          <label>Agent ID</label>
-          <input class="input-std input-readonly" value={$selectedNode} readonly />
-        </div>
-        <div class="form-group">
-          <label>Model Runtime</label>
-          <select class="input-std" bind:value={currentModel}>
-            <option>GEMINI-3-PRO</option>
-            <option>GEMINI-3-FLASH</option>
-            <option>GEMINI-3-DEEP-THINK</option>
-          </select>
-        </div>
-      </div>
-      <div class="form-group">
-        <label>System Instruction (Prompt)</label>
-        <textarea class="input-std" bind:value={currentPrompt} style="height:80px; resize:none;"></textarea>
-      </div>
-
-      {#if currentModel === 'GEMINI-3-DEEP-THINK'}
-        <div class="form-group deep-think-config">
-          <label>Thinking Budget (Extended Reasoning Depth)</label>
-          <div class="slider-container">
-            <input
-              type="range"
-              min="1"
-              max="10"
-              bind:value={thinkingBudget}
-              class="thinking-slider"
-            />
-            <span class="slider-value">{thinkingBudget}</span>
-          </div>
-          <div class="slider-description">
-            {#if thinkingBudget <= 3}
-              <span>Fast reasoning with focused hypothesis generation</span>
-            {:else if thinkingBudget <= 6}
-              <span>Balanced reasoning depth for synthesis tasks</span>
-            {:else}
-              <span>Extended thinking for complex cross-paper analysis</span>
-            {/if}
-          </div>
+        <div 
+          class="nav-item {activePane === 'stats' ? 'active' : ''}" 
+          onclick={() => handlePaneSelect('stats')}
+        >
+          Telemetry
         </div>
       {/if}
     </div>
   {/if}
+
+  <!-- === CONTENT LOGIC === -->
+  <div class="pane-container">
+    
+    {#if !expanded || activePane === 'input'}
+      <!-- 1. INPUT -->
+      <div id="pane-input" class="deck-pane">
+        <textarea
+          id="cmd-input"
+          placeholder=">> Enter research directive or click pipeline to configure..."
+          bind:value={cmdInput}
+        ></textarea>
+        <button id="btn-run" onclick={executeRun}>INITIATE RUN</button>
+      </div>
+
+    {:else if activePane === 'node-config'}
+      <!-- 2. NODE CONFIG -->
+      <div id="pane-node-config" class="deck-pane">
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Agent ID</label>
+            <input class="input-std input-readonly" value={$selectedNode} readonly />
+          </div>
+          <div class="form-group">
+            <label>Model Runtime</label>
+            <select class="input-std" bind:value={currentModel}>
+              <option>GEMINI-3-PRO</option>
+              <option>GEMINI-3-FLASH</option>
+              <option>GEMINI-3-DEEP-THINK</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>System Instruction (Prompt)</label>
+          <textarea class="input-std" bind:value={currentPrompt} style="height:80px; resize:none;"></textarea>
+        </div>
+
+        {#if currentModel === 'GEMINI-3-DEEP-THINK'}
+          <div class="form-group deep-think-config">
+            <label>Thinking Budget (Extended Reasoning Depth)</label>
+            <div class="slider-container">
+              <input type="range" min="1" max="10" bind:value={thinkingBudget} class="thinking-slider"/>
+              <span class="slider-value">{thinkingBudget}</span>
+            </div>
+            <div class="slider-description">
+              {#if thinkingBudget <= 3}
+                <span>Fast reasoning with focused hypothesis generation</span>
+              {:else if thinkingBudget <= 6}
+                <span>Balanced reasoning depth for synthesis tasks</span>
+              {:else}
+                <span>Extended thinking for complex cross-paper analysis</span>
+              {/if}
+            </div>
+          </div>
+        {/if}
+      </div>
+
+    {:else if activePane === 'overview'}
+      <!-- 3. OVERVIEW -->
+      <div id="pane-overview" class="deck-pane">
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Pipeline Identifier</label>
+            <input class="input-std" value="Research_Synthesis_Alpha" />
+          </div>
+          <div class="form-group">
+            <label>Max Token Budget</label>
+            <input class="input-std" value="128,000" />
+          </div>
+          <div class="form-group">
+            <label>Latency Timeout (ms)</label>
+            <input class="input-std" value="15000" />
+          </div>
+          <div class="form-group">
+            <label>Persistence Layer</label>
+            <select class="input-std">
+              <option>Redis (Hot)</option>
+              <option>PostgreSQL (Cold)</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+    {:else if activePane === 'sim'}
+      <!-- 4. SIMULATION -->
+      <div id="pane-sim" class="deck-pane">
+        <div style="display:flex; gap:10px; margin-bottom:15px;">
+          <button class="input-std action-btn" onclick={() => addLog('SYSTEM', 'Simulating step 1...')}>▶ STEP EXECUTION</button>
+          <button class="input-std action-btn" onclick={() => addLog('SYSTEM', 'Resetting context...')}>↺ RESET CONTEXT</button>
+        </div>
+        <div style="font-family:var(--font-code); font-size:11px; color:#555; background:white; border:1px solid var(--paper-line); padding:10px; height:100px; overflow-y:auto;">
+          &gt; Ready for test vector injection...<br />
+          &gt; Agents loaded: 4
+        </div>
+      </div>
+
+    {:else if activePane === 'stats'}
+      <!-- 5. TELEMETRY -->
+      <div id="pane-stats" class="deck-pane">
+        <div class="stat-grid">
+          <div class="stat-card">
+            <span class="stat-val">98ms</span>
+            <span class="stat-lbl">P99 Latency</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-val">94.2%</span>
+            <span class="stat-lbl">Cache Hit</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-val">$0.002</span>
+            <span class="stat-lbl">Cost/Run</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-val">0</span>
+            <span class="stat-lbl">Errors</span>
+          </div>
+        </div>
+      </div>
+    {/if}
+  </div>
 </div>
 
 <style>
@@ -214,6 +245,17 @@
     background: var(--paper-surface);
     border-bottom: 1px solid var(--paper-line);
     display: flex;
+    flex-shrink: 0;
+    /* Ensure items don't wrap unexpectedly */
+    overflow: hidden; 
+  }
+
+  .pane-container {
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+    display: flex;
+    flex-direction: column;
   }
 
   .nav-item {
@@ -242,36 +284,35 @@
     border-bottom: 2px solid var(--paper-ink);
   }
 
-  .nav-item-label {
-    flex: 4;
-    display: flex;
-    align-items: center;
+  /* Node Tab specific styles */
+  .nav-item.node-tab {
+    flex: 4; 
+    justify-content: flex-start;
     padding-left: 20px;
-    font-size: 10px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
+    background: var(--paper-bg);
     color: var(--paper-ink);
-    border-right: none;
+    border-bottom: 2px solid var(--paper-ink);
+    cursor: default;
   }
 
   .action-close {
-    max-width: 48px;
+    flex: 0;
+    min-width: 50px;
+    font-size: 16px; /* Larger hit target for X */
     color: #d32f2f;
     border-right: none;
     border-left: 1px solid var(--paper-line);
-    flex: 0;
+  }
+  .action-close:hover {
+    background: #ffeeee;
+    color: #b71c1c;
   }
 
   .deck-pane {
-    display: none;
+    flex: 1;
     height: 100%;
     padding: 20px;
     overflow-y: auto;
-  }
-
-  .deck-pane:not(#pane-input) {
-    display: block;
   }
 
   #pane-input {
@@ -303,6 +344,7 @@
     cursor: pointer;
     transition: background 0.2s;
     color: var(--paper-ink);
+    flex-shrink: 0;
   }
 
   #btn-run:hover {

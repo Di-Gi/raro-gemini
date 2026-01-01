@@ -3,6 +3,7 @@ target/
 Cargo.lock
 **/*.rs.bk
 *.pdb
+*.lock
 STRUCTURE
 # Python
 __pycache__/
@@ -16,7 +17,7 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
+
 lib64/
 parts/
 sdist/

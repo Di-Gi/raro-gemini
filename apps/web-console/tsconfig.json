@@ -11,8 +11,7 @@
     "strict": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "moduleResolution": "node",
-    "baseUrl": ".",
+    "moduleResolution": "bundler",
     "paths": {
       "$lib/*": ["./src/lib/*"],
       "$components/*": ["./src/components/*"]

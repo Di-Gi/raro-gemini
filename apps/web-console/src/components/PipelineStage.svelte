@@ -1,13 +1,33 @@
 <script lang="ts">
-  import { agentNodes, pipelineEdges, selectedNode, selectNode, deselectNode } from '$lib/stores'
+  import { agentNodes, pipelineEdges, selectedNode, selectNode, deselectNode, type PipelineEdge } from '$lib/stores'
 
-  // 1. Define Props and Callbacks (replacing export let and dispatch)
-  let { expanded, ontoggle }: { expanded: boolean, ontoggle: () => void } = $props();
+  // Props: expanded state and toggle callback
+  // In Svelte 5, props must be declared with $props()
+  let { expanded, ontoggle }: { expanded: boolean, ontoggle?: () => void } = $props();
 
-  // 2. Define reactive state for element bindings
+  // Reactive state for DOM element bindings
   let svgElement = $state<SVGSVGElement | undefined>();
   let nodesLayer = $state<HTMLDivElement | undefined>();
+  let pipelineStageElement = $state<HTMLDivElement | undefined>();
 
+  // ResizeObserver ensures graph re-renders when container size changes
+  // This handles the CSS transition from collapsed (80px) to expanded (65vh)
+  $effect(() => {
+    if (!pipelineStageElement) return;
+
+    const resizeObserver = new ResizeObserver(() => {
+      renderGraph();
+    });
+
+    resizeObserver.observe(pipelineStageElement);
+
+    return () => {
+      resizeObserver.disconnect();
+    };
+  })
+
+  // Renders the pipeline graph with nodes and edges
+  // Positions are calculated as percentages and converted to pixels based on container size
   function renderGraph() {
     if (!svgElement || !nodesLayer) return
 
@@ -17,7 +37,7 @@
 
     svg.innerHTML = ''
 
-    $pipelineEdges.forEach((link) => {
+    $pipelineEdges.forEach((link: PipelineEdge) => {
       const fromNode = $agentNodes.find((n) => n.id === link.from)
       const toNode = $agentNodes.find((n) => n.id === link.to)
 
@@ -57,11 +77,15 @@
         el.textContent = node.label
         el.id = `node-${node.id}`
 
+        // Position nodes: spread vertically when expanded, center horizontally when collapsed
         const getY = (n: any) => (expanded ? (n.y / 100) * nodesLayer!.parentElement!.clientHeight : nodesLayer!.parentElement!.clientHeight / 2)
         const getX = (n: any) => (n.x / 100) * nodesLayer!.parentElement!.clientWidth
 
-        el.style.left = `${getX(node)}px`
-        el.style.top = `${getY(node)}px`
+        const x = getX(node)
+        const y = getY(node)
+
+        el.style.left = `${x}px`
+        el.style.top = `${y}px`
 
         el.onclick = (e) => {
           if (!expanded) return
@@ -74,26 +98,41 @@
     }
   }
 
-  // 4. Use $effect to trigger the render whenever dependencies change
-  // (This tracks svgElement, nodesLayer, expanded, $agentNodes, and $selectedNode)
+  // Reactive effect to re-render graph when dependencies change
+  // Explicitly tracks: expanded, nodes, edges, selected node, and DOM elements
   $effect(() => {
-    renderGraph();
+    const _expanded = expanded;
+    const _nodes = $agentNodes;
+    const _edges = $pipelineEdges;
+    const _selected = $selectedNode;
+    const _svg = svgElement;
+    const _layer = nodesLayer;
+
+    // Double rAF ensures CSS has been applied before measuring dimensions
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        renderGraph();
+      });
+    });
   })
 
+  // Handle click on pipeline area - only expands when collapsed
+  // (Minimize button in header handles collapse when expanded)
   function handleClick() {
     if (!expanded) {
-      ontoggle()
+      ontoggle?.()
     }
   }
 </script>
 
 <div
   id="pipeline-stage"
-  class:expanded
+  class={expanded ? 'expanded' : ''}
   onclick={handleClick}
   onkeydown={(e) => e.key === 'Enter' && handleClick()}
   role="button"
   tabindex="0"
+  bind:this={pipelineStageElement}
 >
   <div id="hud-banner">
     <div class="hud-title">
@@ -104,7 +143,7 @@
       class="btn-minimize"
       onclick={(e) => {
         e.stopPropagation()
-        ontoggle()
+        ontoggle?.()
       }}
     >
       ▼ EXIT & MINIMIZE

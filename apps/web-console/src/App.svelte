@@ -1,26 +1,44 @@
 <script lang="ts">
   import { onMount } from 'svelte'
+  import { fade } from 'svelte/transition'
   import OutputPane from '$components/OutputPane.svelte'
   import PipelineStage from '$components/PipelineStage.svelte'
   import ControlDeck from '$components/ControlDeck.svelte'
+  import Hero from '$components/Hero.svelte'
   import { runtimeStore, addLog } from '$lib/stores'
 
-  let expanded = false
-
-  onMount(() => {
-    addLog('KERNEL', 'RARO Runtime Environment v0.1.0. Status: IDLE. Pipeline ready for configuration.', 'SYSTEM_BOOT')
-  })
+  // Svelte 5 State
+  let expanded = $state(false)
+  let appState = $state<'HERO' | 'CONSOLE'>('HERO')
 
   function togglePipeline() {
     expanded = !expanded
   }
+
+  function enterConsole() {
+    appState = 'CONSOLE'
+    
+    // Log the boot sequence once the console mounts
+    setTimeout(() => {
+        addLog('KERNEL', 'RARO Runtime Environment v0.1.0.', 'SYSTEM_BOOT')
+        setTimeout(() => addLog('SYSTEM', 'Connection established. Status: IDLE.', 'NET_OK'), 300)
+    }, 500)
+  }
 </script>
 
-<div id="chassis" class:expanded>
-  <OutputPane />
-  <PipelineStage {expanded} on:toggle={togglePipeline} />
-  <ControlDeck {expanded} />
-</div>
+{#if appState === 'HERO'}
+  <Hero onenter={enterConsole} />
+{:else}
+  <div 
+    id="chassis" 
+    class={expanded ? 'expanded' : ''}
+    in:fade={{ duration: 600, delay: 200 }}
+  >
+    <OutputPane />
+    <PipelineStage {expanded} ontoggle={togglePipeline} />
+    <ControlDeck {expanded} />
+  </div>
+{/if}
 
 <style global>
   :root {
@@ -65,8 +83,11 @@
   }
 
   #chassis {
-    width: 100%;
-    max-width: 800px;
+    /* === UPDATED LAYOUT LOGIC === */
+    width: 800px;         /* Fixed wide width */
+    min-width: 800px;     /* Prevent shrinking on small screens */
+    flex-shrink: 0;        /* Ensure flex container doesn't crush it */
+    
     height: 100vh;
     border-left: 1px solid var(--paper-line);
     border-right: 1px solid var(--paper-line);
