@@ -1,4 +1,8 @@
-<!-- apps/web-console/src/components/PipelineStage.svelte -->
+<!-- // [[RARO]]/apps/web-console/src/components/PipelineStage.svelte
+// Purpose: Interactive DAG visualization with "Chip" aesthetic.
+// Architecture: Visual Component (D3-lite)
+// Dependencies: Stores -->
+
 <script lang="ts">
   import { agentNodes, pipelineEdges, selectedNode, selectNode, deselectNode, runtimeStore, type PipelineEdge } from '$lib/stores'
 
@@ -9,7 +13,6 @@
   let nodesLayer = $state<HTMLDivElement | undefined>();
   let pipelineStageElement = $state<HTMLDivElement | undefined>();
 
-  // Track runtime status for visuals
   let isRunComplete = $derived($runtimeStore.status === 'COMPLETED' || $runtimeStore.status === 'FAILED');
 
   $effect(() => {
@@ -51,8 +54,6 @@
 
       path.setAttribute('d', d)
       
-      // Determine classes based on link state active (running) vs finalized (done)
-      // Note: Logic in stores.ts ensures active and finalized are mutually exclusive
       let classes = `cable`;
       if (link.active) classes += ` active`;
       if (link.pulseAnimation) classes += ` pulse`;
@@ -63,7 +64,6 @@
 
       if (link.signatureHash) {
         path.setAttribute('data-signature', link.signatureHash)
-        path.setAttribute('title', `Signature: ${link.signatureHash.substring(0, 16)}...`)
       }
 
       svg.appendChild(path)
@@ -73,10 +73,21 @@
       nodesLayer.innerHTML = ''
       $agentNodes.forEach((node) => {
         const el = document.createElement('div')
+        // Styling handled by logic below, plus updated innerHTML structure
         el.className = `node ${$selectedNode === node.id ? 'selected' : ''} ${
           node.status === 'running' ? 'running' : ''
-        }`
-        el.textContent = node.label
+        } ${node.status === 'complete' ? 'complete' : ''}`
+        
+        // Detailed "Chip" Layout
+        el.innerHTML = `
+            <div class="node-indicator"></div>
+            <div class="node-content">
+                <div class="node-role">${node.role.toUpperCase()}</div>
+                <div class="node-label">${node.label}</div>
+            </div>
+            <div class="node-decor"></div>
+        `
+        
         el.id = `node-${node.id}`
 
         const getY = (n: any) => (expanded ? (n.y / 100) * nodesLayer!.parentElement!.clientHeight : nodesLayer!.parentElement!.clientHeight / 2)
@@ -104,7 +115,6 @@
     const _nodes = $agentNodes;
     const _edges = $pipelineEdges;
     const _selected = $selectedNode;
-    // We also track global status to re-render when it flips from Running -> Completed
     const _status = $runtimeStore.status; 
     
     requestAnimationFrame(() => {
@@ -150,7 +160,7 @@
         ontoggle?.()
       }}
     >
-      ▼ EXIT & MINIMIZE
+      ▼ MINIMIZE
     </button>
   </div>
 
@@ -169,8 +179,10 @@
     transition: height 0.5s var(--ease-snap), border-color 0.3s;
     overflow: hidden;
     cursor: pointer;
-    background-image: linear-gradient(var(--digi-line) 1px, transparent 1px),
-      linear-gradient(90deg, var(--digi-line) 1px, transparent 1px);
+    /* Detailed Grid Background */
+    background-image: 
+        linear-gradient(rgba(48, 54, 61, 0.5) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(48, 54, 61, 0.5) 1px, transparent 1px);
     background-size: 40px 40px;
   }
 
@@ -189,17 +201,14 @@
 
   #hud-banner {
     position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 40px;
-    background: rgba(22, 27, 34, 0.9);
-    backdrop-filter: blur(8px);
+    top: 0; left: 0; right: 0;
+    height: 32px;
+    background: rgba(9, 12, 16, 0.95);
     border-bottom: 1px solid var(--digi-line);
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 16px;
+    padding: 0 12px;
     transform: translateY(-100%);
     transition: transform 0.3s ease;
     z-index: 200;
@@ -210,7 +219,7 @@
   }
 
   .hud-title {
-    color: #8b949e; /* Default gray */
+    color: #8b949e; 
     font-family: var(--font-code);
     font-size: 10px;
     letter-spacing: 1px;
@@ -220,22 +229,18 @@
     gap: 8px;
   }
   
-  /* State-specific Text Colors */
-  .run-complete .hud-title {
-    color: var(--arctic-cyan);
-  }
+  .run-complete .hud-title { color: var(--arctic-cyan); }
 
   .hud-status-dot {
-    width: 6px;
-    height: 6px;
-    background: #8b949e;
+    width: 6px; height: 6px;
+    background: #484f58;
     border-radius: 50%;
   }
 
   .hud-status-dot.active {
     background: var(--alert-amber);
     box-shadow: 0 0 8px var(--alert-amber);
-    animation: blink 2s infinite;
+    animation: blink 1s infinite alternate;
   }
 
   .hud-status-dot.complete {
@@ -245,52 +250,85 @@
 
   .btn-minimize {
     background: transparent;
-    border: 1px solid var(--digi-line);
-    color: #8b949e;
-    font-size: 9px;
-    padding: 4px 10px;
-    text-transform: uppercase;
-    cursor: pointer;
-    transition: all 0.2s;
+    border: none;
+    color: #484f58;
+    font-size: 10px;
     font-family: var(--font-code);
+    cursor: pointer;
+    transition: color 0.2s;
   }
-
-  .btn-minimize:hover {
-    border-color: var(--arctic-cyan);
-    color: white;
-    background: var(--arctic-dim);
-  }
+  .btn-minimize:hover { color: var(--arctic-cyan); }
 
   #graph-svg {
-    width: 100%;
-    height: 100%;
-    position: absolute;
-    top: 0;
-    left: 0;
+    width: 100%; height: 100%;
+    position: absolute; top: 0; left: 0;
   }
 
   #nodes-layer {
-    width: 100%;
-    height: 100%;
-    position: absolute;
-    top: 0;
-    left: 0;
+    width: 100%; height: 100%;
+    position: absolute; top: 0; left: 0;
   }
 
+  /* NODE CHIP STYLING */
   :global(.node) {
     position: absolute;
     background: var(--digi-panel);
     border: 1px solid var(--digi-line);
     color: #8b949e;
-    padding: 8px 12px;
-    min-width: 120px;
+    min-width: 140px;
+    padding: 0; /* Reset */
     font-family: var(--font-code);
-    font-size: 10px;
-    text-align: center;
     transform: translate(-50%, -50%);
-    transition: all 0.3s ease;
+    transition: all 0.3s var(--ease-snap);
     user-select: none;
     pointer-events: none;
+    display: flex;
+    align-items: stretch;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+    overflow: hidden;
+  }
+  
+  /* Status Bar (Left) */
+  :global(.node-indicator) {
+    width: 4px;
+    background: var(--digi-line);
+    transition: background 0.3s;
+  }
+  
+  :global(.node-content) {
+    flex: 1;
+    padding: 8px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  :global(.node-role) {
+    font-size: 8px;
+    text-transform: uppercase;
+    color: #484f58;
+    letter-spacing: 0.5px;
+  }
+
+  :global(.node-label) {
+    font-size: 11px;
+    font-weight: 600;
+    color: #c9d1d9;
+  }
+  
+  /* Decor (Right) */
+  :global(.node-decor) {
+    width: 12px;
+    background: 
+        repeating-linear-gradient(
+            0deg,
+            transparent,
+            transparent 2px,
+            var(--digi-line) 2px,
+            var(--digi-line) 3px
+        );
+    opacity: 0.3;
+    border-left: 1px solid var(--digi-line);
   }
 
   #pipeline-stage.expanded :global(.node) {
@@ -298,23 +336,39 @@
     cursor: pointer;
   }
 
+  /* HOVER */
   #pipeline-stage.expanded :global(.node:hover) {
-    border-color: var(--arctic-cyan);
-    color: white;
+    border-color: #58a6ff;
+    transform: translate(-50%, -52%);
+    box-shadow: 0 8px 20px rgba(0,0,0,0.5);
   }
+  #pipeline-stage.expanded :global(.node:hover .node-label) { color: white; }
 
+  /* SELECTED */
   :global(.node.selected) {
     border-color: var(--arctic-cyan);
-    background: var(--arctic-dim);
-    color: white;
-    box-shadow: 0 0 20px var(--arctic-dim);
+    background: rgba(0, 240, 255, 0.05);
   }
-
+  :global(.node.selected .node-indicator) { background: var(--arctic-cyan); }
+  :global(.node.selected .node-label) { color: var(--arctic-cyan); }
+  
+  /* RUNNING */
   :global(.node.running) {
     border-color: var(--alert-amber);
-    color: var(--alert-amber);
-    box-shadow: 0 0 15px rgba(255, 179, 0, 0.2);
+    box-shadow: 0 0 20px rgba(255, 179, 0, 0.15);
   }
+  :global(.node.running .node-indicator) { 
+    background: var(--alert-amber);
+    box-shadow: 0 0 8px var(--alert-amber);
+  }
+  :global(.node.running .node-label) { color: var(--alert-amber); }
+
+  /* COMPLETE */
+  :global(.node.complete) {
+    border-color: #238636; 
+  }
+  :global(.node.complete .node-indicator) { background: #238636; }
+  :global(.node.complete .node-label) { color: #238636; }
 
   :global(.cable) {
     fill: none;
@@ -323,37 +377,29 @@
     transition: stroke 0.3s;
   }
 
-  /* PROCESSING STATE: Dotted, Moving */
   :global(.cable.active) {
     stroke: var(--arctic-cyan);
-    stroke-dasharray: 6;
-    animation: flow 0.8s linear infinite;
-    opacity: 0.8;
+    stroke-dasharray: 8 4;
+    animation: flow 0.6s linear infinite;
+    opacity: 0.9;
   }
 
   :global(.cable.active.pulse) {
     stroke-width: 2.5px;
-    filter: drop-shadow(0 0 4px var(--arctic-cyan));
+    filter: drop-shadow(0 0 6px var(--arctic-cyan));
   }
 
-  /* FINISHED STATE: Solid, Static, Bright */
   :global(.cable.finalized) {
-    stroke: var(--arctic-cyan); /* Solid color */
-    stroke-width: 2px;
-    stroke-dasharray: none !important; /* Force solid line */
-    animation: none !important; /* Force stop animation */
-    opacity: 1; /* Fully opaque */
-    filter: drop-shadow(0 0 2px rgba(0, 240, 255, 0.3));
+    stroke: var(--arctic-cyan);
+    stroke-width: 1.5px;
+    opacity: 0.6;
   }
 
   @keyframes flow {
-    to {
-      stroke-dashoffset: -12;
-    }
+    to { stroke-dashoffset: -12; }
   }
-  
   @keyframes blink {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.5; }
+    from { opacity: 0.4; }
+    to { opacity: 1; }
   }
 </style>

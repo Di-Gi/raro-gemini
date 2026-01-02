@@ -5,6 +5,8 @@ Cargo.lock
 *.pdb
 *.lock
 STRUCTURE
+CONTENT.*
+.structure.*
 # Python
 __pycache__/
 *.py[cod]

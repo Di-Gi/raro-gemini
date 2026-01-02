@@ -1,4 +1,8 @@
-<!-- apps/web-console/src/components/sub/Typewriter.svelte -->
+<!-- // [[RARO]]/apps/web-console/src/components/sub/Typewriter.svelte
+// Purpose: Streaming text with terminal cursor and technical status footer.
+// Architecture: UI Component
+// Dependencies: Spinner -->
+
 <script lang="ts">
   import Spinner from './Spinner.svelte';
 
@@ -6,6 +10,7 @@
 
   let displayedText = $state('');
   let isTyping = $state(true);
+  let showCursor = $state(true);
   
   // Track how much we have displayed
   let currentIndex = 0;
@@ -16,16 +21,24 @@
       return () => clearTimeout(timer);
   });
 
+  // Cursor Blinker
+  $effect(() => {
+    if (!isTyping) {
+        showCursor = false;
+        return;
+    }
+    const blinkInterval = setInterval(() => {
+        showCursor = !showCursor;
+    }, 500);
+    return () => clearInterval(blinkInterval);
+  });
+
   // Reactive Effect: Watch for text updates (Streaming)
   $effect(() => {
-    // If the source text is longer than what we are showing...
     if (text && text.length > currentIndex) {
-      // Ensure typing indicator is on
       isTyping = true;
-      // Start/Resume the loop
       typeNext();
     } else if (text && text.length === currentIndex) {
-        // We are caught up
         isTyping = false;
         if (onComplete) onComplete();
     }
@@ -34,27 +47,23 @@
   function typeNext() {
     clearTimeout(timer);
     
-    // Safety check
     if (currentIndex < text.length) {
-      // Adaptive chunking: If we are falling far behind (large stream), type faster
       const remaining = text.length - currentIndex;
       let chunk = 1;
-      let speed = 15; // Standard mechanical typing speed
+      let speed = 15; 
 
-      if (remaining > 1000) { chunk = 50; speed = 1; }      // Super fast catchup
-      else if (remaining > 200) { chunk = 10; speed = 5; }  // Fast catchup
-      else if (remaining > 50) { chunk = 3; speed = 10; }   // Moderate catchup
+      // Adaptive chunking for heavy loads
+      if (remaining > 1000) { chunk = 50; speed = 1; }      
+      else if (remaining > 200) { chunk = 10; speed = 5; }  
+      else if (remaining > 50) { chunk = 3; speed = 10; }   
       
       const nextIndex = Math.min(currentIndex + chunk, text.length);
       
-      // Update state
       displayedText = text.substring(0, nextIndex);
       currentIndex = nextIndex;
       
-      // Schedule next keystroke
       timer = setTimeout(typeNext, speed);
     } else {
-      // Done
       isTyping = false;
       if (onComplete) onComplete();
     }
@@ -62,11 +71,13 @@
 </script>
 
 <div class="typewriter-container">
-  <!-- pre-wrap preserves formatting from LLM/Markdown -->
-  <div class="content">{@html displayedText}</div>
+  <div class="content">
+    {@html displayedText}{#if isTyping}<span class="cursor" style:opacity={showCursor ? 1 : 0}>█</span>{/if}
+  </div>
   
   {#if isTyping}
-    <div class="indicator">
+    <div class="status-bar">
+      <span class="ingress-label">DATA INGRESS //</span>
       <Spinner />
     </div>
   {/if}
@@ -76,7 +87,6 @@
   .typewriter-container {
     position: relative;
     font-family: var(--font-code);
-    /* Changed from inline-block to block to ensure width consistency during typing */
     display: block; 
     width: 100%;
   }
@@ -84,12 +94,34 @@
   .content {
     white-space: pre-wrap;
     word-break: break-word;
-    display: inline;
+    display: block;
+    line-height: 1.5;
   }
 
-  .indicator {
+  .cursor {
     display: inline-block;
-    margin-left: 5px;
-    vertical-align: middle;
+    color: var(--paper-ink);
+    margin-left: 2px;
+    font-size: 0.8em;
+    vertical-align: baseline;
+  }
+
+  /* The invisible bar at the bottom right */
+  .status-bar {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    height: 20px;
+    margin-top: 8px;
+    opacity: 0.6;
+    gap: 8px;
+  }
+
+  .ingress-label {
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    color: var(--paper-line);
+    text-transform: uppercase;
   }
 </style>

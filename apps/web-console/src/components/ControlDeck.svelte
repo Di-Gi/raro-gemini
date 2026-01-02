@@ -16,6 +16,7 @@
   let currentPrompt = $state('')
   let thinkingBudget = $state(5)
   let isSubmitting = $state(false)
+  let isInputFocused = $state(false)
 
   // === STATE SYNCHRONIZATION ===
   $effect(() => {
@@ -69,7 +70,7 @@
                 id: n.id,
                 role: n.role,
                 model: modelVariant,
-                tools: [], // Configurable tools could be added here
+                tools: [], 
                 input_schema: {},
                 output_schema: {},
                 cache_policy: 'ephemeral',
@@ -79,7 +80,6 @@
             };
         });
 
-        // Inject User Input into Orchestrator
         const orchestrator = agents.find(a => a.role === 'orchestrator');
         if (orchestrator) {
             orchestrator.prompt = `${orchestrator.prompt}\n\nUSER REQUEST: ${cmdInput}`;
@@ -114,90 +114,70 @@
 
   function handlePaneSelect(pane: string) {
     activePane = pane
-    // Safety: If user manually clicks a tab, ensure no node is selected
-    if ($selectedNode) {
-      deselectNode()
-    }
+    if ($selectedNode) deselectNode()
   }
 
   function handleCloseNode() {
-    // Deselecting triggers the $effect above, which sets activePane = 'overview'
     deselectNode()
   }
 
-  // Handle Node Config Updates
   function saveNodeConfig() {
       if (!$selectedNode) return;
-      
       agentNodes.update(nodes => nodes.map(n => {
           if (n.id === $selectedNode) {
-              return {
-                  ...n,
-                  model: currentModel.toUpperCase(),
-                  prompt: currentPrompt
-              }
+              return { ...n, model: currentModel.toUpperCase(), prompt: currentPrompt }
           }
           return n;
       }));
+  }
+
+  function handleKey(e: KeyboardEvent) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          executeRun();
+      }
   }
 </script>
 
 <div id="control-deck" class:architect-mode={expanded}>
   {#if expanded}
     <div id="deck-nav">
-      <!-- === NAVIGATION LOGIC === -->
       {#if activePane === 'node-config'}
-        <!-- MODE A: NODE CONFIGURATION (Exclusive) -->
         <div class="nav-item node-tab active">
           COMPONENT SETTINGS // {$selectedNode}
         </div>
-        <div class="nav-item action-close" onclick={handleCloseNode}>
-          ×
-        </div>
+        <div class="nav-item action-close" onclick={handleCloseNode}>×</div>
       {:else}
-        <!-- MODE B: STANDARD TABS (Exclusive) -->
-        <div 
-          class="nav-item {activePane === 'overview' ? 'active' : ''}" 
-          onclick={() => handlePaneSelect('overview')}
-        >
-          Overview
-        </div>
-        <!-- [Restored Functionality] Simulation Tab -->
-        <div 
-          class="nav-item {activePane === 'sim' ? 'active' : ''}" 
-          onclick={() => handlePaneSelect('sim')}
-        >
-          Simulation
-        </div>
-        <div 
-          class="nav-item {activePane === 'stats' ? 'active' : ''}" 
-          onclick={() => handlePaneSelect('stats')}
-        >
-          Telemetry
-        </div>
+        <div class="nav-item {activePane === 'overview' ? 'active' : ''}" onclick={() => handlePaneSelect('overview')}>Overview</div>
+        <div class="nav-item {activePane === 'sim' ? 'active' : ''}" onclick={() => handlePaneSelect('sim')}>Simulation</div>
+        <div class="nav-item {activePane === 'stats' ? 'active' : ''}" onclick={() => handlePaneSelect('stats')}>Telemetry</div>
       {/if}
     </div>
   {/if}
 
-  <!-- === CONTENT LOGIC === -->
   <div class="pane-container">
-    
     {#if !expanded || activePane === 'input'}
-      <!-- 1. INPUT -->
+      <!-- 1. INPUT CONSOLE (Refined Wrapper) -->
       <div id="pane-input" class="deck-pane">
-        <textarea
-          id="cmd-input"
-          placeholder=">> Enter research directive or click pipeline to configure..."
-          bind:value={cmdInput}
-          disabled={isSubmitting}
-        ></textarea>
-        <button id="btn-run" onclick={executeRun} disabled={isSubmitting}>
-            {#if isSubmitting}
-                INITIALIZING...
-            {:else}
-                INITIATE RUN
-            {/if}
-        </button>
+        <div class="cmd-wrapper {isInputFocused ? 'focused' : ''}">
+            <textarea
+                id="cmd-input"
+                placeholder="ENTER DIRECTIVE..."
+                bind:value={cmdInput}
+                disabled={isSubmitting}
+                onkeydown={handleKey}
+                onfocus={() => isInputFocused = true}
+                onblur={() => isInputFocused = false}
+            ></textarea>
+            <button id="btn-run" onclick={executeRun} disabled={isSubmitting}>
+                {#if isSubmitting}
+                    <span class="loader"></span>
+                {:else}
+                    ↵
+                {/if}
+            </button>
+        </div>
+        <div class="input-hint">PRESS ENTER TO EXECUTE // SHIFT+ENTER FOR NEW LINE</div>
       </div>
 
     {:else if activePane === 'node-config'}
@@ -229,18 +209,22 @@
 
         {#if currentModel === 'gemini-2.5-flash'}
           <div class="form-group deep-think-config">
-            <label>Thinking Budget (Extended Reasoning Depth)</label>
+            <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
+                <label>Thinking Budget (Depth)</label>
+                <span class="slider-value-badge">LEVEL {thinkingBudget}</span>
+            </div>
+            
             <div class="slider-container">
               <input type="range" min="1" max="10" bind:value={thinkingBudget} class="thinking-slider"/>
-              <span class="slider-value">{thinkingBudget}</span>
             </div>
+            
             <div class="slider-description">
               {#if thinkingBudget <= 3}
-                <span>Fast reasoning with focused hypothesis generation</span>
+                <span>Fast reasoning with focused hypothesis generation.</span>
               {:else if thinkingBudget <= 6}
-                <span>Balanced reasoning depth for synthesis tasks</span>
+                <span>Balanced reasoning depth for synthesis tasks.</span>
               {:else}
-                <span>Extended thinking for complex cross-paper analysis</span>
+                <span>Extended thinking for complex cross-paper analysis.</span>
               {/if}
             </div>
           </div>
@@ -248,21 +232,11 @@
       </div>
 
     {:else if activePane === 'overview'}
-      <!-- 3. OVERVIEW -->
-      <div id="pane-overview" class="deck-pane">
+       <div id="pane-overview" class="deck-pane">
         <div class="form-grid">
-          <div class="form-group">
-            <label>Pipeline Identifier</label>
-            <input class="input-std" value="RARO_Live_Session" readonly />
-          </div>
-          <div class="form-group">
-            <label>Max Token Budget</label>
-            <input class="input-std" value="100,000" />
-          </div>
-          <div class="form-group">
-            <label>Agent Service Status</label>
-            <div class="status-indicator">ONLINE</div>
-          </div>
+          <div class="form-group"><label>Pipeline Identifier</label><input class="input-std" value="RARO_Live_Session" readonly /></div>
+          <div class="form-group"><label>Max Token Budget</label><input class="input-std" value="100,000" /></div>
+          <div class="form-group"><label>Service Status</label><div class="status-indicator">ONLINE</div></div>
           <div class="form-group">
             <label>Persistence Layer</label>
             <select class="input-std">
@@ -272,40 +246,24 @@
           </div>
         </div>
       </div>
-
     {:else if activePane === 'sim'}
-      <!-- 4. SIMULATION [Restored] -->
       <div id="pane-sim" class="deck-pane">
         <div style="display:flex; gap:10px; margin-bottom:15px;">
           <button class="input-std action-btn" onclick={() => addLog('SYSTEM', 'Simulating step 1...')}>▶ STEP EXECUTION</button>
           <button class="input-std action-btn" onclick={() => addLog('SYSTEM', 'Resetting context...')}>↺ RESET CONTEXT</button>
         </div>
-        <div style="font-family:var(--font-code); font-size:11px; color:#555; background:white; border:1px solid var(--paper-line); padding:10px; height:100px; overflow-y:auto;">
+        <div class="sim-terminal">
           &gt; Ready for test vector injection...<br />
           &gt; Agents loaded: {$agentNodes.length}
         </div>
       </div>
-
     {:else if activePane === 'stats'}
-      <!-- 5. TELEMETRY -->
       <div id="pane-stats" class="deck-pane">
         <div class="stat-grid">
-          <div class="stat-card">
-            <span class="stat-val">{($telemetry.tokensUsed / 1000).toFixed(1)}k</span>
-            <span class="stat-lbl">Tokens</span>
-          </div>
-          <div class="stat-card">
-            <span class="stat-val">${$telemetry.totalCost.toFixed(4)}</span>
-            <span class="stat-lbl">Est. Cost</span>
-          </div>
-          <div class="stat-card">
-            <span class="stat-val">{$telemetry.errorCount}</span>
-            <span class="stat-lbl">Errors</span>
-          </div>
-           <div class="stat-card">
-            <span class="stat-val">LIVE</span>
-            <span class="stat-lbl">Mode</span>
-          </div>
+          <div class="stat-card"><span class="stat-val">{($telemetry.tokensUsed / 1000).toFixed(1)}k</span><span class="stat-lbl">Tokens</span></div>
+          <div class="stat-card"><span class="stat-val">${$telemetry.totalCost.toFixed(4)}</span><span class="stat-lbl">Est. Cost</span></div>
+          <div class="stat-card"><span class="stat-val">{$telemetry.errorCount}</span><span class="stat-lbl">Errors</span></div>
+          <div class="stat-card"><span class="stat-val">LIVE</span><span class="stat-lbl">Mode</span></div>
         </div>
       </div>
     {/if}
@@ -313,13 +271,7 @@
 </div>
 
 <style>
-  .status-indicator {
-      color: #00C853;
-      font-weight: 700;
-      font-size: 11px;
-      margin-top: 10px;
-  }
-
+  /* === LAYOUT & BASICS === */
   #control-deck {
     height: 160px;
     background: var(--paper-bg);
@@ -330,260 +282,122 @@
     position: relative;
     z-index: 150;
   }
+  #control-deck.architect-mode { height: 260px; }
 
-  #control-deck.architect-mode {
-    height: 260px;
-  }
+  /* NAVIGATION */
+  #deck-nav { height: 36px; background: var(--paper-surface); border-bottom: 1px solid var(--paper-line); display: flex; flex-shrink: 0; overflow: hidden; }
+  .nav-item { flex: 1; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: #888; cursor: pointer; border-right: 1px solid var(--paper-line); transition: all 0.2s; }
+  .nav-item:hover { color: var(--paper-ink); background: white; }
+  .nav-item.active { background: var(--paper-bg); color: var(--paper-ink); border-bottom: 2px solid var(--paper-ink); }
+  .nav-item.node-tab { flex: 4; justify-content: flex-start; padding-left: 20px; background: var(--paper-bg); color: var(--paper-ink); border-bottom: 2px solid var(--paper-ink); cursor: default; }
+  .action-close { flex: 0; min-width: 50px; font-size: 16px; color: #d32f2f; border-right: none; border-left: 1px solid var(--paper-line); }
+  .action-close:hover { background: #ffeeee; color: #b71c1c; }
 
-  #deck-nav {
-    height: 36px;
-    background: var(--paper-surface);
-    border-bottom: 1px solid var(--paper-line);
-    display: flex;
-    flex-shrink: 0;
-    /* Ensure items don't wrap unexpectedly */
-    overflow: hidden; 
-  }
+  .pane-container { flex: 1; overflow: hidden; position: relative; display: flex; flex-direction: column; }
+  .deck-pane { flex: 1; height: 100%; padding: 20px; overflow-y: auto; }
 
-  .pane-container {
-    flex: 1;
-    overflow: hidden;
-    position: relative;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .nav-item {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 10px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    color: #888;
-    cursor: pointer;
-    border-right: 1px solid var(--paper-line);
-    transition: all 0.2s;
-  }
-
-  .nav-item:hover {
-    color: var(--paper-ink);
-    background: white;
-  }
-
-  .nav-item.active {
-    background: var(--paper-bg);
-    color: var(--paper-ink);
-    border-bottom: 2px solid var(--paper-ink);
-  }
-
-  /* Node Tab specific styles */
-  .nav-item.node-tab {
-    flex: 4; 
-    justify-content: flex-start;
-    padding-left: 20px;
-    background: var(--paper-bg);
-    color: var(--paper-ink);
-    border-bottom: 2px solid var(--paper-ink);
-    cursor: default;
-  }
-
-  .action-close {
-    flex: 0;
-    min-width: 50px;
-    font-size: 16px; /* Larger hit target for X */
-    color: #d32f2f;
-    border-right: none;
-    border-left: 1px solid var(--paper-line);
-  }
-  .action-close:hover {
-    background: #ffeeee;
-    color: #b71c1c;
-  }
-
-  .deck-pane {
-    flex: 1;
-    height: 100%;
-    padding: 20px;
-    overflow-y: auto;
-  }
-
+  /* === INPUT CONSOLE STYLING === */
   #pane-input {
-    display: flex;
-    flex-direction: column;
-    padding: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: center; /* Center vertically if space allows */
+  }
+
+  /* The floating "Device" wrapper for input */
+  .cmd-wrapper {
+      display: flex;
+      background: white;
+      border: 1px solid var(--paper-line);
+      /* Fixed height for the wrapper ensures the button isn't massive */
+      height: 80px; 
+      transition: border-color 0.2s, box-shadow 0.2s;
+  }
+
+  .cmd-wrapper.focused {
+      border-color: var(--paper-ink);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.05);
   }
 
   #cmd-input {
-    flex: 1;
-    border: none;
-    background: transparent;
-    padding: 20px;
-    font-family: var(--font-code);
-    font-size: 13px;
-    color: var(--paper-ink);
-    resize: none;
-    outline: none;
+      flex: 1;
+      border: none;
+      background: transparent;
+      padding: 16px;
+      font-family: var(--font-code);
+      font-size: 13px;
+      color: var(--paper-ink);
+      resize: none;
+      outline: none;
   }
+
+  #cmd-input::placeholder { opacity: 0.4; text-transform: uppercase; }
 
   #btn-run {
-    height: 48px;
-    border: none;
-    border-top: 1px solid var(--paper-line);
-    background: white;
-    font-weight: 700;
-    font-size: 11px;
-    letter-spacing: 1px;
-    cursor: pointer;
-    transition: background 0.2s;
-    color: var(--paper-ink);
-    flex-shrink: 0;
+      width: 60px; /* Square-ish proportion */
+      border: none;
+      border-left: 1px solid var(--paper-line);
+      background: #FAFAFA;
+      color: #A53F2B; /* Rust Accent */
+      font-weight: 900;
+      font-size: 20px;
+      cursor: pointer;
+      transition: all 0.1s;
+      display: flex; align-items: center; justify-content: center;
   }
 
-  #btn-run:hover {
-    background: #f5f5f5;
-  }
+  #btn-run:hover:not(:disabled) { background: #A53F2B; color: white; }
+  #btn-run:active:not(:disabled) { background: #8e321f; }
+  #btn-run:disabled { background: #f0f0f0; color: #ccc; cursor: not-allowed; }
 
-  #btn-run:disabled {
-      background: #eee;
+  .input-hint {
+      font-family: var(--font-code);
+      font-size: 9px;
       color: #999;
-      cursor: not-allowed;
+      text-align: right;
+      margin-top: 8px;
+      letter-spacing: 0.5px;
   }
 
-  .form-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 20px;
-  }
+  /* === FORMS & UTILS === */
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .form-group { margin-bottom: 16px; }
+  label { display: block; font-size: 9px; color: #888; text-transform: uppercase; margin-bottom: 6px; font-weight: 600; }
+  .input-std { width: 100%; padding: 10px; border: 1px solid var(--paper-line); background: white; font-family: var(--font-code); font-size: 12px; color: var(--paper-ink); outline: none; }
+  .input-std:focus { border-color: var(--paper-ink); }
+  .input-readonly { background: var(--paper-surface); color: #666; cursor: default; }
+  
+  .status-indicator { color: #00C853; font-weight: 700; font-size: 11px; margin-top: 10px; }
+  .action-btn { width: auto; cursor: pointer; background: #1a1918; color: white; }
+  .sim-terminal { font-family: var(--font-code); font-size: 11px; color: #555; background: white; border: 1px solid var(--paper-line); padding: 10px; height: 100px; overflow-y: auto; }
 
-  .form-group {
-    margin-bottom: 16px;
-  }
+  /* === STATS === */
+  .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .stat-card { border: 1px solid var(--paper-line); background: white; padding: 12px; text-align: center; }
+  .stat-val { font-size: 16px; font-weight: 700; color: var(--paper-ink); display: block; }
+  .stat-lbl { font-size: 9px; color: #888; text-transform: uppercase; margin-top: 4px; display: block; }
 
-  label {
-    display: block;
-    font-size: 9px;
-    color: #888;
-    text-transform: uppercase;
-    margin-bottom: 6px;
-    font-weight: 600;
-  }
-
-  .input-std {
-    width: 100%;
-    padding: 10px;
-    border: 1px solid var(--paper-line);
-    background: white;
-    font-family: var(--font-code);
-    font-size: 12px;
-    color: var(--paper-ink);
-    outline: none;
-  }
-
-  .input-std:focus {
-    border-color: var(--paper-ink);
-  }
-
-  .input-readonly {
-    background: var(--paper-surface);
-    color: #666;
-    cursor: default;
-  }
-
-  .action-btn {
-    width: auto;
-    cursor: pointer;
-    background: #1a1918;
-    color: white;
-  }
-
-  .stat-grid {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 12px;
-  }
-
-  .stat-card {
-    border: 1px solid var(--paper-line);
-    background: white;
-    padding: 12px;
-    text-align: center;
-  }
-
-  .stat-val {
-    font-size: 16px;
-    font-weight: 700;
-    color: var(--paper-ink);
-    display: block;
-  }
-
-  .stat-lbl {
-    font-size: 9px;
-    color: #888;
-    text-transform: uppercase;
-    margin-top: 4px;
-    display: block;
-  }
-
-  .deep-think-config {
-    margin-top: 20px;
-    padding: 12px;
-    background: #f9f9f9;
-    border: 1px solid #ddd;
-    border-radius: 4px;
-  }
-
-  .slider-container {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    margin: 10px 0;
-  }
-
+  /* === SLIDER === */
+  .deep-think-config { padding: 16px; background: rgba(0,0,0,0.03); border: 1px solid var(--paper-line); border-radius: 0; }
+  .slider-value-badge { font-size: 10px; background: var(--paper-ink); color: white; padding: 2px 6px; border-radius: 2px; }
+  .slider-container { display: flex; align-items: center; margin: 12px 0; }
+  
   .thinking-slider {
-    flex: 1;
-    height: 6px;
-    border-radius: 3px;
-    background: linear-gradient(to right, #888, #1a1918);
-    outline: none;
-    -webkit-appearance: none;
+    flex: 1; -webkit-appearance: none; height: 4px; background: #ddd; outline: none;
   }
-
   .thinking-slider::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    background: #1a1918;
-    cursor: pointer;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    -webkit-appearance: none; width: 16px; height: 16px; border-radius: 0; background: var(--paper-ink); cursor: ew-resize; border: 2px solid white; box-shadow: 0 1px 3px rgba(0,0,0,0.3); transition: transform 0.1s;
   }
-
+  .thinking-slider::-webkit-slider-thumb:hover { transform: scale(1.2); }
+  
   .thinking-slider::-moz-range-thumb {
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    background: #1a1918;
-    cursor: pointer;
-    border: none;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    width: 16px; height: 16px; border-radius: 0; background: var(--paper-ink); cursor: ew-resize; border: 2px solid white; box-shadow: 0 1px 3px rgba(0,0,0,0.3);
   }
 
-  .slider-value {
-    font-weight: 700;
-    font-size: 14px;
-    color: #1a1918;
-    min-width: 30px;
-    text-align: center;
+  .slider-description { font-size: 11px; color: #666; font-style: italic; min-height: 1.2em; }
+  
+  /* Loader */
+  .loader {
+    width: 16px; height: 16px; border: 2px solid #ccc; border-bottom-color: transparent; border-radius: 50%; display: inline-block; box-sizing: border-box; animation: rotation 1s linear infinite;
   }
-
-  .slider-description {
-    font-size: 11px;
-    color: #666;
-    font-style: italic;
-    margin-top: 8px;
-  }
+  @keyframes rotation { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
 </style>

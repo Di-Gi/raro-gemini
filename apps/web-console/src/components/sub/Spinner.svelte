@@ -1,4 +1,8 @@
-<!-- apps/web-console/src/components/sub/Spinner.svelte -->
+<!-- // [[RARO]]/apps/web-console/src/components/sub/Spinner.svelte
+// Purpose: Reusable CSS loading spinner.
+// Architecture: UI Atom
+// Dependencies: None -->
+
 <script lang="ts">
   // Simple CSS-based loading spinner
 </script>
@@ -13,9 +17,7 @@
     border-left-color: var(--paper-ink);
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
-    display: inline-block;
-    vertical-align: middle;
-    margin-left: 8px;
+    display: block; /* Changed from inline-block for better layout control in parents */
   }
 
   @keyframes spin {

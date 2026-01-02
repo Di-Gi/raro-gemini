@@ -1,186 +1,417 @@
-<!-- apps/web-console/src/components/Hero.svelte -->
-<script lang="ts">
-  import { fade } from 'svelte/transition';
+<!-- // [[RARO]]/apps/web-console/src/components/Hero.svelte
+// Purpose: The "Monolith" Boot Interface. High-fidelity entry point.
+// Architecture: UX/UI Component
+// Dependencies: Svelte Transition, Local Assets -->
 
-  // Props definition in Svelte 5
+<script lang="ts">
+  import { fade, fly } from 'svelte/transition';
+  import { onMount } from 'svelte';
+
   let { onenter }: { onenter: () => void } = $props();
 
-  let loading = $state(false);
+  // === STATE MACHINE ===
+  type SystemState = 'IDLE' | 'CHARGING' | 'LOCKED' | 'BOOTING';
+  let sysState = $state<SystemState>('IDLE');
+  
+  // === CAPACITOR LOGIC ===
+  let chargeLevel = $state(0);
+  let chargeVelocity = 0;
+  let rafId: number;
 
-  function handleEnter() {
-    loading = true;
-    // Simulate a brief boot sequence delay for effect
+  // === TERMINAL LOGIC ===
+  let logs = $state<string[]>([]);
+  let cursorVisible = $state(true);
+
+  // Initial "Idle" Animation
+  onMount(() => {
+    const cursorInterval = setInterval(() => cursorVisible = !cursorVisible, 500);
+    
+    // Add some initial "noise" to the system
+    setTimeout(() => logs.push("KERNEL_DAEMON_OK"), 200);
+    setTimeout(() => logs.push("MEMORY_INTEGRITY_CHECK..."), 600);
+    
+    return () => clearInterval(cursorInterval);
+  });
+
+  // === INTERACTION HANDLERS ===
+
+  function startCharge() {
+    if (sysState === 'BOOTING' || sysState === 'LOCKED') return;
+    sysState = 'CHARGING';
+    
+    let lastTime = performance.now();
+
+    const loop = (now: number) => {
+      if (sysState !== 'CHARGING') return;
+      
+      const dt = now - lastTime;
+      lastTime = now;
+
+      // Physics: Charge accelerates but encounters "Resistance" near 100%
+      // This creates tactile "weight"
+      const baseSpeed = 0.15; 
+      const resistance = Math.max(0, (chargeLevel - 80) * 0.005);
+      
+      chargeLevel = Math.min(chargeLevel + (baseSpeed - resistance) * dt, 100);
+
+      if (chargeLevel >= 100) {
+        commitBoot();
+      } else {
+        rafId = requestAnimationFrame(loop);
+      }
+    };
+    rafId = requestAnimationFrame(loop);
+  }
+
+  function releaseCharge() {
+    if (sysState === 'BOOTING' || sysState === 'LOCKED') return;
+    sysState = 'IDLE';
+    
+    // Rapid discharge visual
+    const discharge = () => {
+      if (sysState === 'CHARGING') return; // User grabbed it again
+      
+      chargeLevel = Math.max(0, chargeLevel - 5);
+      if (chargeLevel > 0) {
+        requestAnimationFrame(discharge);
+      }
+    };
+    requestAnimationFrame(discharge);
+  }
+
+  // === BOOT SEQUENCE ===
+
+  function commitBoot() {
+    sysState = 'LOCKED';
+    chargeLevel = 100;
+    
+    // The "Sequence"
+    const seq = [
+      { t: 0, msg: ">> INTERRUPT_SIGNAL_RECEIVED" },
+      { t: 200, msg: ">> ELEVATING_PRIVILEGES..." },
+      { t: 600, msg: ">> MOUNTING_AGENT_SWARM [RW]" },
+      { t: 1000, msg: ">> CONNECTING_TO_ORCHESTRATOR..." },
+      { t: 1400, msg: ">> RARO_RUNTIME_ENGAGED" }
+    ];
+
+    seq.forEach(step => {
+      setTimeout(() => {
+        logs = [...logs, step.msg];
+        // Keep terminal scrolled to bottom
+        const el = document.getElementById('term-feed');
+        if(el) el.scrollTop = el.scrollHeight;
+      }, step.t);
+    });
+
     setTimeout(() => {
+      sysState = 'BOOTING';
       onenter();
-    }, 800);
+    }, 1800);
   }
 </script>
 
-<div class="hero-container" out:fade={{ duration: 400 }}>
-  <div class="content-wrapper">
-    <div class="header">
-      <div class="logo-mark">RARO // KERNEL</div>
-      <div class="version">v0.1.0</div>
-    </div>
+<div class="viewport" out:fade={{ duration: 600 }}>
+  
+  <!-- OPTIONAL: NOISE TEXTURE OVERLAY -->
+  <div class="noise-layer"></div>
 
-    <div class="main-title">
-      <h1>RECURSIVE<br>AGENT<br>REASONING</h1>
-    </div>
+  <!-- THE MONOLITH -->
+  <div class="monolith-stack">
+    
+    <!-- 1. THE SHADOW SLAB (Depth Anchor) -->
+    <div class="slab-shadow"></div>
 
-    <div class="description">
-      <p>
-        An orchestrator for <span class="highlight">Gemini 3</span> deep-think protocols.
-        <br>Synthesizing complex research via DAG-based agent chains.
-      </p>
-    </div>
+    <!-- 2. THE MAIN UNIT -->
+    <div class="slab-main">
+      
+      <!-- A. HEADER BAR -->
+      <div class="machine-header">
+        <div class="brand-zone">
+          <div class="logo-type">RARO <span class="dim">//</span> KERNEL</div>
+          <div class="build-tag">BUILD_2026.01.02</div>
+        </div>
+        
+        <!-- Status Array -->
+        <div class="status-zone">
+           <div class="status-dot {sysState === 'CHARGING' ? 'amber' : ''} {sysState === 'LOCKED' ? 'cyan' : ''}"></div>
+           <div class="status-label">
+             {#if sysState === 'IDLE'}STANDBY{:else if sysState === 'CHARGING'}ARMING{:else}ACTIVE{/if}
+           </div>
+        </div>
+      </div>
 
-    <div class="action-area">
-      <button 
-        class="btn-enter {loading ? 'loading' : ''}" 
-        onclick={handleEnter} 
-        disabled={loading}
-      >
-        {#if loading}
-          INITIALIZING RUNTIME...
-        {:else}
-          BOOT SYSTEM
-        {/if}
-      </button>
-    </div>
+      <!-- B. CONTENT GRID -->
+      <div class="machine-body">
+        
+        <!-- LEFT: Typography Engine -->
+        <div class="col-left">
+          <div class="hero-block">
+             <h1>RECURSIVE</h1>
+             <h1>AGENT</h1>
+             <h1>REASONING<span class="dot">.</span></h1>
+          </div>
+          
+          <div class="meta-block">
+            <p>
+              High-latency orchestration runtime for <span class="highlight">Gemini 3 Protocol</span>.
+              Designed for deep-context synthesis and multi-hop reasoning chains.
+            </p>
+          </div>
+        </div>
 
-    <div class="footer">
-      <div class="stat">STATUS: <strong>STANDBY</strong></div>
-      <div class="stat">MEMORY: <strong>CLEAN</strong></div>
+        <!-- RIGHT: Telemetry Viewport -->
+        <div class="col-right">
+          <div class="terminal-frame">
+            <div class="scanlines"></div>
+            <div class="terminal-header">
+              <span>SYS_OUT</span>
+              <span>TTY_1</span>
+            </div>
+            
+            <div id="term-feed" class="terminal-content">
+              {#each logs as log}
+                <div class="line" in:fly={{ y: 5, duration: 100 }}>{log}</div>
+              {/each}
+              <div class="line cursor-line">
+                <span class="prompt">root@raro:~#</span> 
+                <span class="cursor" style:opacity={cursorVisible ? 1 : 0}>█</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- C. INTERACTION DECK (The Trigger) -->
+      <div class="machine-footer">
+        <button 
+          class="trigger-plate"
+          onmousedown={startCharge}
+          onmouseup={releaseCharge}
+          onmouseleave={releaseCharge}
+          ontouchstart={startCharge}
+          ontouchend={releaseCharge}
+          disabled={sysState === 'LOCKED' || sysState === 'BOOTING'}
+        >
+          <!-- The Capacitor Fill -->
+          <div class="capacitor-bar" style="width: {chargeLevel}%"></div>
+          
+          <!-- The Data Overlay -->
+          <div class="trigger-data">
+            <div class="label-primary">
+              {#if sysState === 'LOCKED' || sysState === 'BOOTING'}
+                SYSTEM_ENGAGED
+              {:else}
+                INITIALIZE_RUNTIME
+              {/if}
+            </div>
+            
+            <div class="label-secondary">
+              <span class="bracket">[</span>
+              <span class="val">{Math.floor(chargeLevel).toString().padStart(3, '0')}%</span>
+              <span class="bracket">]</span>
+            </div>
+          </div>
+
+        </button>
+      </div>
+
     </div>
   </div>
+
 </div>
 
 <style>
-  .hero-container {
-    width: 100%;
-    height: 100vh;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+  /* === 1. GLOBAL VIEWPORT === */
+  .viewport {
+    width: 100%; height: 100vh;
+    display: flex; align-items: center; justify-content: center;
     background: var(--paper-bg);
-    position: absolute;
-    top: 0;
-    left: 0;
-    z-index: 1000;
+    position: absolute; top: 0; left: 0; z-index: 1000;
+    overflow: hidden;
   }
 
-  .content-wrapper {
-    max-width: 600px;
-    width: 100%;
-    padding: 40px;
-    border: 1px solid var(--paper-line);
-    background: var(--paper-surface);
-    box-shadow: 20px 20px 0 rgba(0,0,0,0.05);
+  .noise-layer {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.04'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* === 2. THE MONOLITH STACK === */
+  .monolith-stack {
     position: relative;
+    width: 700px;
+    z-index: 1;
   }
 
-  /* Decorative corners */
-  .content-wrapper::before {
-    content: '';
+  /* The physical depth shadow layer */
+  .slab-shadow {
     position: absolute;
-    top: -1px; left: -1px;
-    width: 10px; height: 10px;
-    border-top: 2px solid var(--paper-ink);
-    border-left: 2px solid var(--paper-ink);
-  }
-  .content-wrapper::after {
-    content: '';
-    position: absolute;
-    bottom: -1px; right: -1px;
-    width: 10px; height: 10px;
-    border-bottom: 2px solid var(--paper-ink);
-    border-right: 2px solid var(--paper-ink);
+    top: 12px; left: 12px;
+    width: 100%; height: 100%;
+    background: #1a1918;
+    z-index: 0;
+    opacity: 0.1;
   }
 
-  .header {
-    display: flex;
-    justify-content: space-between;
+  /* The Main Interface Unit */
+  .slab-main {
+    position: relative;
+    background: var(--paper-surface);
+    border: 1px solid var(--paper-line);
+    z-index: 1;
+    display: flex; flex-direction: column;
+    box-shadow: 0 40px 80px -20px rgba(0,0,0,0.15); /* Soft ambient float */
+  }
+
+  /* === 3. HEADER === */
+  .machine-header {
+    height: 48px;
+    border-bottom: 1px solid var(--paper-line);
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0 24px;
+    background: #fff;
+  }
+
+  .logo-type { font-family: var(--font-code); font-weight: 700; font-size: 12px; letter-spacing: 1px; color: var(--paper-ink); }
+  .dim { color: #ccc; }
+  .build-tag { font-family: var(--font-code); font-size: 9px; color: #888; margin-top: 2px; }
+
+  .status-zone { display: flex; align-items: center; gap: 8px; }
+  .status-label { font-family: var(--font-code); font-size: 9px; font-weight: 700; letter-spacing: 1px; color: var(--paper-ink); }
+  
+  .status-dot { width: 6px; height: 6px; background: #ccc; border-radius: 50%; }
+  .status-dot.amber { background: #FFB300; box-shadow: 0 0 8px #FFB300; animation: blink 0.1s infinite; }
+  .status-dot.cyan { background: #00F0FF; box-shadow: 0 0 8px #00F0FF; }
+
+  @keyframes blink { 50% { opacity: 0.5; } }
+
+  /* === 4. BODY LAYOUT === */
+  .machine-body {
+    display: grid;
+    grid-template-columns: 1.4fr 1fr;
+    min-height: 320px;
+  }
+
+  /* Left Column: Typography */
+  .col-left {
+    padding: 40px 32px;
+    display: flex; flex-direction: column; justify-content: space-between;
+    border-right: 1px solid var(--paper-line);
+  }
+
+  .hero-block h1 {
+    font-family: var(--font-ui);
+    font-size: 56px;
+    font-weight: 900;
+    line-height: 0.82;
+    letter-spacing: -3px;
+    color: var(--paper-ink);
+    margin: 0;
+  }
+  .dot { color: #A53F2B; }
+
+  .meta-block {
     font-family: var(--font-code);
     font-size: 11px;
-    color: #888;
-    margin-bottom: 40px;
-    border-bottom: 1px solid var(--paper-line);
-    padding-bottom: 10px;
-  }
-
-  .main-title h1 {
-    font-family: var(--font-ui);
-    font-size: 64px;
-    font-weight: 800;
-    line-height: 0.9;
-    letter-spacing: -2px;
-    margin: 0 0 30px 0;
-    color: var(--paper-ink);
-  }
-
-  .description {
-    font-family: var(--font-code);
-    font-size: 13px;
     line-height: 1.6;
-    color: #555;
-    margin-bottom: 50px;
-    max-width: 80%;
+    color: #666;
+    max-width: 90%;
+    margin-top: 40px;
+  }
+  .highlight { color: var(--paper-ink); font-weight: 700; border-bottom: 1px solid #ccc; }
+
+  /* Right Column: Terminal */
+  .col-right {
+    background: #FAFAFA;
+    padding: 24px;
+    display: flex; flex-direction: column;
   }
 
-  .highlight {
-    color: var(--paper-ink);
-    font-weight: 700;
-    background: rgba(0,0,0,0.05);
-    padding: 0 4px;
+  .terminal-frame {
+    flex: 1;
+    background: #111;
+    border: 1px solid #333;
+    position: relative;
+    overflow: hidden;
+    display: flex; flex-direction: column;
+    box-shadow: inset 0 0 20px rgba(0,0,0,0.5);
   }
 
-  .action-area {
-    margin-bottom: 40px;
+  .scanlines {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+    background-size: 100% 2px, 3px 100%;
+    pointer-events: none; z-index: 10;
   }
 
-  .btn-enter {
-    width: 100%;
-    height: 56px;
-    background: var(--paper-ink);
-    color: white;
+  .terminal-header {
+    height: 24px; background: #222; border-bottom: 1px solid #333;
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0 8px;
+    font-family: var(--font-code); font-size: 8px; color: #666;
+  }
+
+  .terminal-content {
+    flex: 1;
+    padding: 12px;
+    font-family: var(--font-code); font-size: 10px; color: #8b949e;
+    overflow-y: hidden; /* Programmatic scroll */
+    display: flex; flex-direction: column; justify-content: flex-end;
+  }
+
+  .line { margin-bottom: 4px; word-break: break-all; }
+  .prompt { color: rgb(55, 49, 242); margin-right: 6px; }
+  .cursor { color: rgb(55, 49, 242); }
+
+  /* === 5. TRIGGER DECK === */
+  .machine-footer {
+    height: 80px;
+    border-top: 1px solid var(--paper-line);
+    padding: 0; /* Full bleed button */
+  }
+
+  .trigger-plate {
+    width: 100%; height: 100%;
+    background: #fff;
     border: none;
-    font-family: var(--font-code);
-    font-size: 14px;
-    font-weight: 700;
-    letter-spacing: 1px;
+    position: relative;
     cursor: pointer;
-    transition: all 0.2s ease;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    overflow: hidden;
+    transition: background 0.2s;
   }
 
-  .btn-enter:hover {
-    background: #000;
-    transform: translateY(-2px);
-    box-shadow: 0 5px 15px rgba(0,0,0,0.2);
-  }
+  .trigger-plate:hover:not(:disabled) { background: #fdfdfd; }
+  .trigger-plate:disabled { cursor: default; }
 
-  .btn-enter:active {
-    transform: translateY(0);
+  /* The Capacitor Bar */
+  .capacitor-bar {
+    position: absolute; top: 0; left: 0; height: 100%;
+    background: var(--paper-ink);
+    z-index: 1;
+    /* No transition for instant physical feel */
   }
+  
+  /* Success State */
+  .trigger-plate:disabled .capacitor-bar { background: rgba(55, 49, 242, 0.2); transition: background 0.4s; }
 
-  .btn-enter.loading {
-    background: #333;
-    cursor: wait;
-    opacity: 0.8;
+  /* Data Overlay */
+  .trigger-data {
+    position: relative; z-index: 2;
+    width: 100%; height: 100%;
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0 32px;
+    mix-blend-mode: difference;
+    color: white; /* Inverts to black on white bg, white on black fill */
   }
+  
+  /* Isolate stacking context for mix-blend-mode */
+  .trigger-plate { isolation: isolate; }
 
-  .footer {
-    display: flex;
-    gap: 20px;
-    font-family: var(--font-code);
-    font-size: 10px;
-    color: #888;
-    text-transform: uppercase;
-  }
+  .label-primary { font-family: var(--font-code); font-weight: 700; font-size: 14px; letter-spacing: 2px; }
+  
+  .label-secondary { font-family: var(--font-code); font-size: 12px; letter-spacing: 1px; opacity: 0.8; margin-right: 30px; }
+  .val { display: inline-block; width: 40px; text-align: center; }
 
-  .stat strong {
-    color: var(--paper-ink);
-  }
 </style>

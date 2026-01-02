@@ -1,4 +1,8 @@
-<!-- apps/web-console/src/components/OutputPane.svelte -->
+<!-- // [[RARO]]/apps/web-console/src/components/OutputPane.svelte
+// Purpose: Log display with "Perforated Paper" styling and robust auto-scroll.
+// Architecture: UI View
+// Dependencies: Typewriter, Stores -->
+
 <script lang="ts">
   import { logs } from '$lib/stores'
   import Typewriter from './sub/Typewriter.svelte'
@@ -90,8 +94,13 @@
   <div class="log-wrapper" bind:this={contentWrapper}>
     {#each $logs as log (log.id)}
       <div class="log-entry">
-        <div class="log-meta">{log.metadata || 'SYSTEM'}</div>
-        <div>
+        <!-- Column 1: Metadata -->
+        <div class="log-meta">
+            <span class="meta-tag">{log.metadata || 'SYSTEM'}</span>
+        </div>
+
+        <!-- Column 2: Content -->
+        <div class="log-body">
           <span class="log-role">{log.role}</span>
           
           <div class="log-content">
@@ -102,7 +111,6 @@
               {@html log.message}
             {/if}
           </div>
-          
         </div>
       </div>
     {/each}
@@ -110,17 +118,22 @@
 </div>
 
 <style>
+  /* Error Block Styling - Global for HTML injection */
   :global(.error-block) {
     background: #fff5f5;
-    border: 1px solid #ffcdd2;
+    border-left: 3px solid #d32f2f;
     color: #c62828;
-    padding: 8px;
-    margin-top: 4px;
-    border-radius: 2px;
+    padding: 10px;
+    margin-top: 8px;
     font-family: var(--font-code);
     font-size: 11px;
     white-space: pre-wrap;
     word-break: break-all;
+  }
+
+  :global(.log-content strong) {
+    color: #000;
+    font-weight: 600;
   }
 
   #output-pane {
@@ -130,7 +143,6 @@
     display: flex;
     flex-direction: column;
     /* Important: Remove CSS scroll-behavior to allow JS to control 'auto' vs 'smooth' explicitly */
-    /* scroll-behavior: smooth; <--- REMOVED */
     scrollbar-gutter: stable;
     will-change: scroll-position;
   }
@@ -142,44 +154,52 @@
   }
   
   .log-entry {
-    border-top: 1px solid var(--paper-accent);
-    padding: 12px 0;
+    /* "Perforated" divider style */
+    border-top: 1px dashed var(--paper-line);
+    padding: 16px 0;
     display: grid;
     grid-template-columns: 80px 1fr;
     gap: 16px;
-    /* Reduced animation duration for snappier feel */
-    animation: slideUp 0.2s var(--ease-snap) forwards;
+    animation: slideUp 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
   }
 
   @keyframes slideUp {
-    from { opacity: 0; transform: translateY(10px); }
+    from { opacity: 0; transform: translateY(5px); }
     to { opacity: 1; transform: translateY(0); }
   }
 
   .log-meta {
+    padding-top: 3px;
+  }
+
+  .meta-tag {
     font-family: var(--font-code);
-    font-size: 10px;
+    font-size: 9px;
     color: #888;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    padding-top: 2px;
+    background: #f5f5f5;
+    padding: 2px 6px;
+    border-radius: 2px;
+    display: inline-block;
+  }
+
+  .log-body {
+    display: flex;
+    flex-direction: column;
   }
 
   .log-role {
     font-weight: 700;
+    font-size: 11px;
+    letter-spacing: 0.5px;
     color: var(--paper-ink);
     display: block;
-    margin-bottom: 4px;
+    margin-bottom: 6px;
+    text-transform: uppercase;
   }
 
   .log-content {
     font-size: 13px;
-    line-height: 1.5;
+    line-height: 1.6;
     color: #333;
-  }
-
-  :global(.log-content strong) {
-    color: #000;
-    font-weight: 600;
   }
 </style>
