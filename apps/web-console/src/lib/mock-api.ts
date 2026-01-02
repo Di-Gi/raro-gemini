@@ -26,10 +26,125 @@ type SimulationStep = {
 // --- Mock Data Generators ---
 
 const MOCK_ARTIFACTS: Record<string, any> = {
-    'n1': { result: "Analysis of user request indicates a multi-step research process is required. \n\n1. Retrieve historical data.\n2. Execute quantitative analysis.\n3. Synthesize findings." },
-    'n2': { result: "Found 14 relevant papers in the vector database regarding 'Gemini 3 Architecture'. Key concepts: MoE (Mixture of Experts), sparse activation, and long-context hardening." },
-    'n3': { result: "```python\nimport pandas as pd\n\ndata = load_dataset('latency_metrics')\nprint(data.describe())\n```\n\ncomputed_variance: 0.042\nmean_response: 145ms" },
-    'n4': { result: "# Final Report: RARO System Analysis\n\nThe integration of Gemini 3 Pro with the RARO orchestrator has demonstrated a 40% reduction in token wastage.\n\n### Key Findings\n- **Retrieval**: High precision (0.92)\n- **Execution**: Zero hallucination in code blocks\n- **Synthesis**: Coherent logic flow maintained across 100k context window." }
+    'n1': { 
+        result: `## Strategic Orchestration Plan: Latency Regression Analysis
+
+Analysis of the user request indicates a high-complexity multi-step research process is required. To ensure accuracy and isolate the root cause of the "Gemini 3" performance regression, the agent will execute the following orchestration plan.
+
+### Phase 1: Contextual Retrieval & Data Gathering
+*Objective: Establish a baseline of expected behavior versus reported anomalies.*
+
+1.  **Vector Search Execution**: Query the internal documentation database for 'Gemini 3 Architecture', specifically targeting the "MoE Routing" and "Sparse Attention" modules.
+    *   *Rationale*: Recent changelogs indicate a shift in the expert selection logic which often correlates with tail latency spikes.
+2.  **Benchmark Cross-Reference**: Retrieve the 'H1 2024 Performance Benchmarks' dataset. We need to identify if this is a global regression or isolated to specific prompt topologies (e.g., long-context vs. short-burst).
+
+### Phase 2: Quantitative Verification
+*Objective: Prove the regression exists using hard data.*
+
+3.  **Log Ingestion**: Load the \`latency_metrics_2024\` dataset (n=10,000 samples) into the secure Python sandbox.
+4.  **Statistical Profiling**: 
+    *   Calculate P50, P95, and P99 latency.
+    *   Perform a variance analysis on the 'pre-fill' phase vs. the 'generation' phase.
+    *   **Hypothesis**: If pre-fill is stable but generation varies, the issue lies in the KV-cache quantization.
+
+### Phase 3: Synthesis & Executive Reporting
+*Objective: Deliver actionable insights.*
+
+5.  **Correlation Mapping**: Map the architectural changes found in Phase 1 to the timestamps of the spikes found in Phase 2.
+6.  **Final Output**: Generate a Markdown-formatted root-cause analysis report suitable for the Engineering Leadership team.`
+    },
+
+    'n2': { 
+        result: `### Retrieval Execution Log
+**Query Strategy**: Hybrid Search (Dense Vector + Keyword Sparse)
+**Embedding Model**: \`text-embedding-004\`
+**Top K**: 15 (Filtered to Top 5)
+
+---
+
+#### 1. [DOC-882] Sparse Activation Patterns in Large Context Windows
+> **Relevance Score**: 0.94
+> **Source**: /wiki/architecture/gemini-3/moe-routing
+>
+> **Snippet**: "...introduces a dynamic routing gate that skips up to 40% of parameters during idle context states. While this reduces compute by 30%, it introduces a 'cold-start' penalty when the context shifts rapidly between topics. This effectively hardens the model against long-context drifting but creates micro-stutters in diverse-topic batches..."
+
+#### 2. [DOC-104] Tensor Processing Unit v5 Optimization Guide
+> **Relevance Score**: 0.89
+> **Source**: /eng/hardware/tpu-v5/memory-alignment
+>
+> **Snippet**: "Optimizing for Gemini 3 requires strictly typed memory mapping. Failure to align memory pages results in a 12% cache miss rate during expert switching. **Critical**: The new 'Flash-Lite' variant defaults to aggressive page-swapping, which can cause P99 latency spikes if the host memory is fragmented."
+
+#### 3. [DOC-339] The RARO Orchestrator Whitepaper
+> **Relevance Score**: 0.82
+> **Source**: /internal/whitepapers/raro-system
+>
+> **Snippet**: "...integration allows for iterative reasoning. The orchestrator maintains a global state separate from the model's context window. This decoupling allows for 'Thought Loops' where the model can pause generation to retrieve fresh data without polluting the KV-cache."
+
+#### 4. [DOC-401] Legacy Architecture Comparison (Gemini 1.5 vs 3.0)
+> **Relevance Score**: 0.65
+> **Source**: /marketing/comparison-sheets
+>
+> **Snippet**: "Compared to Gemini 1.5, the new sparsely gated mechanism reduces inference costs by approximately 30%. However, developers migrating from 1.5 Pro may notice a difference in 'Time to First Token' (TTFT) due to the Just-In-Time (JIT) loading of expert weights."
+
+#### 5. [DOC-112] Security Posture for MoE Models
+> **Relevance Score**: 0.61
+> **Source**: /security/compliance/data-leakage
+>
+> **Snippet**: "Ensuring that expert routes do not leak private data remains a top priority. The 'Secure Enclave' routing layer adds an overhead of ~5ms per token but guarantees ISO-27001 compliance for enterprise workloads."`
+    },
+
+    'n3': { 
+        result: "```python\nimport pandas as pd\n\n# Loading dataset with low_memory=False to prevent dtype warnings\ndata = load_dataset('latency_metrics_2024')\n\n# Calculate specific variance\nvar = data['response_time'].var()\nmean = data['response_time'].mean()\n\nprint(f'{var=}, {mean=}')\n```\n\n**Output:**\n`var=0.04231`\n`mean=145.2ms`" 
+    },
+
+    'n4': { 
+        result: `# Final Report: RARO System Analysis & Gemini 3 Integration
+
+## 1. Executive Summary
+The integration of Gemini 3 Pro with the RARO (Reasoning-Acting-Retrieval-Orchestration) system has concluded with significant performance improvements. By leveraging the new sparse activation architecture, we have observed a **40% reduction in token wastage** and a marked improvement in logical consistency over long-running tasks.
+
+However, the analysis also uncovered a trade-off regarding P99 latency during high-variance context switching, identified as a "Cold Expert" phenomenon.
+
+## 2. Key Performance Metrics
+
+We conducted a comprehensive A/B test comparing the legacy monolith architecture against the new MoE (Mixture of Experts) setup.
+
+| Metric | Legacy System (v2.5) | Gemini 3 + RARO | Improvement |
+| :--- | :--- | :--- | :--- |
+| **P50 Latency** | 120ms | 95ms | **20% Faster** |
+| **P99 Latency** | 450ms | 210ms | **53% Faster** |
+| **Hallucination Rate** | 2.4% | <0.1% | **Significant** |
+| **Context Window** | 32k | 100k+ | **3x Capacity** |
+| **Cost per 1k Tokens** | $0.03 | $0.018 | **40% Cheaper** |
+
+## 3. Root Cause Analysis: The "Cold Expert" Spike
+
+During Phase 2 quantitative analysis, we observed sporadic latency spikes. Correlating this with [DOC-882] (Retrieved in Phase 1), we have confirmed:
+
+1.  **Mechanism**: The dynamic routing gate skips 40% of parameters.
+2.  **Trigger**: When a prompt shifts topics rapidly (e.g., Coding -> Creative Writing -> Math), the model must load previously "cold" experts into high-bandwidth memory.
+3.  **Impact**: This results in a 12-15ms stutter per token for the first 5 tokens of the new sequence.
+
+### 3.1 Mitigation Strategy
+We successfully tested a pre-warming strategy using the RARO orchestrator's predictive capabilities:
+
+> *Recommendation*: The Orchestrator should inject a hidden "priming" token when it detects a tool-use switch, effectively loading the necessary experts 200ms before the actual generation begins.
+
+## 4. Architectural Deep Dive
+
+### 4.1 Retrieval Precision
+The RARO orchestrator utilizes a two-stage retrieval process. Initially, a broad vector search retrieves candidate documents. Subsequently, a cross-encoder reranks these documents, resulting in a precision score of **0.92** (up from 0.78).
+
+### 4.2 Code Execution Safety
+One of the most critical findings was the stability of the sandboxed execution environment. Throughout the stress testing phase, the system executed over 5,000 Python snippets. The error rate dropped to near zero, primarily due to the model's self-correction capabilities when encountering \`ImportErrors\` or \`SyntaxErrors\`.
+
+## 5. Final Recommendations
+
+Based on these findings, we recommend:
+1.  **Immediate Deployment** to the production environment for "Chat" and "Analysis" workloads.
+2.  **Delayed Deployment** for "Real-time Voice" workloads until the *Cold Expert* mitigation patch is applied.
+3.  **Cost Savings**: The migration is projected to save the department approximately $12k/month in inference costs.`
+    }
 };
 
 export async function mockStartRun(config: WorkflowConfig): Promise<{ success: boolean; run_id: string }> {
@@ -82,6 +197,7 @@ export class MockWebSocket {
     }
 
     close() {
+        console.log('[MOCK WS] Closing connection');
         clearTimeout(this.timer);
         if (this.onclose) this.onclose();
     }
@@ -158,7 +274,11 @@ export class MockWebSocket {
     }
 
     private runSimulation() {
-        if (this.currentStep >= this.steps.length) return;
+        // Updated logic: If we are past the steps, close the connection exactly like the real API
+        if (this.currentStep >= this.steps.length) {
+            this.close();
+            return;
+        }
 
         const step = this.steps[this.currentStep];
         

@@ -4,8 +4,9 @@
 // Dependencies: Typewriter, Stores -->
 
 <script lang="ts">
-  import { logs } from '$lib/stores'
+  import { logs, updateLog } from '$lib/stores'
   import Typewriter from './sub/Typewriter.svelte'
+  import SmartText from './sub/SmartText.svelte' // Import the new component
   import { tick } from 'svelte';
 
   // Refs
@@ -14,76 +15,50 @@
   
   // State
   let isPinnedToBottom = $state(true);
-  
-  // Internal flag to ignore scroll events triggered by auto-scroll
   let isAutoScrolling = false;
 
-  // 1. Handle User Scroll
+  // ... (Keep handleScroll, scrollToBottom, and Observers as they were) ...
+
   function handleScroll() {
     if (!scrollContainer) return;
-    
-    // If this scroll event was caused by our code, ignore it.
     if (isAutoScrolling) return;
-
     const { scrollTop, scrollHeight, clientHeight } = scrollContainer;
-    
-    // Threshold (px). 
-    // We use a larger buffer (50px) to account for mobile browsers or scaling issues.
     const distanceFromBottom = scrollHeight - (scrollTop + clientHeight);
-    
-    // Update pin state based on USER position
     isPinnedToBottom = distanceFromBottom < 50;
   }
 
-  // 2. Robust Scroll Helper
   function scrollToBottom(behavior: ScrollBehavior = 'auto') {
     if (!scrollContainer) return;
-
-    // Set lock
     isAutoScrolling = true;
-
     try {
-      scrollContainer.scrollTo({
-        top: scrollContainer.scrollHeight,
-        behavior
-      });
+      scrollContainer.scrollTo({ top: scrollContainer.scrollHeight, behavior });
     } finally {
-      // Release lock after a frame to ensure the 'scroll' event has fired/processed
-      requestAnimationFrame(() => {
-        isAutoScrolling = false;
-      });
+      requestAnimationFrame(() => { isAutoScrolling = false; });
     }
   }
 
-  // 3. Observer for Growing Content (Typewriter Effect)
   $effect(() => {
     if (!contentWrapper) return;
-
     const observer = new ResizeObserver(() => {
-      // Only snap to bottom if we were already pinned
-      if (isPinnedToBottom) {
-        // MUST use 'auto' here. 'smooth' is too slow for typing effects and causes jitter.
-        scrollToBottom('auto'); 
-      }
+      if (isPinnedToBottom) scrollToBottom('auto'); 
     });
-
     observer.observe(contentWrapper);
     return () => observer.disconnect();
   });
 
-  // 4. Observer for New Log Entries (Block addition)
   $effect(() => {
-    // Track dependency
     const _logs = $logs;
-
-    // Wait for DOM update, then scroll
     tick().then(() => {
-      if (isPinnedToBottom) {
-        // For new blocks, smooth scrolling is nice UX
-        scrollToBottom('smooth');
-      }
+      if (isPinnedToBottom) scrollToBottom('smooth');
     });
   });
+
+  // Callback for Typewriter completion
+  function handleTypewriterComplete(id: string) {
+    // We update the store so this log entry is permanently marked as "done animating"
+    // This triggers the switch to SmartText
+    updateLog(id, { isAnimated: false });
+  }
 </script>
 
 <div 
@@ -105,10 +80,20 @@
           
           <div class="log-content">
             {#if log.isAnimated}
-              <!-- Typewriter updates internal text, resizing contentWrapper, triggering ResizeObserver -->
-              <Typewriter text={log.message} />
+              <!-- 
+                 Typewriter View:
+                 Pass the ID to handle completion.
+              -->
+              <Typewriter 
+                text={log.message} 
+                onComplete={() => handleTypewriterComplete(log.id)} 
+              />
             {:else}
-              {@html log.message}
+              <!-- 
+                 Static / Complete View:
+                 Uses SmartText to render code blocks beautifully.
+              -->
+              <SmartText text={log.message} />
             {/if}
           </div>
         </div>
