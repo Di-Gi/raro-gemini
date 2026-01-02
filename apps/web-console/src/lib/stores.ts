@@ -1,7 +1,8 @@
 // [[RARO]]/apps/web-console/src/lib/stores.ts
 
 import { writable, get } from 'svelte/store';
-import { getWebSocketURL } from './api';
+import { getWebSocketURL, USE_MOCK } from './api'; // Import USE_MOCK
+import { MockWebSocket } from './mock-api';        // Import Mock Class
 
 // === TYPES ===
 export interface LogEntry {
@@ -118,7 +119,8 @@ export function deselectNode() {
 
 // === WEBSOCKET HANDLING ===
 
-let ws: WebSocket | null = null;
+// Change type to union to allow MockSocket
+let ws: WebSocket | MockWebSocket | null = null;
 
 export function connectRuntimeWebSocket(runId: string) {
   if (ws) {
@@ -126,14 +128,24 @@ export function connectRuntimeWebSocket(runId: string) {
   }
 
   const url = getWebSocketURL(runId);
-  ws = new WebSocket(url);
 
+  // ** MOCK SWITCHING **
+  if (USE_MOCK) {
+    addLog('SYSTEM', 'Initializing MOCK runtime environment...', 'DEBUG');
+    ws = new MockWebSocket(url);
+  } else {
+    ws = new WebSocket(url);
+  }
+
+  // TypeScript note: MockWebSocket and WebSocket need matching signatures 
+  // for the methods we use below. Since we defined them similarly in mock-api, this works.
+  
   ws.onopen = () => {
     addLog('KERNEL', `Connected to runtime stream: ${runId}`, 'NET_OK');
     runtimeStore.set({ status: 'RUNNING', runId });
   };
 
-  ws.onmessage = (event) => {
+  ws.onmessage = (event: any) => { // Use 'any' or generic event type
     try {
       const data = JSON.parse(event.data);
       if (data.type === 'state_update' && data.state) {
@@ -160,21 +172,21 @@ export function connectRuntimeWebSocket(runId: string) {
     });
 
     // 2. Force Finalize Edges
-    // Any edge that was active is now considered finalized/hardened.
     pipelineEdges.update(edges => {
       return edges.map(e => ({
         ...e,
-        active: false,         // Stop active animation
-        pulseAnimation: false, // Stop pulsing
-        // If it was active OR already finalized, it stays finalized
+        active: false,
+        pulseAnimation: false,
         finalized: e.active || e.finalized 
       }));
     });
   };
 
-  ws.onerror = (e) => {
-    addLog('KERNEL', 'WebSocket connection error.', 'ERR');
-  };
+  if (!USE_MOCK) {
+      (ws as WebSocket).onerror = (e) => {
+        addLog('KERNEL', 'WebSocket connection error.', 'ERR');
+      };
+  }
 }
 
 // === STATE SYNCHRONIZATION LOGIC ===

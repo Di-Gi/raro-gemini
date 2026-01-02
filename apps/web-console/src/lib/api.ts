@@ -1,9 +1,10 @@
 // [[RARO]]/apps/web-console/src/lib/api.ts
-// Purpose: Centralized API client for communicating with the Rust Kernel.
-// Architecture: Interface Layer
-// Dependencies: None
+import { mockStartRun, mockGetArtifact } from './mock-api';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+
+// ** NEW DEBUG FLAG **
+export const USE_MOCK = import.meta.env.VITE_USE_MOCK_API === 'true';
 
 export interface WorkflowConfig {
   id: string;
@@ -27,6 +28,11 @@ export interface AgentConfig {
 }
 
 export async function startRun(config: WorkflowConfig): Promise<{ success: boolean; run_id: string }> {
+  // ** MOCK INTERCEPTION **
+  if (USE_MOCK) {
+    return mockStartRun(config);
+  }
+
   try {
     const res = await fetch(`${API_BASE}/runtime/start`, {
       method: 'POST',
@@ -48,22 +54,27 @@ export async function startRun(config: WorkflowConfig): Promise<{ success: boole
 }
 
 export function getWebSocketURL(runId: string): string {
-  // Handle protocol switching (ws/wss) automatically
+  if (USE_MOCK) return `mock://runtime/${runId}`; // Placeholder for mock
+
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  // If API_BASE is absolute (http://...), extract host. Otherwise assume relative to current window.
   let host = window.location.host;
 
   try {
     const url = new URL(API_BASE);
     host = url.host;
   } catch (e) {
-    // API_BASE might be relative path, fallback to window.location.host is fine
+    // API_BASE might be relative path
   }
 
   return `${protocol}//${host}/ws/runtime/${runId}`;
 }
 
 export async function getArtifact(runId: string, agentId: string): Promise<any> {
+  // ** MOCK INTERCEPTION **
+  if (USE_MOCK) {
+    return mockGetArtifact(runId, agentId);
+  }
+
   try {
     const res = await fetch(`${API_BASE}/runtime/${runId}/artifact/${agentId}`);
 

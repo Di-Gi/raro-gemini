@@ -1,3 +1,4 @@
+<!-- apps/web-console/src/App.svelte -->
 <script lang="ts">
   import { onMount } from 'svelte'
   import { fade } from 'svelte/transition'
@@ -7,7 +8,6 @@
   import Hero from '$components/Hero.svelte'
   import { runtimeStore, addLog } from '$lib/stores'
 
-  // Svelte 5 State
   let expanded = $state(false)
   let appState = $state<'HERO' | 'CONSOLE'>('HERO')
 
@@ -17,8 +17,6 @@
 
   function enterConsole() {
     appState = 'CONSOLE'
-    
-    // Log the boot sequence once the console mounts
     setTimeout(() => {
         addLog('KERNEL', 'RARO Runtime Environment v0.1.0.', 'SYSTEM_BOOT')
         setTimeout(() => addLog('SYSTEM', 'Connection established. Status: IDLE.', 'NET_OK'), 300)
@@ -70,6 +68,45 @@
     box-sizing: border-box;
   }
 
+  /* === SCROLLBAR STYLING (Cross-Browser) === */
+  
+  /* 1. Firefox Standard */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--paper-accent) transparent;
+  }
+
+  /* 2. WebKit (Chrome, Edge, Safari) */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background-color: var(--paper-accent);
+    border-radius: 3px;
+    /* Creates padding around scrollbar to make it look thinner/floating */
+    border: 1px solid transparent; 
+    background-clip: content-box;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: var(--paper-line);
+  }
+
+  /* Optional: Digital Mode Overrides for Dark Areas */
+  .expanded * {
+    scrollbar-color: var(--digi-line) transparent;
+  }
+  
+  .expanded ::-webkit-scrollbar-thumb {
+    background-color: var(--digi-line);
+  }
+  
   :global(body) {
     margin: 0;
     background: var(--paper-bg);
@@ -83,11 +120,9 @@
   }
 
   #chassis {
-    /* === UPDATED LAYOUT LOGIC === */
-    width: 800px;         /* Fixed wide width */
-    min-width: 800px;     /* Prevent shrinking on small screens */
-    flex-shrink: 0;        /* Ensure flex container doesn't crush it */
-    
+    width: 800px;         
+    min-width: 800px;     
+    flex-shrink: 0;        
     height: 100vh;
     border-left: 1px solid var(--paper-line);
     border-right: 1px solid var(--paper-line);

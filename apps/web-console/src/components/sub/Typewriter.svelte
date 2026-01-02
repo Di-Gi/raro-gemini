@@ -7,46 +7,58 @@
   let displayedText = $state('');
   let isTyping = $state(true);
   
-  // Calculate typing speed based on length. Cap at 2ms for long texts.
-  let speed = text.length > 500 ? 1 : 15; 
-  let charIndex = 0;
+  // Track how much we have displayed
+  let currentIndex = 0;
   let timer: any;
 
-  $effect(() => {
-    // Only restart if text content actually changes and we haven't started this specific text
-    if (text && text !== displayedText && charIndex === 0) {
-      isTyping = true;
-      startTyping();
-    }
-  });
-
-  function startTyping() {
-    clearTimeout(timer);
-    
-    const type = () => {
-      if (charIndex < text.length) {
-        // Chunking ensures large texts render quickly without blocking UI
-        const chunk = text.length > 2000 ? 20 : (text.length > 500 ? 5 : 1);
-        
-        // Safety: Ensure we don't slice past end
-        const nextIndex = Math.min(charIndex + chunk, text.length);
-        displayedText += text.substring(charIndex, nextIndex);
-        charIndex = nextIndex;
-        
-        timer = setTimeout(type, speed);
-      } else {
-        isTyping = false;
-        displayedText = text; // Ensure consistency
-        if (onComplete) onComplete();
-      }
-    };
-    type();
-  }
-  
   // Cleanup on destroy
   $effect(() => {
       return () => clearTimeout(timer);
   });
+
+  // Reactive Effect: Watch for text updates (Streaming)
+  $effect(() => {
+    // If the source text is longer than what we are showing...
+    if (text && text.length > currentIndex) {
+      // Ensure typing indicator is on
+      isTyping = true;
+      // Start/Resume the loop
+      typeNext();
+    } else if (text && text.length === currentIndex) {
+        // We are caught up
+        isTyping = false;
+        if (onComplete) onComplete();
+    }
+  });
+
+  function typeNext() {
+    clearTimeout(timer);
+    
+    // Safety check
+    if (currentIndex < text.length) {
+      // Adaptive chunking: If we are falling far behind (large stream), type faster
+      const remaining = text.length - currentIndex;
+      let chunk = 1;
+      let speed = 15; // Standard mechanical typing speed
+
+      if (remaining > 1000) { chunk = 50; speed = 1; }      // Super fast catchup
+      else if (remaining > 200) { chunk = 10; speed = 5; }  // Fast catchup
+      else if (remaining > 50) { chunk = 3; speed = 10; }   // Moderate catchup
+      
+      const nextIndex = Math.min(currentIndex + chunk, text.length);
+      
+      // Update state
+      displayedText = text.substring(0, nextIndex);
+      currentIndex = nextIndex;
+      
+      // Schedule next keystroke
+      timer = setTimeout(typeNext, speed);
+    } else {
+      // Done
+      isTyping = false;
+      if (onComplete) onComplete();
+    }
+  }
 </script>
 
 <div class="typewriter-container">
@@ -63,7 +75,10 @@
 <style>
   .typewriter-container {
     position: relative;
-    font-family: var(--font-code); /* Ensure monospace for code outputs */
+    font-family: var(--font-code);
+    /* Changed from inline-block to block to ensure width consistency during typing */
+    display: block; 
+    width: 100%;
   }
 
   .content {
@@ -75,6 +90,6 @@
   .indicator {
     display: inline-block;
     margin-left: 5px;
-    vertical-align: text-bottom;
+    vertical-align: middle;
   }
 </style>

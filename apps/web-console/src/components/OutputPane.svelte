@@ -2,40 +2,111 @@
 <script lang="ts">
   import { logs } from '$lib/stores'
   import Typewriter from './sub/Typewriter.svelte'
+  import { tick } from 'svelte';
 
-  let outputElement = $state<HTMLDivElement | null>(null);
+  // Refs
+  let scrollContainer = $state<HTMLDivElement | null>(null);
+  let contentWrapper = $state<HTMLDivElement | null>(null);
+  
+  // State
+  let isPinnedToBottom = $state(true);
+  
+  // Internal flag to ignore scroll events triggered by auto-scroll
+  let isAutoScrolling = false;
 
-  $effect(() => {
-    const _ = $logs; // Dependency tracking
-    if (outputElement) {
-      // Small timeout to allow DOM to grow before scrolling
-      setTimeout(() => {
-         if (outputElement) outputElement.scrollTop = outputElement.scrollHeight;
-      }, 50);
+  // 1. Handle User Scroll
+  function handleScroll() {
+    if (!scrollContainer) return;
+    
+    // If this scroll event was caused by our code, ignore it.
+    if (isAutoScrolling) return;
+
+    const { scrollTop, scrollHeight, clientHeight } = scrollContainer;
+    
+    // Threshold (px). 
+    // We use a larger buffer (50px) to account for mobile browsers or scaling issues.
+    const distanceFromBottom = scrollHeight - (scrollTop + clientHeight);
+    
+    // Update pin state based on USER position
+    isPinnedToBottom = distanceFromBottom < 50;
+  }
+
+  // 2. Robust Scroll Helper
+  function scrollToBottom(behavior: ScrollBehavior = 'auto') {
+    if (!scrollContainer) return;
+
+    // Set lock
+    isAutoScrolling = true;
+
+    try {
+      scrollContainer.scrollTo({
+        top: scrollContainer.scrollHeight,
+        behavior
+      });
+    } finally {
+      // Release lock after a frame to ensure the 'scroll' event has fired/processed
+      requestAnimationFrame(() => {
+        isAutoScrolling = false;
+      });
     }
+  }
+
+  // 3. Observer for Growing Content (Typewriter Effect)
+  $effect(() => {
+    if (!contentWrapper) return;
+
+    const observer = new ResizeObserver(() => {
+      // Only snap to bottom if we were already pinned
+      if (isPinnedToBottom) {
+        // MUST use 'auto' here. 'smooth' is too slow for typing effects and causes jitter.
+        scrollToBottom('auto'); 
+      }
+    });
+
+    observer.observe(contentWrapper);
+    return () => observer.disconnect();
+  });
+
+  // 4. Observer for New Log Entries (Block addition)
+  $effect(() => {
+    // Track dependency
+    const _logs = $logs;
+
+    // Wait for DOM update, then scroll
+    tick().then(() => {
+      if (isPinnedToBottom) {
+        // For new blocks, smooth scrolling is nice UX
+        scrollToBottom('smooth');
+      }
+    });
   });
 </script>
 
-<div id="output-pane" bind:this={outputElement}>
-  {#each $logs as log (log.id)}
-    <div class="log-entry">
-      <div class="log-meta">{log.metadata || 'SYSTEM'}</div>
-      <div>
-        <span class="log-role">{log.role}</span>
-        
-        <div class="log-content">
-          {#if log.isAnimated}
-            <!-- Use Typewriter for Agent Outputs -->
-             <Typewriter text={log.message} />
-          {:else}
-            <!-- Standard Render for System Logs -->
-            {@html log.message}
-          {/if}
+<div 
+  id="output-pane" 
+  bind:this={scrollContainer} 
+  onscroll={handleScroll}
+>
+  <div class="log-wrapper" bind:this={contentWrapper}>
+    {#each $logs as log (log.id)}
+      <div class="log-entry">
+        <div class="log-meta">{log.metadata || 'SYSTEM'}</div>
+        <div>
+          <span class="log-role">{log.role}</span>
+          
+          <div class="log-content">
+            {#if log.isAnimated}
+              <!-- Typewriter updates internal text, resizing contentWrapper, triggering ResizeObserver -->
+              <Typewriter text={log.message} />
+            {:else}
+              {@html log.message}
+            {/if}
+          </div>
+          
         </div>
-        
       </div>
-    </div>
-  {/each}
+    {/each}
+  </div>
 </div>
 
 <style>
@@ -58,7 +129,16 @@
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-    scroll-behavior: smooth;
+    /* Important: Remove CSS scroll-behavior to allow JS to control 'auto' vs 'smooth' explicitly */
+    /* scroll-behavior: smooth; <--- REMOVED */
+    scrollbar-gutter: stable;
+    will-change: scroll-position;
+  }
+
+  .log-wrapper {
+    display: flex;
+    flex-direction: column;
+    min-height: min-content;
   }
   
   .log-entry {
@@ -67,7 +147,8 @@
     display: grid;
     grid-template-columns: 80px 1fr;
     gap: 16px;
-    animation: slideUp 0.3s var(--ease-snap) forwards;
+    /* Reduced animation duration for snappier feel */
+    animation: slideUp 0.2s var(--ease-snap) forwards;
   }
 
   @keyframes slideUp {
