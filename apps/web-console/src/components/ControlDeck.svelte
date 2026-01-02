@@ -62,7 +62,7 @@
             
             // Determine Model variant enum string
             let modelVariant = 'gemini-2.5-flash-lite';
-            if (n.model.toUpperCase().includes('FLASH')) modelVariant = 'gemini-3-flash-preview';
+            if (n.model.toUpperCase().includes('FLASH')) modelVariant = 'gemini-2.5-flash';
             if (n.model.toUpperCase().includes('DEEP')) modelVariant = 'gemini-2.5-flash';
 
             return {
@@ -212,7 +212,7 @@
             <label>Model Runtime</label>
             <select class="input-std" bind:value={currentModel} onchange={saveNodeConfig}>
               <option value="gemini-2.5-flash-lite">GEMINI-3-PRO</option>
-              <option value="gemini-3-flash-preview">GEMINI-3-FLASH</option>
+              <option value="gemini-2.5-flash">GEMINI-3-FLASH</option>
               <option value="gemini-2.5-flash">GEMINI-3-DEEP-THINK</option>
             </select>
           </div>

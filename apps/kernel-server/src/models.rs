@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum ModelVariant {
-    #[serde(rename = "gemini-3-flash-preview")]
+    #[serde(rename = "gemini-2.5-flash")]
     GeminiFlash,
     #[serde(rename = "gemini-2.5-flash-lite")]
     GeminiPro,
@@ -66,6 +66,8 @@ pub struct AgentInvocation {
     pub latency_ms: u64,
     pub status: InvocationStatus,
     pub timestamp: String,
+    pub artifact_id: Option<String>,
+    pub error_message: Option<String>, 
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

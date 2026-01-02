@@ -25,6 +25,7 @@ from pathlib import Path
 import json
 import asyncio
 import time
+import redis
 
 load_dotenv()
 
@@ -33,6 +34,18 @@ api_key = os.getenv("GEMINI_API_KEY")
 client = None
 if api_key:
     client = genai.Client(api_key=api_key)
+
+# Initialize Redis Client (optional, for artifact storage)
+redis_client = None
+redis_url = os.getenv("REDIS_URL")
+if redis_url:
+    try:
+        redis_client = redis.from_url(redis_url, decode_responses=True)
+        redis_client.ping()  # Test connection
+        logging.info(f"Redis client initialized: {redis_url}")
+    except Exception as e:
+        redis_client = None
+        logging.warning(f"Failed to connect to Redis: {e}. Artifacts won't be stored by agent-service.")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -66,6 +79,7 @@ class ThoughtSignature(BaseModel):
 
 class AgentRequest(BaseModel):
     """Request to invoke an agent"""
+    run_id: str  # For artifact storage
     agent_id: str
     model: str  # gemini-3-flash-preview, gemini-2.5-flash-lite, gemini-2.5-flash
     prompt: str
@@ -256,8 +270,9 @@ async def invoke_agent(request: AgentRequest):
 
         if hasattr(response, "usage_metadata"):
             usage = response.usage_metadata
-            input_tokens = getattr(usage, "prompt_token_count", 0)
-            output_tokens = getattr(usage, "candidates_token_count", 0)
+            # Use 'or 0' to handle cases where attribute exists but is None
+            input_tokens = getattr(usage, "prompt_token_count", 0) or 0
+            output_tokens = getattr(usage, "candidates_token_count", 0) or 0
             # cache_hit = getattr(usage, "cached_content_input_tokens", 0) > 0
 
         latency_ms = (time.time() - start_time) * 1000
@@ -267,13 +282,31 @@ async def invoke_agent(request: AgentRequest):
             f"input={input_tokens} output={output_tokens} cache_hit={cache_hit}"
         )
 
+        # Store full response to Redis to avoid HTTP serialization issues
+        artifact_stored = False
+        if redis_client:
+            try:
+                artifact_key = f"run:{request.run_id}:agent:{request.agent_id}:output"
+                full_artifact = {
+                    "result": response_text,
+                    "status": "completed",
+                    "thinking_depth": request.thinking_level or 0
+                }
+                redis_client.setex(artifact_key, 3600, json.dumps(full_artifact))
+                artifact_stored = True
+                logger.debug(f"Stored artifact to Redis: {artifact_key}")
+            except Exception as e:
+                logger.warning(f"Failed to store artifact to Redis: {e}")
+
+        # Return only essential metadata in HTTP response
+        # Full response is in Redis, kernel will read from there
         return AgentResponse(
             agent_id=request.agent_id,
             success=True,
             output={
-                "result": response_text,
                 "status": "completed",
-                "thinking_depth": request.thinking_level or 0
+                "result": response_text[:500] if response_text else "No response",
+                "artifact_stored": artifact_stored
             },
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -330,7 +363,7 @@ async def list_agents():
             {
                 "id": "extractor",
                 "role": "worker",
-                "model": "gemini-3-flash-preview",
+                "model": "gemini-2.5-flash",
                 "tools": ["extract_pdf", "parse_video"]
             },
             {
@@ -355,7 +388,7 @@ async def available_models():
     return {
         "models": [
             {
-                "id": "gemini-3-flash-preview",
+                "id": "gemini-2.5-flash",
                 "name": "Gemini 3 Flash",
                 "description": "Fast, 69% cheaper, PhD-level reasoning",
                 "speed": "3x faster"

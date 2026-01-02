@@ -47,6 +47,7 @@ async fn main() {
         .route("/runtime/state", get(handlers::get_runtime_state))
         .route("/runtime/:run_id/agent/:agent_id/invoke", post(handlers::invoke_agent))
         .route("/runtime/signatures", get(handlers::get_signatures))
+        .route("/runtime/:run_id/artifact/:agent_id", get(handlers::get_artifact))
         .route("/ws/runtime/:run_id", axum::routing::get(handlers::ws_runtime_stream))
         .layer(cors)
         .with_state(runtime);

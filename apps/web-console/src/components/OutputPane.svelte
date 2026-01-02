@@ -1,73 +1,80 @@
+<!-- apps/web-console/src/components/OutputPane.svelte -->
 <script lang="ts">
   import { logs } from '$lib/stores'
-  // 1. onMount is often unnecessary with $effect, but you can keep it if preferred.
-  // However, $effect handles both the initial mount and subsequent updates.
+  import Typewriter from './sub/Typewriter.svelte'
 
-  // 2. Use $state for element bindings
   let outputElement = $state<HTMLDivElement | null>(null);
 
-  // 3. Use $effect to handle the side-effect of scrolling
   $effect(() => {
-    // By referencing $logs inside this function, Svelte 5 
-    // automatically re-runs this effect whenever logs change.
-    const _currentLogs = $logs; 
-
+    const _ = $logs; // Dependency tracking
     if (outputElement) {
-      outputElement.scrollTop = outputElement.scrollHeight;
+      // Small timeout to allow DOM to grow before scrolling
+      setTimeout(() => {
+         if (outputElement) outputElement.scrollTop = outputElement.scrollHeight;
+      }, 50);
     }
   });
 </script>
 
 <div id="output-pane" bind:this={outputElement}>
-  {#each $logs as log (log.timestamp)}
-    <!-- 
-      Note: Removed 'in:slideUp' because slideUp is defined as CSS below. 
-      Svelte 'in:' directives expect a JavaScript transition function. 
-      The CSS animation in your <style> block will handle the entrance automatically.
-    -->
+  {#each $logs as log (log.id)}
     <div class="log-entry">
       <div class="log-meta">{log.metadata || 'SYSTEM'}</div>
       <div>
         <span class="log-role">{log.role}</span>
-        <div class="log-content">{@html log.message}</div>
+        
+        <div class="log-content">
+          {#if log.isAnimated}
+            <!-- Use Typewriter for Agent Outputs -->
+             <Typewriter text={log.message} />
+          {:else}
+            <!-- Standard Render for System Logs -->
+            {@html log.message}
+          {/if}
+        </div>
+        
       </div>
     </div>
   {/each}
 </div>
 
 <style>
+  :global(.error-block) {
+    background: #fff5f5;
+    border: 1px solid #ffcdd2;
+    color: #c62828;
+    padding: 8px;
+    margin-top: 4px;
+    border-radius: 2px;
+    font-family: var(--font-code);
+    font-size: 11px;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
   #output-pane {
     flex: 1;
     padding: 24px;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-    /* justify-content: flex-end; */ /* Removed this to allow scrolling to work properly */
     scroll-behavior: smooth;
   }
-
+  
   .log-entry {
     border-top: 1px solid var(--paper-accent);
     padding: 12px 0;
     display: grid;
     grid-template-columns: 80px 1fr;
     gap: 16px;
-    /* This CSS animation handles the entry effect without needing in:slideUp */
     animation: slideUp 0.3s var(--ease-snap) forwards;
   }
 
   @keyframes slideUp {
-    from {
-      opacity: 0;
-      transform: translateY(10px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
   }
 
-  /* ... rest of your CSS stays the same ... */
   .log-meta {
     font-family: var(--font-code);
     font-size: 10px;
@@ -81,7 +88,7 @@
     font-weight: 700;
     color: var(--paper-ink);
     display: block;
-    margin-bottom: 2px;
+    margin-bottom: 4px;
   }
 
   .log-content {

@@ -1,8 +1,7 @@
+<!-- apps/web-console/src/components/PipelineStage.svelte -->
 <script lang="ts">
-  import { agentNodes, pipelineEdges, selectedNode, selectNode, deselectNode, type PipelineEdge } from '$lib/stores'
+  import { agentNodes, pipelineEdges, selectedNode, selectNode, deselectNode, runtimeStore, type PipelineEdge } from '$lib/stores'
 
-  // Props: expanded state and toggle callback
-  // In Svelte 5, props must be declared with $props()
   let { expanded, ontoggle }: { expanded: boolean, ontoggle?: () => void } = $props();
 
   // Reactive state for DOM element bindings
@@ -10,24 +9,20 @@
   let nodesLayer = $state<HTMLDivElement | undefined>();
   let pipelineStageElement = $state<HTMLDivElement | undefined>();
 
-  // ResizeObserver ensures graph re-renders when container size changes
-  // This handles the CSS transition from collapsed (80px) to expanded (65vh)
+  // Track runtime status for visuals
+  let isRunComplete = $derived($runtimeStore.status === 'COMPLETED' || $runtimeStore.status === 'FAILED');
+
   $effect(() => {
     if (!pipelineStageElement) return;
-
     const resizeObserver = new ResizeObserver(() => {
       renderGraph();
     });
-
     resizeObserver.observe(pipelineStageElement);
-
     return () => {
       resizeObserver.disconnect();
     };
   })
 
-  // Renders the pipeline graph with nodes and edges
-  // Positions are calculated as percentages and converted to pixels based on container size
   function renderGraph() {
     if (!svgElement || !nodesLayer) return
 
@@ -55,10 +50,17 @@
       const d = `M ${x1} ${y1} C ${x1 + 60} ${y1}, ${x2 - 60} ${y2}, ${x2} ${y2}`
 
       path.setAttribute('d', d)
-      path.setAttribute('class', `cable ${link.active ? 'active' : ''} ${link.pulseAnimation ? 'pulse' : ''}`)
+      
+      // Determine classes based on link state active (running) vs finalized (done)
+      // Note: Logic in stores.ts ensures active and finalized are mutually exclusive
+      let classes = `cable`;
+      if (link.active) classes += ` active`;
+      if (link.pulseAnimation) classes += ` pulse`;
+      if (link.finalized) classes += ` finalized`;
+      
+      path.setAttribute('class', classes);
       path.setAttribute('id', `link-${link.from}-${link.to}`)
 
-      // Add signature hash as a data attribute for hover tooltips
       if (link.signatureHash) {
         path.setAttribute('data-signature', link.signatureHash)
         path.setAttribute('title', `Signature: ${link.signatureHash.substring(0, 16)}...`)
@@ -77,7 +79,6 @@
         el.textContent = node.label
         el.id = `node-${node.id}`
 
-        // Position nodes: spread vertically when expanded, center horizontally when collapsed
         const getY = (n: any) => (expanded ? (n.y / 100) * nodesLayer!.parentElement!.clientHeight : nodesLayer!.parentElement!.clientHeight / 2)
         const getX = (n: any) => (n.x / 100) * nodesLayer!.parentElement!.clientWidth
 
@@ -98,17 +99,14 @@
     }
   }
 
-  // Reactive effect to re-render graph when dependencies change
-  // Explicitly tracks: expanded, nodes, edges, selected node, and DOM elements
   $effect(() => {
     const _expanded = expanded;
     const _nodes = $agentNodes;
     const _edges = $pipelineEdges;
     const _selected = $selectedNode;
-    const _svg = svgElement;
-    const _layer = nodesLayer;
-
-    // Double rAF ensures CSS has been applied before measuring dimensions
+    // We also track global status to re-render when it flips from Running -> Completed
+    const _status = $runtimeStore.status; 
+    
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         renderGraph();
@@ -116,8 +114,6 @@
     });
   })
 
-  // Handle click on pipeline area - only expands when collapsed
-  // (Minimize button in header handles collapse when expanded)
   function handleClick() {
     if (!expanded) {
       ontoggle?.()
@@ -127,7 +123,7 @@
 
 <div
   id="pipeline-stage"
-  class={expanded ? 'expanded' : ''}
+  class="{expanded ? 'expanded' : ''} {isRunComplete ? 'run-complete' : ''}"
   onclick={handleClick}
   onkeydown={(e) => e.key === 'Enter' && handleClick()}
   role="button"
@@ -136,8 +132,16 @@
 >
   <div id="hud-banner">
     <div class="hud-title">
-      <div class="hud-status-dot"></div>
-      ARCHITECT VIEW // EDIT MODE
+      {#if isRunComplete}
+         <div class="hud-status-dot complete"></div>
+         SESSION COMPLETE // DATA HARDENED
+      {:else if $runtimeStore.status === 'RUNNING'}
+         <div class="hud-status-dot active"></div>
+         PIPELINE ACTIVE // PROCESSING
+      {:else}
+         <div class="hud-status-dot"></div>
+         ARCHITECT VIEW // EDIT MODE
+      {/if}
     </div>
     <button
       class="btn-minimize"
@@ -162,7 +166,7 @@
     border-bottom: 1px solid var(--paper-line);
     position: relative;
     z-index: 100;
-    transition: height 0.5s var(--ease-snap);
+    transition: height 0.5s var(--ease-snap), border-color 0.3s;
     overflow: hidden;
     cursor: pointer;
     background-image: linear-gradient(var(--digi-line) 1px, transparent 1px),
@@ -175,6 +179,12 @@
     cursor: default;
     box-shadow: 0 20px 80px rgba(0, 0, 0, 0.4);
     border-top: 1px solid var(--digi-line);
+  }
+
+  /* VISUAL INDICATOR FOR COMPLETED RUN */
+  #pipeline-stage.expanded.run-complete {
+    border-top: 1px solid var(--arctic-cyan);
+    border-bottom: 1px solid var(--arctic-cyan);
   }
 
   #hud-banner {
@@ -200,7 +210,7 @@
   }
 
   .hud-title {
-    color: var(--arctic-cyan);
+    color: #8b949e; /* Default gray */
     font-family: var(--font-code);
     font-size: 10px;
     letter-spacing: 1px;
@@ -209,12 +219,27 @@
     align-items: center;
     gap: 8px;
   }
+  
+  /* State-specific Text Colors */
+  .run-complete .hud-title {
+    color: var(--arctic-cyan);
+  }
 
   .hud-status-dot {
     width: 6px;
     height: 6px;
-    background: var(--arctic-cyan);
+    background: #8b949e;
     border-radius: 50%;
+  }
+
+  .hud-status-dot.active {
+    background: var(--alert-amber);
+    box-shadow: 0 0 8px var(--alert-amber);
+    animation: blink 2s infinite;
+  }
+
+  .hud-status-dot.complete {
+    background: var(--arctic-cyan);
     box-shadow: 0 0 8px var(--arctic-cyan);
   }
 
@@ -298,10 +323,12 @@
     transition: stroke 0.3s;
   }
 
+  /* PROCESSING STATE: Dotted, Moving */
   :global(.cable.active) {
     stroke: var(--arctic-cyan);
     stroke-dasharray: 6;
     animation: flow 0.8s linear infinite;
+    opacity: 0.8;
   }
 
   :global(.cable.active.pulse) {
@@ -309,18 +336,24 @@
     filter: drop-shadow(0 0 4px var(--arctic-cyan));
   }
 
+  /* FINISHED STATE: Solid, Static, Bright */
+  :global(.cable.finalized) {
+    stroke: var(--arctic-cyan); /* Solid color */
+    stroke-width: 2px;
+    stroke-dasharray: none !important; /* Force solid line */
+    animation: none !important; /* Force stop animation */
+    opacity: 1; /* Fully opaque */
+    filter: drop-shadow(0 0 2px rgba(0, 240, 255, 0.3));
+  }
+
   @keyframes flow {
     to {
       stroke-dashoffset: -12;
     }
   }
-
-  @keyframes pulse {
-    0%, 100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.6;
-    }
+  
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
   }
 </style>

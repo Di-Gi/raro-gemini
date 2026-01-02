@@ -11,10 +11,12 @@ use uuid::Uuid;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::env;
+use redis::AsyncCommands;
 
 /// Payload for invoking an agent with signature routing and caching
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InvocationPayload {
+    pub run_id: String,
     pub agent_id: String,
     pub model: String,
     pub prompt: String,
@@ -47,10 +49,31 @@ pub struct RARORuntime {
     dag_store: DashMap<String, DAG>,
     cache_resources: DashMap<String, String>, // run_id -> cached_content_id
     http_client: reqwest::Client,
+    pub redis_client: Option<redis::Client>,
 }
 
 impl RARORuntime {
     pub fn new() -> Self {
+        // Initialize Redis Client (optional, non-blocking)
+        let redis_client = match env::var("REDIS_URL") {
+            Ok(url) => {
+                match redis::Client::open(url.as_str()) {
+                    Ok(client) => {
+                        tracing::info!("Redis client initialized: {}", url);
+                        Some(client)
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to create Redis client: {}. Artifacts will not be stored.", e);
+                        None
+                    }
+                }
+            }
+            Err(_) => {
+                tracing::warn!("REDIS_URL not set. Running without artifact storage.");
+                None
+            }
+        };
+
         RARORuntime {
             workflows: DashMap::new(),
             runtime_states: DashMap::new(),
@@ -58,6 +81,7 @@ impl RARORuntime {
             dag_store: DashMap::new(),
             cache_resources: DashMap::new(),
             http_client: reqwest::Client::new(),
+            redis_client,
         }
     }
 
@@ -134,7 +158,7 @@ impl RARORuntime {
 
         for agent_id in execution_order {
             // 1. Prepare Invocation
-            let payload_result = self.prepare_invocation_payload(&run_id, &agent_id);
+            let payload_result = self.prepare_invocation_payload(&run_id, &agent_id).await;
             
             let payload = match payload_result {
                 Ok(p) => p,
@@ -161,21 +185,42 @@ impl RARORuntime {
                             let _ = self.set_thought_signature(&run_id, &agent_id, sig);
                         }
 
+                        // === FIX START: PREVENT ARTIFACT OVERWRITE ===
+                        // Check if the agent service explicitly signaled that it stored the artifact
+                        let artifact_id = if let Some(output_data) = &res.output {
+                            let agent_stored_flag = output_data.get("artifact_stored")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+
+                            if agent_stored_flag {
+                                tracing::debug!("Agent {} already stored artifact, skipping overwrite", agent_id);
+                                Some(format!("run:{}:agent:{}:output", run_id, agent_id))
+                            } else {
+                                self.store_artifact(&run_id, &agent_id, output_data).await
+                            }
+                        } else {
+                            None
+                        };
+                        // === FIX END ===
+
                         // Record metrics
                         let invocation_record = AgentInvocation {
                             id: Uuid::new_v4().to_string(),
                             agent_id: agent_id.clone(),
                             model_variant: match payload.model.as_str() {
-                                "gemini-3-flash-preview" => ModelVariant::GeminiFlash,
+                                "gemini-2.5-flash" => ModelVariant::GeminiFlash,
                                 "gemini-2.5-flash" => ModelVariant::GeminiDeepThink,
                                 _ => ModelVariant::GeminiPro,
                             },
                             thought_signature: res.thought_signature,
-                            tools_used: payload.tools.clone(), // Simplified for now
+                            tools_used: payload.tools.clone(),
                             tokens_used: res.tokens_used,
                             latency_ms: res.latency_ms as u64,
                             status: InvocationStatus::Success,
                             timestamp: Utc::now().to_rfc3339(),
+                            artifact_id,
+                            // ADD THIS:
+                            error_message: None, 
                         };
 
                         let _ = self.record_invocation(&run_id, invocation_record);
@@ -224,6 +269,9 @@ impl RARORuntime {
                 latency_ms: 0,
                 status: InvocationStatus::Failed,
                 timestamp: Utc::now().to_rfc3339(),
+                artifact_id: None,
+                // ADD THIS: Capture the error string
+                error_message: Some(error.to_string()), 
             });
         }
         tracing::error!("Run {} failed at agent {}: {}", run_id, agent_id, error);
@@ -263,6 +311,48 @@ impl RARORuntime {
             .await?;
 
         response.json::<RemoteAgentResponse>().await
+    }
+
+    /// Store agent output to Redis with TTL
+    /// Returns the artifact_id if successful, None otherwise
+    async fn store_artifact(
+        &self,
+        run_id: &str,
+        agent_id: &str,
+        output: &serde_json::Value,
+    ) -> Option<String> {
+        let artifact_id = format!("run:{}:agent:{}:output", run_id, agent_id);
+
+        let json_str = match serde_json::to_string(output) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("Failed to serialize artifact for {}: {}", agent_id, e);
+                return None;
+            }
+        };
+
+        if let Some(client) = &self.redis_client {
+            match client.get_async_connection().await {
+                Ok(mut con) => {
+                    match con.set_ex::<_, _, ()>(&artifact_id, json_str, 3600).await {
+                        Ok(_) => {
+                            tracing::debug!("Stored artifact: {}", artifact_id);
+                            return Some(artifact_id);
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to write artifact to Redis: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to get Redis connection: {}", e);
+                }
+            }
+        } else {
+            tracing::debug!("No Redis client available, artifact not stored");
+        }
+
+        None
     }
 
     /// Get current runtime state
@@ -322,7 +412,9 @@ impl RARORuntime {
     }
 
     /// Prepare invocation payload with signature routing
-    pub fn prepare_invocation_payload(
+    /// Prepare invocation payload with signature routing AND artifact context
+    /// CHANGED: Now async to allow Redis fetching
+    pub async fn prepare_invocation_payload(
         &self,
         run_id: &str,
         agent_id: &str,
@@ -345,10 +437,8 @@ impl RARORuntime {
             .find(|a| a.id == agent_id)
             .ok_or_else(|| format!("Agent {} not found", agent_id))?;
 
-        // Fetch parent's signature for continuity
+        // 1. Fetch Parent Signatures (Reasoning Continuity)
         let parent_signature = if !agent_config.depends_on.is_empty() {
-            // Logic: take the signature of the *first* dependency found. 
-            // Advanced: Could merge signatures from multiple parents.
             agent_config
                 .depends_on
                 .iter()
@@ -357,12 +447,55 @@ impl RARORuntime {
             None
         };
 
+        // 2. Fetch Parent Artifacts (Data Context)
+        let mut context_prompt_appendix = String::new();
+        let mut input_data_map = serde_json::Map::new();
+
+        if !agent_config.depends_on.is_empty() {
+            if let Some(client) = &self.redis_client {
+                // We use a separate connection for this fetch to avoid borrowing issues
+                match client.get_async_connection().await {
+                    Ok(mut con) => {
+                        for parent_id in &agent_config.depends_on {
+                            let key = format!("run:{}:agent:{}:output", run_id, parent_id);
+                            
+                            // Try to get artifact from Redis
+                            let data: Option<String> = con.get(&key).await.unwrap_or(None);
+
+                            if let Some(json_str) = data {
+                                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                                    
+                                    // Add to structured input data
+                                    input_data_map.insert(parent_id.clone(), val.clone());
+
+                                    // Extract text result for the prompt
+                                    let content = val.get("result")
+                                        .and_then(|v| v.as_str())
+                                        .or_else(|| val.get("output").and_then(|v| v.as_str()))
+                                        .unwrap_or("No text output");
+
+                                    context_prompt_appendix.push_str(&format!("\n\n=== CONTEXT FROM AGENT {} ===\n{}\n", parent_id, content));
+                                }
+                            }
+                        }
+                    },
+                    Err(e) => tracing::warn!("Could not connect to Redis for context fetching: {}", e),
+                }
+            }
+        }
+
+        // 3. Construct Final Prompt
+        let mut final_prompt = agent_config.prompt.clone();
+        if !context_prompt_appendix.is_empty() {
+            final_prompt.push_str(&context_prompt_appendix);
+        }
+
         // Get cached content if available
         let cached_content_id = self.cache_resources.get(run_id).map(|c| (*c).clone());
 
         // Determine model variant
         let model = match agent_config.model {
-            ModelVariant::GeminiFlash => "gemini-3-flash-preview",
+            ModelVariant::GeminiFlash => "gemini-2.5-flash",
             ModelVariant::GeminiPro => "gemini-2.5-flash-lite",
             ModelVariant::GeminiDeepThink => "gemini-2.5-flash",
         }
@@ -375,10 +508,11 @@ impl RARORuntime {
         };
 
         Ok(InvocationPayload {
+            run_id: run_id.to_string(),
             agent_id: agent_id.to_string(),
             model,
-            prompt: agent_config.prompt.clone(),
-            input_data: serde_json::json!({}), // Default empty
+            prompt: final_prompt, // Updated with context
+            input_data: serde_json::Value::Object(input_data_map), // Updated with structured data
             parent_signature,
             cached_content_id,
             thinking_level,

@@ -12,6 +12,7 @@ use serde_json::json;
 use std::sync::Arc;
 use futures::{sink::SinkExt, stream::StreamExt};
 use axum::extract::ws::Message;
+use redis::AsyncCommands;
 
 use crate::models::*;
 use crate::runtime::{RARORuntime, InvocationPayload};
@@ -69,8 +70,10 @@ pub async fn invoke_agent(
 ) -> Result<Json<InvocationPayload>, StatusCode> {
     tracing::info!("Preparing invocation for agent: {} in run: {}", agent_id, run_id);
 
+    // CHANGE: Added .await
     runtime
         .prepare_invocation_payload(&run_id, &agent_id)
+        .await 
         .map(Json)
         .map_err(|e| {
             tracing::error!("Failed to prepare invocation: {}", e);
@@ -92,6 +95,40 @@ pub async fn get_signatures(
         "run_id": run_id,
         "signatures": signatures.signatures
     })))
+}
+
+pub async fn get_artifact(
+    State(runtime): State<Arc<RARORuntime>>,
+    Path((run_id, agent_id)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    tracing::debug!("Fetching artifact for run={}, agent={}", run_id, agent_id);
+
+    let client = runtime
+        .redis_client
+        .as_ref()
+        .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    let key = format!("run:{}:agent:{}:output", run_id, agent_id);
+
+    let mut con = client
+        .get_async_connection()
+        .await
+        .map_err(|e| {
+            tracing::error!("Redis connection failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let data: String = con.get(&key).await.map_err(|e| {
+        tracing::warn!("Artifact not found in Redis: {} ({})", key, e);
+        StatusCode::NOT_FOUND
+    })?;
+
+    let json_val: serde_json::Value = serde_json::from_str(&data).map_err(|e| {
+        tracing::error!("Failed to parse artifact JSON: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    Ok(Json(json_val))
 }
 
 pub async fn ws_runtime_stream(
@@ -139,7 +176,7 @@ async fn handle_runtime_stream(
     }
 
     // Stream updates
-    let mut interval = tokio::time::interval(std::time::Duration::from_millis(250)); // Faster polling for UI responsiveness
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(250));
 
     loop {
         tokio::select! {
@@ -166,7 +203,19 @@ async fn handle_runtime_stream(
                         break;
                     }
                     
-                    // Optional: Stop streaming if completed/failed (though keeping open allows reviewing final state)
+                    // === FIX START ===
+                    // Check for terminal states to auto-close connection
+                    if state.status == RuntimeStatus::Completed || state.status == RuntimeStatus::Failed {
+                        tracing::info!("Run {} reached terminal state: {:?}. Closing stream.", run_id, state.status);
+                        
+                        // Optional: Small delay to ensure client processes the final message before close frame
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        
+                        // Send a Close frame explicitly (optional, breaking loop also works)
+                        let _ = sender.close().await;
+                        break;
+                    }
+                    // === FIX END ===
                 }
             }
         }

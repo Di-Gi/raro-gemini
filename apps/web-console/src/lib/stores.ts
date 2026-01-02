@@ -1,7 +1,4 @@
 // [[RARO]]/apps/web-console/src/lib/stores.ts
-// Purpose: Reactive state management. Handles WebSocket connections and maps Kernel state to UI state.
-// Architecture: State Management Layer
-// Dependencies: Svelte Store, API
 
 import { writable, get } from 'svelte/store';
 import { getWebSocketURL } from './api';
@@ -13,6 +10,7 @@ export interface LogEntry {
   role: string;
   message: string;
   metadata?: string;
+  isAnimated?: boolean;
 }
 
 export interface AgentNode {
@@ -29,7 +27,8 @@ export interface AgentNode {
 export interface PipelineEdge {
   from: string;
   to: string;
-  active: boolean;
+  active: boolean;    // True = Animated Flow (Processing)
+  finalized: boolean; // True = Solid Line (Completed)
   pulseAnimation: boolean;
   signatureHash?: string;
 }
@@ -52,8 +51,8 @@ export const runtimeStore = writable<{ status: string; runId: string | null }>({
 // Initial Nodes State
 const initialNodes: AgentNode[] = [
   { id: 'n1', label: 'ORCHESTRATOR', x: 20, y: 50, model: 'GEMINI-3-PRO', prompt: 'Analyze the user request and determine optimal sub-tasks.', status: 'idle', role: 'orchestrator' },
-  { id: 'n2', label: 'RETRIEVAL', x: 50, y: 30, model: 'GEMINI-3-FLASH-PREVIEW', prompt: 'Search knowledge base for relevant context.', status: 'idle', role: 'worker' },
-  { id: 'n3', label: 'CODE_INTERP', x: 50, y: 70, model: 'GEMINI-3-FLASH-PREVIEW', prompt: 'Execute Python analysis on provided data.', status: 'idle', role: 'worker' },
+  { id: 'n2', label: 'RETRIEVAL', x: 50, y: 30, model: 'gemini-2.5-flash', prompt: 'Search knowledge base for relevant context.', status: 'idle', role: 'worker' },
+  { id: 'n3', label: 'CODE_INTERP', x: 50, y: 70, model: 'gemini-2.5-flash', prompt: 'Execute Python analysis on provided data.', status: 'idle', role: 'worker' },
   { id: 'n4', label: 'SYNTHESIS', x: 80, y: 50, model: 'GEMINI-3-DEEP-THINK', prompt: 'Synthesize all findings into a final report.', status: 'idle', role: 'worker' }
 ];
 
@@ -61,10 +60,10 @@ export const agentNodes = writable<AgentNode[]>(initialNodes);
 
 // Initial Edges State
 const initialEdges: PipelineEdge[] = [
-  { from: 'n1', to: 'n2', active: false, pulseAnimation: false },
-  { from: 'n1', to: 'n3', active: false, pulseAnimation: false },
-  { from: 'n2', to: 'n4', active: false, pulseAnimation: false },
-  { from: 'n3', to: 'n4', active: false, pulseAnimation: false }
+  { from: 'n1', to: 'n2', active: false, finalized: false, pulseAnimation: false },
+  { from: 'n1', to: 'n3', active: false, finalized: false, pulseAnimation: false },
+  { from: 'n2', to: 'n4', active: false, finalized: false, pulseAnimation: false },
+  { from: 'n3', to: 'n4', active: false, finalized: false, pulseAnimation: false }
 ];
 
 export const pipelineEdges = writable<PipelineEdge[]>(initialEdges);
@@ -81,14 +80,26 @@ export const telemetry = writable<TelemetryState>({
 
 // === ACTIONS ===
 
-export function addLog(role: string, message: string, metadata: string = '') {
-  logs.update(l => [...l, {
-    id: crypto.randomUUID(), // <--- GENERATE UNIQUE ID
-    timestamp: new Date().toISOString(),
-    role,
-    message,
-    metadata
-  }]);
+export function addLog(role: string, message: string, metadata: string = '', isAnimated: boolean = false, customId?: string) {
+  logs.update(l => {
+    if (customId && l.find(entry => entry.id === customId)) {
+      return l;
+    }
+    return [...l, {
+      id: customId || crypto.randomUUID(),
+      timestamp: new Date().toISOString(),
+      role,
+      message,
+      metadata,
+      isAnimated
+    }];
+  });
+}
+
+export function updateLog(id: string, updates: Partial<LogEntry>) {
+  logs.update(l => 
+    l.map(entry => entry.id === id ? { ...entry, ...updates } : entry)
+  );
 }
 
 export function updateNodeStatus(id: string, status: 'idle' | 'running' | 'complete' | 'failed') {
@@ -127,6 +138,10 @@ export function connectRuntimeWebSocket(runId: string) {
       const data = JSON.parse(event.data);
       if (data.type === 'state_update' && data.state) {
         syncState(data.state, data.signatures);
+        
+        if (data.state.status) {
+             runtimeStore.update(s => ({ ...s, status: data.state.status.toUpperCase() }));
+        }
       } else if (data.error) {
         addLog('KERNEL', `Runtime error: ${data.error}`, 'ERR');
       }
@@ -137,7 +152,24 @@ export function connectRuntimeWebSocket(runId: string) {
 
   ws.onclose = () => {
     addLog('KERNEL', 'Connection closed.', 'NET_END');
-    runtimeStore.update(s => ({ ...s, status: 'COMPLETED' }));
+    
+    // 1. Force Global Status to COMPLETED (if not failed)
+    runtimeStore.update(s => {
+        if (s.status !== 'FAILED') return { ...s, status: 'COMPLETED' };
+        return s;
+    });
+
+    // 2. Force Finalize Edges
+    // Any edge that was active is now considered finalized/hardened.
+    pipelineEdges.update(edges => {
+      return edges.map(e => ({
+        ...e,
+        active: false,         // Stop active animation
+        pulseAnimation: false, // Stop pulsing
+        // If it was active OR already finalized, it stays finalized
+        finalized: e.active || e.finalized 
+      }));
+    });
   };
 
   ws.onerror = (e) => {
@@ -147,7 +179,13 @@ export function connectRuntimeWebSocket(runId: string) {
 
 // === STATE SYNCHRONIZATION LOGIC ===
 
+const processedInvocations = new Set<string>();
+
 function syncState(state: any, signatures: Record<string, string> = {}) {
+  // Normalize status to handle lowercase from Rust serialization
+  const rawStatus = state.status ? state.status.toLowerCase() : 'running';
+  const isRunComplete = rawStatus === 'completed' || rawStatus === 'failed';
+
   // 1. Sync Node Status
   agentNodes.update(nodes => {
     return nodes.map(n => {
@@ -159,41 +197,98 @@ function syncState(state: any, signatures: Record<string, string> = {}) {
     });
   });
 
-  // 2. Sync Edges (Animate based on flow)
-  // Logic: If 'from' is complete and 'to' is running/complete, active=true
+  // 2. Sync Edges
   pipelineEdges.update(edges => {
     return edges.map(e => {
       const fromComplete = state.completed_agents.includes(e.from);
       const toStarted = state.active_agents.includes(e.to) || state.completed_agents.includes(e.to);
       
-      const active = fromComplete && toStarted;
+      const hasDataFlowed = fromComplete && toStarted;
       
-      // Check if signature exists for the source
+      // Active: Flowing but not done
+      const active = hasDataFlowed && !isRunComplete;
+      
+      // Finalized: Flowed and now done
+      const finalized = hasDataFlowed && isRunComplete;
+
       const sig = signatures[e.from];
 
       return {
         ...e,
         active,
-        pulseAnimation: state.active_agents.includes(e.to), // Pulse if target is currently thinking
+        finalized,
+        pulseAnimation: state.active_agents.includes(e.to),
         signatureHash: sig
       };
     });
   });
 
   // 3. Sync Telemetry
-  // Simplistic cost model: $2 per 1M tokens (average)
   const cost = (state.total_tokens_used / 1_000_000) * 2.0;
-  
   telemetry.set({
-    latency: 0, // Calculated client-side or passed if available
-    cacheHitRate: 0, // Need support in Kernel state
+    latency: 0,
+    cacheHitRate: 0,
     totalCost: cost,
     errorCount: state.failed_agents.length,
     tokensUsed: state.total_tokens_used
   });
 
-  // 4. Sync Logs (Invocations)
-  // Check specifically for new invocations we haven't logged yet would be ideal,
-  // but for now, we just log major state transitions if not already handled.
-  // (Actual log streaming from kernel would be better, but we simulate it via status changes for now)
+  // 4. Sync Logs
+  if (state.invocations && Array.isArray(state.invocations)) {
+    state.invocations.forEach(async (inv: any) => {
+      if (!inv || !inv.id || processedInvocations.has(inv.id)) return;
+
+      processedInvocations.add(inv.id);
+      const agentLabel = (inv.agent_id || 'UNKNOWN').toUpperCase();
+
+      try {
+        if (inv.status === 'success') {
+          if (inv.artifact_id) {
+            addLog(agentLabel, 'Initiating output retrieval...', 'LOADING', false, inv.id);
+            try {
+              const { getArtifact } = await import('./api');
+              const fetchPromise = getArtifact(state.run_id, inv.agent_id);
+              const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000));
+              const artifact: any = await Promise.race([fetchPromise, timeoutPromise]);
+
+              if (artifact) {
+                let outputText = 'Output received';
+                if (typeof artifact === 'string') outputText = artifact;
+                else if (typeof artifact === 'object') {
+                   if (artifact.result) outputText = artifact.result;
+                   else if (artifact.output) outputText = artifact.output;
+                   else if (artifact.text) outputText = artifact.text;
+                   else outputText = JSON.stringify(artifact, null, 2);
+                }
+                updateLog(inv.id, {
+                  message: outputText,
+                  metadata: `TOKENS: ${inv.tokens_used || 0} | LATENCY: ${inv.latency_ms || 0}ms`,
+                  isAnimated: true 
+                });
+              } else {
+                updateLog(inv.id, { message: 'Artifact empty or expired', metadata: 'WARN' });
+              }
+            } catch (err) {
+              console.error('Artifact fetch failed:', err);
+              updateLog(inv.id, { message: 'Output retrieval failed. Check connection.', metadata: 'NET_ERR' });
+            }
+          } else {
+            addLog(agentLabel, 'Completed (No Output)', `TOKENS: ${inv.tokens_used}`, false, inv.id);
+          }
+        } else if (inv.status === 'failed') {
+          let errorDisplay = 'Execution Failed';
+          if (inv.error_message) {
+            errorDisplay = `<div style="color:#d32f2f; font-weight:bold; margin-bottom:4px">EXECUTION HALTED</div><div style="background: rgba(211, 47, 47, 0.05); border-left: 3px solid #d32f2f; padding: 8px; font-family: monospace; font-size: 11px; white-space: pre-wrap; color: #b71c1c;">${escapeHtml(inv.error_message)}</div>`;
+          }
+          addLog(agentLabel, errorDisplay, 'ERR', false, inv.id);
+        }
+      } catch (e) {
+        console.error('Error processing invocation log:', e);
+      }
+    });
+  }
+}
+
+function escapeHtml(unsafe: string) {
+    return unsafe.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 }

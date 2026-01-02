@@ -52,7 +52,7 @@ export function getWebSocketURL(runId: string): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   // If API_BASE is absolute (http://...), extract host. Otherwise assume relative to current window.
   let host = window.location.host;
-  
+
   try {
     const url = new URL(API_BASE);
     host = url.host;
@@ -61,4 +61,24 @@ export function getWebSocketURL(runId: string): string {
   }
 
   return `${protocol}//${host}/ws/runtime/${runId}`;
+}
+
+export async function getArtifact(runId: string, agentId: string): Promise<any> {
+  try {
+    const res = await fetch(`${API_BASE}/runtime/${runId}/artifact/${agentId}`);
+
+    if (res.status === 404) {
+      console.warn(`Artifact not found for agent ${agentId}`);
+      return null;
+    }
+
+    if (!res.ok) {
+      throw new Error(`Failed to fetch artifact: ${res.status} ${res.statusText}`);
+    }
+
+    return await res.json();
+  } catch (e) {
+    console.error('Artifact fetch error:', e);
+    throw e;
+  }
 }

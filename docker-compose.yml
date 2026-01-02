@@ -14,6 +14,7 @@ services:
       # CRITICAL: Points to the internal docker service name of the agent service
       - AGENT_HOST=agents
       - AGENT_PORT=8000
+      - REDIS_URL=redis://redis:6379
     networks:
       - raro-net
     healthcheck:
@@ -24,6 +25,8 @@ services:
     depends_on:
       agents:
         condition: service_started
+      redis:
+        condition: service_healthy
 
   # 2. THE MUSCLE: Python Agent Service
   # Executes Gemini 3 inference and handles heavy lifting.
@@ -38,6 +41,7 @@ services:
       - PYTHONUNBUFFERED=1
       # API Key must be set in your local .env file
       - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - REDIS_URL=redis://redis:6379
     networks:
       - raro-net
     healthcheck:
@@ -45,6 +49,9 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+    depends_on:
+      redis:
+        condition: service_healthy
 
   # 3. THE FACE: SvelteKit Web Console
   # Reactive UI for visualization and control.
@@ -68,10 +75,11 @@ services:
   # Redis for caching (Optional)
   redis:
     image: redis:7-alpine
+    container_name: raro-redis
     ports:
       - "6379:6379"
     networks:
-      - raro
+      - raro-net
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -81,6 +89,7 @@ services:
   # PostgreSQL for persistence (Optional)
   postgres:
     image: postgres:16-alpine
+    container_name: raro-postgres
     ports:
       - "5432:5432"
     environment:
@@ -88,7 +97,7 @@ services:
       - POSTGRES_USER=raro
       - POSTGRES_PASSWORD=raro
     networks:
-      - raro
+      - raro-net
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U raro"]
       interval: 10s
@@ -98,7 +107,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
 
 networks:
-  raro:
+  raro-net:
     driver: bridge
 
 volumes:
