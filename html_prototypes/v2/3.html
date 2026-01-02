@@ -1,0 +1,693 @@
+<!-- 
+// [[RARO]]/enterprise_runtime_v2.html
+// Purpose: High-Fidelity Commercial Infrastructure Demo.
+// Design System: RARO "Phosphor" Identity (Tactile Digital).
+// Architecture: Single-File Simulation Engine.
+// 
+// COMPLETE AND UNABBREVIATED IMPLEMENTATION
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RARO // INFRASTRUCTURE CONSOLE</title>
+    
+    <!-- Fonts: Inter & JetBrains Mono -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+    <style>
+        :root {
+            /* === RARO DESIGN TOKENS (PHOSPHOR MODE) === */
+            
+            /* Typography */
+            --font-ui: 'Inter', -apple-system, system-ui, sans-serif;
+            --font-code: 'JetBrains Mono', 'Fira Code', monospace;
+            
+            /* Base Colors (Dark/Phosphor) */
+            --bg-void: #050505;
+            --bg-panel: #0d1117;
+            --bg-surface: #161b22;
+            
+            /* Lines & Borders */
+            --line-dim: #21262d;
+            --line-bright: #30363d;
+            
+            /* Text */
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --text-tertiary: #484f58;
+            
+            /* Signals */
+            --signal-cyan: #00F0FF;          /* Arctic Cyan (Active) */
+            --signal-cyan-dim: rgba(0, 240, 255, 0.1);
+            --signal-amber: #FFB300;         /* Alert/Processing */
+            --signal-amber-dim: rgba(255, 179, 0, 0.1);
+            --signal-green: #2ea043;         /* Success/Stable */
+            --signal-red: #da3633;           /* Error/Halt */
+            
+            /* Layout Constants */
+            --header-height: 54px;
+            --sidebar-width: 360px;
+            --ease-snap: cubic-bezier(0.16, 1, 0.3, 1);
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            background: var(--bg-void);
+            color: var(--text-primary);
+            font-family: var(--font-ui);
+            height: 100vh;
+            width: 100vw;
+            overflow: hidden;
+            display: grid;
+            grid-template-rows: var(--header-height) 1fr;
+            grid-template-columns: var(--sidebar-width) 1fr;
+        }
+
+        /* --- GLOBAL NOISE TEXTURE (From App.svelte) --- */
+        .noise-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.04'/%3E%3C/svg%3E");
+            pointer-events: none; z-index: 9999; opacity: 0.35; mix-blend-mode: overlay;
+        }
+
+        /* --- HEADER --- */
+        header {
+            grid-column: 1 / -1;
+            background: var(--bg-void);
+            border-bottom: 1px solid var(--line-dim);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 24px;
+            z-index: 100;
+        }
+
+        .brand-lockup {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-family: var(--font-code);
+            font-weight: 700;
+            letter-spacing: 1px;
+            font-size: 13px;
+            color: var(--text-primary);
+        }
+
+        .brand-accent { color: var(--text-tertiary); margin: 0 4px; }
+        .tag-enterprise { 
+            background: var(--line-dim); 
+            color: var(--text-secondary);
+            padding: 2px 6px; 
+            border-radius: 2px; 
+            font-size: 10px; 
+        }
+
+        .telemetry-rack {
+            display: flex;
+            gap: 32px;
+        }
+
+        .telemetry-unit {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            line-height: 1.2;
+        }
+
+        .t-label {
+            font-family: var(--font-ui);
+            font-size: 9px;
+            color: var(--text-tertiary);
+            text-transform: uppercase;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+
+        .t-value {
+            font-family: var(--font-code);
+            font-size: 13px;
+            color: var(--text-primary);
+            font-weight: 500;
+        }
+
+        .t-status { color: var(--signal-green); }
+
+        /* --- SIDEBAR (CONTROL & LOGS) --- */
+        aside {
+            grid-row: 2;
+            grid-column: 1;
+            background: var(--bg-panel);
+            border-right: 1px solid var(--line-dim);
+            display: flex;
+            flex-direction: column;
+            z-index: 50;
+        }
+
+        .section-header {
+            padding: 12px 20px;
+            border-bottom: 1px solid var(--line-dim);
+            font-family: var(--font-code);
+            font-size: 10px;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            background: var(--bg-surface);
+        }
+
+        .control-deck {
+            padding: 20px;
+            border-bottom: 1px solid var(--line-dim);
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        /* Tactile Button Style */
+        .btn-tactile {
+            background: var(--bg-void);
+            border: 1px solid var(--line-dim);
+            color: var(--text-primary);
+            padding: 12px 16px;
+            font-family: var(--font-code);
+            font-size: 11px;
+            text-align: left;
+            cursor: pointer;
+            transition: all 0.2s var(--ease-snap);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .btn-tactile:hover {
+            border-color: var(--text-secondary);
+            background: var(--line-dim);
+        }
+
+        .btn-tactile:active { transform: translateY(1px); }
+
+        .btn-primary {
+            border-color: var(--signal-cyan);
+            background: var(--signal-cyan-dim);
+            color: var(--signal-cyan);
+        }
+
+        .btn-primary:hover {
+            background: rgba(0, 240, 255, 0.2);
+            box-shadow: 0 0 15px rgba(0, 240, 255, 0.1);
+        }
+
+        /* Log Feed (Perforated Paper Style) */
+        .log-container {
+            flex: 1;
+            overflow-y: auto;
+            background: var(--bg-panel);
+            scrollbar-width: thin;
+            scrollbar-color: var(--line-bright) transparent;
+        }
+
+        .log-entry {
+            padding: 12px 20px;
+            border-bottom: 1px dashed var(--line-dim); /* The Perforated Look */
+            font-family: var(--font-code);
+            font-size: 11px;
+            display: grid;
+            grid-template-columns: 40px 1fr;
+            gap: 12px;
+            animation: slideIn 0.3s var(--ease-snap);
+        }
+
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(4px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .log-meta {
+            color: var(--text-tertiary);
+            font-size: 9px;
+            padding-top: 2px;
+        }
+
+        .log-content { color: var(--text-secondary); line-height: 1.5; }
+        .log-highlight { color: var(--text-primary); font-weight: 600; }
+        
+        .log-tag {
+            display: inline-block;
+            padding: 1px 4px;
+            border-radius: 2px;
+            font-size: 9px;
+            margin-right: 6px;
+            border: 1px solid transparent;
+        }
+
+        .tag-MUTATION { border-color: var(--signal-cyan); color: var(--signal-cyan); }
+        .tag-ERROR { border-color: var(--signal-red); color: var(--signal-red); }
+        .tag-COMPLETE { border-color: var(--signal-green); color: var(--signal-green); }
+
+        /* --- MAIN VIEWPORT (GRAPH) --- */
+        main {
+            grid-row: 2;
+            grid-column: 2;
+            position: relative;
+            overflow: hidden; /* Canvas handles scroll/pan if implemented, for now static viewport */
+            background-color: var(--bg-void);
+            /* Technical Grid Background */
+            background-image: 
+                linear-gradient(var(--line-dim) 1px, transparent 1px),
+                linear-gradient(90deg, var(--line-dim) 1px, transparent 1px);
+            background-size: 40px 40px;
+            /* Fades the grid out */
+            mask-image: radial-gradient(circle at center, black 40%, transparent 100%);
+            -webkit-mask-image: radial-gradient(circle at center, black 40%, transparent 100%);
+        }
+
+        #graph-layer {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none; /* Let clicks pass to HTML nodes if needed */
+        }
+
+        /* SVG Cables */
+        path.cable {
+            fill: none;
+            stroke: var(--line-bright);
+            stroke-width: 1.5;
+            transition: stroke 0.3s;
+        }
+
+        path.cable.active {
+            stroke: var(--signal-cyan);
+            stroke-dasharray: 6 4;
+            animation: flow 1s linear infinite;
+            filter: drop-shadow(0 0 4px var(--signal-cyan));
+        }
+
+        path.cable.complete {
+            stroke: var(--signal-green);
+            stroke-dasharray: none;
+            opacity: 0.5;
+        }
+
+        @keyframes flow { to { stroke-dashoffset: -10; } }
+
+        /* --- CHIP NODE COMPONENT (From PipelineStage.svelte) --- */
+        .node-chip {
+            position: absolute;
+            background: var(--bg-surface);
+            border: 1px solid var(--line-dim);
+            width: 200px;
+            /* Height is auto based on content */
+            transform: translate(-50%, -50%);
+            display: flex;
+            align-items: stretch;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+            transition: all 0.4s var(--ease-snap);
+            opacity: 0;
+            z-index: 10;
+        }
+
+        .node-chip.visible { opacity: 1; }
+
+        /* Left Status Indicator */
+        .chip-indicator {
+            width: 4px;
+            background: var(--line-dim);
+            transition: background 0.3s;
+        }
+
+        /* Main Content Area */
+        .chip-content {
+            flex: 1;
+            padding: 10px 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            overflow: hidden;
+        }
+
+        .chip-role {
+            font-family: var(--font-code);
+            font-size: 9px;
+            text-transform: uppercase;
+            color: var(--text-tertiary);
+            letter-spacing: 0.5px;
+        }
+
+        .chip-label {
+            font-family: var(--font-ui);
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-primary);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* Terminal Preview inside Node */
+        .chip-terminal {
+            margin-top: 6px;
+            font-family: var(--font-code);
+            font-size: 9px;
+            color: var(--text-secondary);
+            border-top: 1px solid var(--line-dim);
+            padding-top: 4px;
+            min-height: 14px;
+            white-space: nowrap;
+            overflow: hidden;
+            opacity: 0.7;
+        }
+
+        /* Right Decor Strip */
+        .chip-decor {
+            width: 12px;
+            background: repeating-linear-gradient(
+                0deg,
+                transparent,
+                transparent 2px,
+                var(--line-dim) 2px,
+                var(--line-dim) 3px
+            );
+            border-left: 1px solid var(--line-dim);
+            opacity: 0.3;
+        }
+
+        /* STATES */
+        .node-chip.running { border-color: var(--signal-amber); box-shadow: 0 0 15px var(--signal-amber-dim); }
+        .node-chip.running .chip-indicator { background: var(--signal-amber); }
+        .node-chip.running .chip-label { color: var(--signal-amber); }
+        
+        .node-chip.complete { border-color: var(--signal-green); }
+        .node-chip.complete .chip-indicator { background: var(--signal-green); }
+        
+        .node-chip.mutation { border-color: var(--signal-cyan); }
+        .node-chip.mutation .chip-indicator { background: var(--signal-cyan); }
+
+    </style>
+</head>
+<body>
+
+    <!-- Global Noise Texture -->
+    <div class="noise-overlay"></div>
+
+    <header>
+        <div class="brand-lockup">
+            RARO <span class="brand-accent">//</span> ORCHESTRATOR
+            <span class="brand-accent"></span>
+            <span class="tag-enterprise">INFRASTRUCTURE</span>
+        </div>
+
+        <div class="telemetry-rack">
+            <div class="telemetry-unit">
+                <span class="t-label">Inference Cost</span>
+                <span class="t-value" id="val-cost">$0.000</span>
+            </div>
+            <div class="telemetry-unit">
+                <span class="t-label">Token Volume</span>
+                <span class="t-value" id="val-tokens">0</span>
+            </div>
+            <div class="telemetry-unit">
+                <span class="t-label">System State</span>
+                <span class="t-value t-status">ONLINE</span>
+            </div>
+        </div>
+    </header>
+
+    <aside>
+        <div class="section-header">Runtime Controls</div>
+        <div class="control-deck">
+            <button class="btn-tactile btn-primary" onclick="sys.runScenario()">
+                <span>EXECUTE: SUPPLY_CHAIN_AUDIT</span>
+                <span>▶</span>
+            </button>
+            <button class="btn-tactile" onclick="sys.reset()">
+                <span>RESET TOPOLOGY</span>
+                <span>↺</span>
+            </button>
+        </div>
+
+        <div class="section-header">Kernel Event Stream</div>
+        <div class="log-container" id="log-feed">
+            <!-- Logs injected here -->
+            <div class="log-entry">
+                <div class="log-meta">0.00s</div>
+                <div class="log-content">System initialized. Waiting for instruction.</div>
+            </div>
+        </div>
+    </aside>
+
+    <main id="viewport">
+        <!-- SVG Layer for Cables -->
+        <svg id="graph-layer"></svg>
+        <!-- HTML Layer for Chips -->
+        <div id="node-layer"></div>
+    </main>
+
+    <script>
+        /**
+         * RARO COMMERCIAL DEMO ENGINE
+         * Aesthetic: Phosphor / Industrial
+         * Logic: Recursive Tree Expansion
+         */
+
+        class System {
+            constructor() {
+                this.nodes = [];
+                this.edges = [];
+                this.tokens = 0;
+                this.startTime = Date.now();
+                this.view = {
+                    nodes: document.getElementById('node-layer'),
+                    svg: document.getElementById('graph-layer'),
+                    logs: document.getElementById('log-feed'),
+                    cost: document.getElementById('val-cost'),
+                    vol: document.getElementById('val-tokens')
+                };
+                
+                // Viewport Center calculation
+                this.center = {
+                    x: this.view.nodes.clientWidth / 2,
+                    y: this.view.nodes.clientHeight / 2
+                };
+            }
+
+            log(msg, type = 'INFO', tag = null) {
+                const el = document.createElement('div');
+                el.className = 'log-entry';
+                
+                const time = ((Date.now() - this.startTime) / 1000).toFixed(2);
+                let html = `<div class="log-meta">+${time}s</div><div class="log-content">`;
+                
+                if (tag) html += `<span class="log-tag tag-${tag}">${tag}</span>`;
+                html += `${msg}</div>`;
+                
+                el.innerHTML = html;
+                this.view.logs.prepend(el);
+            }
+
+            // Create a "Chip" style node
+            createNode(config) {
+                const node = {
+                    id: config.id,
+                    parentId: config.parentId,
+                    role: config.role,
+                    label: config.label,
+                    x: 0, 
+                    y: 0,
+                    status: 'PENDING',
+                    el: null
+                };
+
+                // Position Logic (Dendrogram)
+                if (!config.parentId) {
+                    node.x = 100; // Start Left
+                    node.y = this.view.nodes.clientHeight / 2;
+                } else {
+                    const parent = this.nodes.find(n => n.id === config.parentId);
+                    const siblings = this.nodes.filter(n => n.parentId === config.parentId).length;
+                    
+                    // Horizontal Spacing
+                    node.x = parent.x + 280; 
+                    
+                    // Vertical Spacing (Dynamic Branching)
+                    // If it's the first child, go straight. 
+                    // If multiple, spread out.
+                    const spread = 120; 
+                    if (siblings === 0) node.y = parent.y;
+                    else if (siblings % 2 !== 0) node.y = parent.y - (Math.ceil(siblings/2) * spread);
+                    else node.y = parent.y + (Math.ceil(siblings/2) * spread);
+                }
+
+                this.nodes.push(node);
+                
+                // DOM Creation
+                const el = document.createElement('div');
+                el.className = 'node-chip';
+                el.style.left = `${node.x}px`;
+                el.style.top = `${node.y}px`;
+                el.id = `node-${node.id}`;
+
+                el.innerHTML = `
+                    <div class="chip-indicator"></div>
+                    <div class="chip-content">
+                        <div class="chip-role">${node.role}</div>
+                        <div class="chip-label">${node.label}</div>
+                        <div class="chip-terminal" id="term-${node.id}">Initializing...</div>
+                    </div>
+                    <div class="chip-decor"></div>
+                `;
+
+                this.view.nodes.appendChild(el);
+                node.el = el;
+
+                // Animate In
+                requestAnimationFrame(() => el.classList.add('visible'));
+
+                // Render Edge if parent exists
+                if (node.parentId) {
+                    this.renderEdge(node.parentId, node.id);
+                }
+
+                this.setStatus(node.id, 'running');
+                this.log(`Topology Mutation: Node ${node.id} spawned.`, 'INFO', 'MUTATION');
+
+                return node;
+            }
+
+            renderEdge(fromId, toId) {
+                const from = this.nodes.find(n => n.id === fromId);
+                const to = this.nodes.find(n => n.id === toId);
+
+                const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+                path.classList.add('cable', 'active');
+                path.id = `cable-${fromId}-${toId}`;
+
+                // Curving path
+                const startX = from.x + 100; // Half width of 200
+                const startY = from.y;
+                const endX = to.x - 100;
+                const endY = to.y;
+                
+                const c1x = startX + (endX - startX) / 2;
+                const d = `M ${startX} ${startY} C ${c1x} ${startY}, ${c1x} ${endY}, ${endX} ${endY}`;
+                
+                path.setAttribute("d", d);
+                this.view.svg.appendChild(path);
+            }
+
+            setStatus(id, status) {
+                const node = this.nodes.find(n => n.id === id);
+                if (!node) return;
+                
+                // Remove old classes
+                node.el.classList.remove('running', 'complete', 'mutation');
+                node.el.classList.add(status);
+
+                // If complete, finalize edge
+                if (status === 'complete' && node.parentId) {
+                    const cable = document.getElementById(`cable-${node.parentId}-${node.id}`);
+                    if(cable) {
+                        cable.classList.remove('active');
+                        cable.classList.add('complete');
+                    }
+                }
+            }
+
+            updateTerm(id, text) {
+                const el = document.getElementById(`term-${id}`);
+                if(el) {
+                    el.innerText = text;
+                    // Simulate Token usage
+                    this.tokens += Math.floor(Math.random() * 25);
+                    this.updateTelemetry();
+                }
+            }
+
+            updateTelemetry() {
+                this.view.vol.innerText = this.tokens.toLocaleString();
+                this.view.cost.innerText = '$' + ((this.tokens / 1_000_000) * 1.5).toFixed(4);
+            }
+
+            reset() {
+                this.view.nodes.innerHTML = '';
+                this.view.svg.innerHTML = '';
+                this.view.logs.innerHTML = '';
+                this.nodes = [];
+                this.tokens = 0;
+                this.startTime = Date.now();
+                this.updateTelemetry();
+                this.log('System Reset. Memory cleared.', 'INFO');
+            }
+
+            async wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+            // --- SCENARIO LOGIC ---
+            async runScenario() {
+                this.reset();
+                this.log('Injecting Seed Goal: "Lithium Supply Chain Risk Analysis"', 'INFO', 'MUTATION');
+                
+                // 1. Root
+                const root = this.createNode({ id: 'N0', role: 'ORCHESTRATOR', label: 'ROOT_SUPERVISOR' });
+                
+                await this.wait(800);
+                this.updateTerm('N0', 'Context loading...');
+                await this.wait(800);
+                this.updateTerm('N0', 'Detecting complexity...');
+                
+                // 2. Branching
+                this.log('Complexity threshold exceeded. Spawning sub-agents.', 'INFO', 'MUTATION');
+                
+                const geo = this.createNode({ id: 'N1', parentId: 'N0', role: 'RESEARCHER', label: 'GEO_POLITICS' });
+                const mkt = this.createNode({ id: 'N2', parentId: 'N0', role: 'ANALYST', label: 'MARKET_VOLATILITY' });
+                
+                // Parallel Simulation
+                const runMkt = async () => {
+                    await this.wait(1500);
+                    this.updateTerm('N2', 'Querying Futures API...');
+                    await this.wait(2000);
+                    this.updateTerm('N2', 'Volatility Index: 0.84');
+                    this.setStatus('N2', 'complete');
+                    this.log('Market Analysis Finalized.', 'INFO', 'COMPLETE');
+                };
+
+                const runGeo = async () => {
+                    await this.wait(1000);
+                    this.updateTerm('N1', 'Scanning Chilean Legislation...');
+                    await this.wait(1500);
+                    this.updateTerm('N1', 'ALERT: Regulatory Drift');
+                    this.setStatus('N1', 'running'); // Keep running
+                    
+                    // Recursive Spawn
+                    this.log('Ambiguity detected in N1. Spawning Legal Helper.', 'WARN', 'MUTATION');
+                    const legal = this.createNode({ id: 'N1-A', parentId: 'N1', role: 'LEGAL_BOT', label: 'PDF_PARSER' });
+                    
+                    await this.wait(1000);
+                    this.updateTerm('N1-A', 'Vectorizing 400 pages...');
+                    await this.wait(1500);
+                    this.updateTerm('N1-A', 'Extracted: Royalty Hike');
+                    this.setStatus('N1-A', 'complete');
+                    
+                    await this.wait(500);
+                    this.updateTerm('N1', ' integrating legal data...');
+                    this.setStatus('N1', 'complete');
+                    this.log('Geo-Political Risk Assessment Finalized.', 'INFO', 'COMPLETE');
+                };
+
+                await Promise.all([runMkt(), runGeo()]);
+
+                // Finalize Root
+                await this.wait(1000);
+                this.updateTerm('N0', 'Synthesizing Report...');
+                this.setStatus('N0', 'complete');
+                this.log('WORKFLOW_COMPLETE. Artifact generated.', 'INFO', 'COMPLETE');
+            }
+        }
+
+        const sys = new System();
+    </script>
+</body>
+</html>
