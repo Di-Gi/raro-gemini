@@ -1,13 +1,18 @@
+// [[RARO]]/apps/kernel-server/src/models.rs
+// Purpose: Shared data models. Cleaned up dependencies and ensuring Serde compatibility.
+// Architecture: Shared Data Layer
+// Dependencies: Serde
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum ModelVariant {
-    #[serde(rename = "gemini-3-flash")]
+    #[serde(rename = "gemini-3-flash-preview")]
     GeminiFlash,
-    #[serde(rename = "gemini-3-pro")]
+    #[serde(rename = "gemini-2.5-flash-lite")]
     GeminiPro,
-    #[serde(rename = "gemini-3-deep-think")]
+    #[serde(rename = "gemini-2.5-flash")]
     GeminiDeepThink,
 }
 
@@ -32,6 +37,13 @@ pub struct AgentNodeConfig {
     pub cache_policy: String,
     pub depends_on: Vec<String>,
     pub prompt: String,
+    pub position: Option<Position>, // Added for UI coordination
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Position {
+    pub x: f64,
+    pub y: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

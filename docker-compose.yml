@@ -1,58 +1,69 @@
-version: '3.8'
-
 services:
-  # Rust Kernel Server (Orchestration Layer)
+  # 1. THE BRAIN: Rust Kernel Server
+  # Orchestrates the DAG and manages state.
   kernel:
     build:
       context: ./apps/kernel-server
       dockerfile: Dockerfile
+    container_name: raro-kernel
     ports:
       - "3000:3000"
     environment:
-      - RUST_LOG=debug
+      - RUST_LOG=raro_kernel=debug,tower_http=trace
       - KERNEL_PORT=3000
+      # CRITICAL: Points to the internal docker service name of the agent service
+      - AGENT_HOST=agents
+      - AGENT_PORT=8000
     networks:
-      - raro
+      - raro-net
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    depends_on:
+      agents:
+        condition: service_started
 
-  # Python Agent Service (Execution Layer)
+  # 2. THE MUSCLE: Python Agent Service
+  # Executes Gemini 3 inference and handles heavy lifting.
   agents:
     build:
       context: ./apps/agent-service
       dockerfile: Dockerfile
+    container_name: raro-agents
     ports:
-      - "8000:8000"
+      - "8000:8000" # Exposed for direct debugging if needed
     environment:
       - PYTHONUNBUFFERED=1
+      # API Key must be set in your local .env file
       - GEMINI_API_KEY=${GEMINI_API_KEY}
-    depends_on:
-      - kernel
     networks:
-      - raro
+      - raro-net
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 3
 
-  # SvelteKit Web Console (UI Layer)
+  # 3. THE FACE: SvelteKit Web Console
+  # Reactive UI for visualization and control.
   web:
     build:
       context: ./apps/web-console
       dockerfile: Dockerfile
+    container_name: raro-web
     ports:
       - "5173:5173"
     environment:
+      # Browser runs on Host, so it must hit localhost:3000, not the internal docker name
       - VITE_API_URL=http://localhost:3000
     depends_on:
-      - kernel
-      - agents
+      kernel:
+        condition: service_healthy
     networks:
-      - raro
+      - raro-net
+
 
   # Redis for caching (Optional)
   redis:

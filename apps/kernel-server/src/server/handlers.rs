@@ -1,3 +1,8 @@
+// [[RARO]]/apps/kernel-server/src/server/handlers.rs
+// Purpose: API Handlers. updated to allow async spawning of workflows.
+// Architecture: API Layer
+// Dependencies: Axum, Runtime
+
 use axum::{
     extract::{Path, State, Json, Query, ws::{WebSocket, WebSocketUpgrade}},
     http::StatusCode,
@@ -33,6 +38,7 @@ pub async fn start_workflow(
     State(runtime): State<Arc<RARORuntime>>,
     Json(config): Json<WorkflowConfig>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    // start_workflow now spawns the task internally and returns the run_id immediately
     match runtime.start_workflow(config) {
         Ok(run_id) => Ok(Json(json!({
             "success": true,
@@ -63,7 +69,6 @@ pub async fn invoke_agent(
 ) -> Result<Json<InvocationPayload>, StatusCode> {
     tracing::info!("Preparing invocation for agent: {} in run: {}", agent_id, run_id);
 
-    // Prepare the payload with signature routing and caching
     runtime
         .prepare_invocation_payload(&run_id, &agent_id)
         .map(Json)
@@ -104,6 +109,11 @@ async fn handle_runtime_stream(
 ) {
     let (mut sender, mut receiver) = socket.split();
 
+    // Wait briefly for state to be initialized if called immediately after start
+    if runtime.get_state(&run_id).is_none() {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
     // Verify run exists
     if runtime.get_state(&run_id).is_none() {
         let _ = sender
@@ -128,8 +138,8 @@ async fn handle_runtime_stream(
             .await;
     }
 
-    // Stream updates at regular intervals (poll-based for simplicity)
-    let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+    // Stream updates
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(250)); // Faster polling for UI responsiveness
 
     loop {
         tokio::select! {
@@ -155,6 +165,8 @@ async fn handle_runtime_stream(
                         tracing::info!("Failed to send state update, client disconnected");
                         break;
                     }
+                    
+                    // Optional: Stop streaming if completed/failed (though keeping open allows reviewing final state)
                 }
             }
         }

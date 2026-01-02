@@ -2,23 +2,32 @@ FROM node:20-alpine as builder
 
 WORKDIR /app
 
-COPY package.json .
+# Copy package management files
+COPY package.json package-lock.json* ./
+
+# Install dependencies
+# Old: RUN npm ci
+# New:
 RUN npm install
 
+# Copy source code
 COPY . .
+
+# Build the application
 RUN npm run build
 
+# --- Runtime Stage ---
 FROM node:20-alpine
 
 WORKDIR /app
 
+# Copy built assets and package files
 COPY --from=builder /app/dist ./dist
-COPY package.json .
+COPY --from=builder /app/package.json ./
+COPY --from=builder /app/node_modules ./node_modules
 
-# FIX: Removed '--production' so that 'vite' (a devDependency) is installed
-RUN npm install
-
+# Expose Vite's default port
 EXPOSE 5173
 
-# 'npm run preview' runs 'vite preview', which now exists
-CMD ["npm", "run", "preview"]
+# Bind to 0.0.0.0 to ensure accessibility outside container
+CMD ["npm", "run", "preview", "--", "--host", "0.0.0.0"]

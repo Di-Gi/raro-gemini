@@ -1,6 +1,5 @@
 [package]
 name = "raro-kernel"
-# FIX: Explicitly define these instead of using .workspace = true
 version = "0.1.0"
 edition = "2021"
 authors = ["RARO Team"]
@@ -24,6 +23,7 @@ futures = "0.3"
 tungstenite = "0.20"
 tokio-tungstenite = "0.20"
 chrono = { version = "0.4", features = ["serde"] }
+reqwest = { version = "0.11", features = ["json"] }
 
 [profile.release]
 opt-level = 3

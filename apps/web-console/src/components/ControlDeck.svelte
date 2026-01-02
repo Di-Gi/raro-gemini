@@ -1,23 +1,30 @@
+<!-- // [[RARO]]/apps/web-console/src/components/ControlDeck.svelte
+// Purpose: Main interaction panel. Orchestrates the API call to start the run.
+// Architecture: View Controller
+// Dependencies: Stores, API -->
+
 <script lang="ts">
-  import { selectedNode, agentNodes, addLog, updateNodeStatus, deselectNode } from '$lib/stores'
+  import { selectedNode, agentNodes, pipelineEdges, addLog, updateNodeStatus, deselectNode, telemetry, connectRuntimeWebSocket } from '$lib/stores'
+  import { startRun, type WorkflowConfig, type AgentConfig } from '$lib/api'
+  import { get } from 'svelte/store'
 
   let { expanded }: { expanded: boolean } = $props();
 
   let cmdInput = $state('')
   let activePane = $state('input') // 'input' | 'overview' | 'sim' | 'stats' | 'node-config'
-  let currentModel = $state('GEMINI-3-PRO')
+  let currentModel = $state('gemini-2.5-flash-lite')
   let currentPrompt = $state('')
   let thinkingBudget = $state(5)
+  let isSubmitting = $state(false)
 
   // === STATE SYNCHRONIZATION ===
-  // This effect ensures strict view exclusivity based on selection
   $effect(() => {
     if ($selectedNode && expanded) {
       // 1. Node selected -> FORCE view to Config
       // Load node specific data
       const node = $agentNodes.find((n) => n.id === $selectedNode)
       if (node) {
-        currentModel = node.model
+        currentModel = node.model.toLowerCase()
         currentPrompt = node.prompt
       }
       
@@ -34,22 +41,75 @@
     }
   });
 
-  function executeRun() {
+  async function executeRun() {
     if (!cmdInput) return
+    if (isSubmitting) return
+
+    isSubmitting = true
     addLog('OPERATOR', `<strong>${cmdInput}</strong>`, 'USER_INPUT')
-    cmdInput = ''
 
-    if (!expanded) {
-      highlightNode('n1')
-      setTimeout(() => { highlightNode('n2'); highlightNode('n3') }, 800)
-      setTimeout(() => highlightNode('n4'), 1600)
-      setTimeout(() => addLog('SYSTEM', 'Synthesis complete. 1284 tokens consumed.'), 2400)
+    try {
+        // 1. Construct Workflow Config from Store State
+        const nodes = get(agentNodes)
+        const edges = get(pipelineEdges)
+        
+        // Map UI Nodes to Kernel AgentConfig
+        const agents: AgentConfig[] = nodes.map(n => {
+            // Find dependencies
+            const dependsOn = edges
+                .filter(e => e.to === n.id)
+                .map(e => e.from);
+            
+            // Determine Model variant enum string
+            let modelVariant = 'gemini-2.5-flash-lite';
+            if (n.model.toUpperCase().includes('FLASH')) modelVariant = 'gemini-3-flash-preview';
+            if (n.model.toUpperCase().includes('DEEP')) modelVariant = 'gemini-2.5-flash';
+
+            return {
+                id: n.id,
+                role: n.role,
+                model: modelVariant,
+                tools: [], // Configurable tools could be added here
+                input_schema: {},
+                output_schema: {},
+                cache_policy: 'ephemeral',
+                depends_on: dependsOn,
+                prompt: n.prompt,
+                position: { x: n.x, y: n.y }
+            };
+        });
+
+        // Inject User Input into Orchestrator
+        const orchestrator = agents.find(a => a.role === 'orchestrator');
+        if (orchestrator) {
+            orchestrator.prompt = `${orchestrator.prompt}\n\nUSER REQUEST: ${cmdInput}`;
+        }
+
+        const config: WorkflowConfig = {
+            id: `flow-${Date.now()}`,
+            name: 'RARO_Session',
+            agents: agents,
+            max_token_budget: 100000,
+            timeout_ms: 60000
+        };
+
+        addLog('KERNEL', 'Compiling DAG manifest...', 'SYS');
+
+        // 2. Send to Kernel
+        const response = await startRun(config);
+        
+        addLog('KERNEL', `Workflow started. Run ID: ${response.run_id}`, 'OK');
+        
+        // 3. Connect WebSocket for live updates
+        connectRuntimeWebSocket(response.run_id);
+
+        cmdInput = ''
+
+    } catch (e: any) {
+        addLog('KERNEL', `Execution failed: ${e.message}`, 'ERR');
+    } finally {
+        isSubmitting = false;
     }
-  }
-
-  function highlightNode(id: string) {
-    updateNodeStatus(id, 'running')
-    setTimeout(() => updateNodeStatus(id, 'complete'), 600)
   }
 
   function handlePaneSelect(pane: string) {
@@ -64,13 +124,28 @@
     // Deselecting triggers the $effect above, which sets activePane = 'overview'
     deselectNode()
   }
+
+  // Handle Node Config Updates
+  function saveNodeConfig() {
+      if (!$selectedNode) return;
+      
+      agentNodes.update(nodes => nodes.map(n => {
+          if (n.id === $selectedNode) {
+              return {
+                  ...n,
+                  model: currentModel.toUpperCase(),
+                  prompt: currentPrompt
+              }
+          }
+          return n;
+      }));
+  }
 </script>
 
 <div id="control-deck" class:architect-mode={expanded}>
   {#if expanded}
     <div id="deck-nav">
       <!-- === NAVIGATION LOGIC === -->
-      <!-- Strict If/Else ensures tabs and settings never appear simultaneously -->
       {#if activePane === 'node-config'}
         <!-- MODE A: NODE CONFIGURATION (Exclusive) -->
         <div class="nav-item node-tab active">
@@ -87,6 +162,7 @@
         >
           Overview
         </div>
+        <!-- [Restored Functionality] Simulation Tab -->
         <div 
           class="nav-item {activePane === 'sim' ? 'active' : ''}" 
           onclick={() => handlePaneSelect('sim')}
@@ -113,8 +189,15 @@
           id="cmd-input"
           placeholder=">> Enter research directive or click pipeline to configure..."
           bind:value={cmdInput}
+          disabled={isSubmitting}
         ></textarea>
-        <button id="btn-run" onclick={executeRun}>INITIATE RUN</button>
+        <button id="btn-run" onclick={executeRun} disabled={isSubmitting}>
+            {#if isSubmitting}
+                INITIALIZING...
+            {:else}
+                INITIATE RUN
+            {/if}
+        </button>
       </div>
 
     {:else if activePane === 'node-config'}
@@ -127,19 +210,24 @@
           </div>
           <div class="form-group">
             <label>Model Runtime</label>
-            <select class="input-std" bind:value={currentModel}>
-              <option>GEMINI-3-PRO</option>
-              <option>GEMINI-3-FLASH</option>
-              <option>GEMINI-3-DEEP-THINK</option>
+            <select class="input-std" bind:value={currentModel} onchange={saveNodeConfig}>
+              <option value="gemini-2.5-flash-lite">GEMINI-3-PRO</option>
+              <option value="gemini-3-flash-preview">GEMINI-3-FLASH</option>
+              <option value="gemini-2.5-flash">GEMINI-3-DEEP-THINK</option>
             </select>
           </div>
         </div>
         <div class="form-group">
           <label>System Instruction (Prompt)</label>
-          <textarea class="input-std" bind:value={currentPrompt} style="height:80px; resize:none;"></textarea>
+          <textarea 
+            class="input-std" 
+            bind:value={currentPrompt} 
+            oninput={saveNodeConfig}
+            style="height:80px; resize:none;"
+          ></textarea>
         </div>
 
-        {#if currentModel === 'GEMINI-3-DEEP-THINK'}
+        {#if currentModel === 'gemini-2.5-flash'}
           <div class="form-group deep-think-config">
             <label>Thinking Budget (Extended Reasoning Depth)</label>
             <div class="slider-container">
@@ -165,15 +253,15 @@
         <div class="form-grid">
           <div class="form-group">
             <label>Pipeline Identifier</label>
-            <input class="input-std" value="Research_Synthesis_Alpha" />
+            <input class="input-std" value="RARO_Live_Session" readonly />
           </div>
           <div class="form-group">
             <label>Max Token Budget</label>
-            <input class="input-std" value="128,000" />
+            <input class="input-std" value="100,000" />
           </div>
           <div class="form-group">
-            <label>Latency Timeout (ms)</label>
-            <input class="input-std" value="15000" />
+            <label>Agent Service Status</label>
+            <div class="status-indicator">ONLINE</div>
           </div>
           <div class="form-group">
             <label>Persistence Layer</label>
@@ -186,7 +274,7 @@
       </div>
 
     {:else if activePane === 'sim'}
-      <!-- 4. SIMULATION -->
+      <!-- 4. SIMULATION [Restored] -->
       <div id="pane-sim" class="deck-pane">
         <div style="display:flex; gap:10px; margin-bottom:15px;">
           <button class="input-std action-btn" onclick={() => addLog('SYSTEM', 'Simulating step 1...')}>▶ STEP EXECUTION</button>
@@ -194,7 +282,7 @@
         </div>
         <div style="font-family:var(--font-code); font-size:11px; color:#555; background:white; border:1px solid var(--paper-line); padding:10px; height:100px; overflow-y:auto;">
           &gt; Ready for test vector injection...<br />
-          &gt; Agents loaded: 4
+          &gt; Agents loaded: {$agentNodes.length}
         </div>
       </div>
 
@@ -203,20 +291,20 @@
       <div id="pane-stats" class="deck-pane">
         <div class="stat-grid">
           <div class="stat-card">
-            <span class="stat-val">98ms</span>
-            <span class="stat-lbl">P99 Latency</span>
+            <span class="stat-val">{($telemetry.tokensUsed / 1000).toFixed(1)}k</span>
+            <span class="stat-lbl">Tokens</span>
           </div>
           <div class="stat-card">
-            <span class="stat-val">94.2%</span>
-            <span class="stat-lbl">Cache Hit</span>
+            <span class="stat-val">${$telemetry.totalCost.toFixed(4)}</span>
+            <span class="stat-lbl">Est. Cost</span>
           </div>
           <div class="stat-card">
-            <span class="stat-val">$0.002</span>
-            <span class="stat-lbl">Cost/Run</span>
-          </div>
-          <div class="stat-card">
-            <span class="stat-val">0</span>
+            <span class="stat-val">{$telemetry.errorCount}</span>
             <span class="stat-lbl">Errors</span>
+          </div>
+           <div class="stat-card">
+            <span class="stat-val">LIVE</span>
+            <span class="stat-lbl">Mode</span>
           </div>
         </div>
       </div>
@@ -225,6 +313,13 @@
 </div>
 
 <style>
+  .status-indicator {
+      color: #00C853;
+      font-weight: 700;
+      font-size: 11px;
+      margin-top: 10px;
+  }
+
   #control-deck {
     height: 160px;
     background: var(--paper-bg);
@@ -349,6 +444,12 @@
 
   #btn-run:hover {
     background: #f5f5f5;
+  }
+
+  #btn-run:disabled {
+      background: #eee;
+      color: #999;
+      cursor: not-allowed;
   }
 
   .form-grid {

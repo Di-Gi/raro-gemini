@@ -1,9 +1,16 @@
+// [[RARO]]/apps/kernel-server/src/runtime.rs
+// Purpose: Core orchestration logic. Manages DAG execution, state updates, and remote agent invocation.
+// Architecture: Domain Logic Layer
+// Dependencies: reqwest, dashmap, tokio
+
 use crate::dag::DAG;
 use crate::models::*;
 use chrono::Utc;
 use dashmap::DashMap;
 use uuid::Uuid;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use std::env;
 
 /// Payload for invoking an agent with signature routing and caching
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -11,11 +18,26 @@ pub struct InvocationPayload {
     pub agent_id: String,
     pub model: String,
     pub prompt: String,
+    pub input_data: serde_json::Value,
     pub parent_signature: Option<String>,
     pub cached_content_id: Option<String>,
     pub thinking_level: Option<i32>,
     pub file_paths: Vec<String>,
     pub tools: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteAgentResponse {
+    pub agent_id: String,
+    pub success: bool,
+    pub output: Option<serde_json::Value>,
+    pub error: Option<String>,
+    pub tokens_used: usize,
+    pub thought_signature: Option<String>,
+    pub input_tokens: usize,
+    pub output_tokens: usize,
+    pub cache_hit: bool,
+    pub latency_ms: f64,
 }
 
 pub struct RARORuntime {
@@ -24,6 +46,7 @@ pub struct RARORuntime {
     thought_signatures: DashMap<String, ThoughtSignatureStore>,
     dag_store: DashMap<String, DAG>,
     cache_resources: DashMap<String, String>, // run_id -> cached_content_id
+    http_client: reqwest::Client,
 }
 
 impl RARORuntime {
@@ -34,11 +57,12 @@ impl RARORuntime {
             thought_signatures: DashMap::new(),
             dag_store: DashMap::new(),
             cache_resources: DashMap::new(),
+            http_client: reqwest::Client::new(),
         }
     }
 
     /// Start a new workflow execution
-    pub fn start_workflow(&self, config: WorkflowConfig) -> Result<String, String> {
+    pub fn start_workflow(self: &Arc<Self>, config: WorkflowConfig) -> Result<String, String> {
         // Validate workflow structure
         let mut dag = DAG::new();
 
@@ -57,7 +81,7 @@ impl RARORuntime {
         }
 
         // Verify topological sort (catches cycles)
-        let _execution_order = dag
+        let execution_order = dag
             .topological_sort()
             .map_err(|e| format!("Invalid workflow: {}", e))?;
 
@@ -72,7 +96,7 @@ impl RARORuntime {
         let state = RuntimeState {
             run_id: run_id.clone(),
             workflow_id: workflow_id.clone(),
-            status: RuntimeStatus::Idle,
+            status: RuntimeStatus::Running, // Mark as running immediately
             active_agents: Vec::new(),
             completed_agents: Vec::new(),
             failed_agents: Vec::new(),
@@ -92,7 +116,153 @@ impl RARORuntime {
             },
         );
 
+        // Spawn the execution task (Fire and Forget)
+        let runtime_clone = self.clone();
+        let run_id_clone = run_id.clone();
+        let order_clone = execution_order.clone();
+
+        tokio::spawn(async move {
+            runtime_clone.execute_dag(run_id_clone, order_clone).await;
+        });
+
         Ok(run_id)
+    }
+
+    /// The core execution loop running in a background task
+    async fn execute_dag(&self, run_id: String, execution_order: Vec<String>) {
+        tracing::info!("Starting DAG execution for run_id: {}", run_id);
+
+        for agent_id in execution_order {
+            // 1. Prepare Invocation
+            let payload_result = self.prepare_invocation_payload(&run_id, &agent_id);
+            
+            let payload = match payload_result {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::error!("Failed to prepare payload for agent {}: {}", agent_id, e);
+                    self.fail_run(&run_id, &agent_id, &e);
+                    return;
+                }
+            };
+
+            // 2. Update State: Agent Running
+            self.update_agent_status(&run_id, &agent_id, InvocationStatus::Running);
+
+            // 3. Invoke Remote Agent Service
+            tracing::info!("Invoking remote agent: {}", agent_id);
+            let response = self.invoke_remote_agent(&payload).await;
+
+            // 4. Handle Response
+            match response {
+                Ok(res) => {
+                    if res.success {
+                        // Store signature
+                        if let Some(sig) = res.thought_signature.clone() {
+                            let _ = self.set_thought_signature(&run_id, &agent_id, sig);
+                        }
+
+                        // Record metrics
+                        let invocation_record = AgentInvocation {
+                            id: Uuid::new_v4().to_string(),
+                            agent_id: agent_id.clone(),
+                            model_variant: match payload.model.as_str() {
+                                "gemini-3-flash-preview" => ModelVariant::GeminiFlash,
+                                "gemini-2.5-flash" => ModelVariant::GeminiDeepThink,
+                                _ => ModelVariant::GeminiPro,
+                            },
+                            thought_signature: res.thought_signature,
+                            tools_used: payload.tools.clone(), // Simplified for now
+                            tokens_used: res.tokens_used,
+                            latency_ms: res.latency_ms as u64,
+                            status: InvocationStatus::Success,
+                            timestamp: Utc::now().to_rfc3339(),
+                        };
+
+                        let _ = self.record_invocation(&run_id, invocation_record);
+                        tracing::info!("Agent {} completed successfully", agent_id);
+                    } else {
+                        let error_msg = res.error.unwrap_or_else(|| "Unknown error".to_string());
+                        tracing::error!("Agent {} failed: {}", agent_id, error_msg);
+                        self.fail_run(&run_id, &agent_id, &error_msg);
+                        return; // Stop execution on failure
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Network error invoking agent {}: {}", agent_id, e);
+                    self.fail_run(&run_id, &agent_id, &e.to_string());
+                    return;
+                }
+            }
+        }
+
+        // 5. Complete Run
+        if let Some(mut state) = self.runtime_states.get_mut(&run_id) {
+            state.status = RuntimeStatus::Completed;
+            state.end_time = Some(Utc::now().to_rfc3339());
+            tracing::info!("Workflow run {} completed successfully", run_id);
+        }
+    }
+
+    /// Helper to fail the run and update state
+    fn fail_run(&self, run_id: &str, agent_id: &str, error: &str) {
+        if let Some(mut state) = self.runtime_states.get_mut(run_id) {
+            state.status = RuntimeStatus::Failed;
+            state.end_time = Some(Utc::now().to_rfc3339());
+            state.failed_agents.push(agent_id.to_string());
+            
+            // Remove from active if present
+            state.active_agents.retain(|a| a != agent_id);
+            
+            // Record failed invocation
+            state.invocations.push(AgentInvocation {
+                id: Uuid::new_v4().to_string(),
+                agent_id: agent_id.to_string(),
+                model_variant: ModelVariant::GeminiPro, // Fallback
+                thought_signature: None,
+                tools_used: vec![],
+                tokens_used: 0,
+                latency_ms: 0,
+                status: InvocationStatus::Failed,
+                timestamp: Utc::now().to_rfc3339(),
+            });
+        }
+        tracing::error!("Run {} failed at agent {}: {}", run_id, agent_id, error);
+    }
+
+    /// Helper to update status to Running
+    fn update_agent_status(&self, run_id: &str, agent_id: &str, status: InvocationStatus) {
+         if let Some(mut state) = self.runtime_states.get_mut(run_id) {
+            match status {
+                InvocationStatus::Running => {
+                     if !state.active_agents.contains(&agent_id.to_string()) {
+                         state.active_agents.push(agent_id.to_string());
+                     }
+                },
+                _ => {}
+            }
+         }
+    }
+
+    /// Perform the actual HTTP request to the Agent Service
+    async fn invoke_remote_agent(&self, payload: &InvocationPayload) -> Result<RemoteAgentResponse, reqwest::Error> {
+        // Resolve Agent Host from Env or Default
+        let host = env::var("AGENT_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+        let port = env::var("AGENT_PORT").unwrap_or_else(|_| "8000".to_string());
+        let scheme = if host.contains("localhost") || host == "127.0.0.1" { "http" } else { "http" };
+        
+        // Handle docker service names that don't need http:// prefix if already there, 
+        // but robustly constructing url is safer.
+        let url = format!("{}://{}:{}/invoke", scheme, host, port);
+
+        tracing::debug!("Sending invocation request to: {}", url);
+
+        let response = self.http_client
+            .post(&url)
+            .json(payload)
+            .send()
+            .await?;
+
+        response.json::<RemoteAgentResponse>().await
     }
 
     /// Get current runtime state
@@ -100,7 +270,7 @@ impl RARORuntime {
         self.runtime_states.get(run_id).map(|r| (*r).clone())
     }
 
-    /// Record an agent invocation
+    /// Record an agent invocation (Internal helper used by logic above)
     pub fn record_invocation(&self, run_id: &str, invocation: AgentInvocation) -> Result<(), String> {
         let mut state = self
             .runtime_states
@@ -152,7 +322,6 @@ impl RARORuntime {
     }
 
     /// Prepare invocation payload with signature routing
-    /// This implements the core RARO pattern: passing parent's signature to child
     pub fn prepare_invocation_payload(
         &self,
         run_id: &str,
@@ -176,15 +345,10 @@ impl RARORuntime {
             .find(|a| a.id == agent_id)
             .ok_or_else(|| format!("Agent {} not found", agent_id))?;
 
-        // Get the DAG to find dependencies
-        let _dag = self
-            .dag_store
-            .get(run_id)
-            .ok_or_else(|| "DAG not found for run".to_string())?;
-
         // Fetch parent's signature for continuity
-        // The immediate parent's signature becomes this agent's input context
         let parent_signature = if !agent_config.depends_on.is_empty() {
+            // Logic: take the signature of the *first* dependency found. 
+            // Advanced: Could merge signatures from multiple parents.
             agent_config
                 .depends_on
                 .iter()
@@ -196,17 +360,16 @@ impl RARORuntime {
         // Get cached content if available
         let cached_content_id = self.cache_resources.get(run_id).map(|c| (*c).clone());
 
-        // Determine model variant and thinking level
+        // Determine model variant
         let model = match agent_config.model {
-            ModelVariant::GeminiFlash => "gemini-3-flash",
-            ModelVariant::GeminiPro => "gemini-3-pro",
-            ModelVariant::GeminiDeepThink => "gemini-3-deep-think",
+            ModelVariant::GeminiFlash => "gemini-3-flash-preview",
+            ModelVariant::GeminiPro => "gemini-2.5-flash-lite",
+            ModelVariant::GeminiDeepThink => "gemini-2.5-flash",
         }
         .to_string();
 
-        // Deep Think agents get thinking budget (default 5, can be 1-10)
         let thinking_level = if matches!(agent_config.model, ModelVariant::GeminiDeepThink) {
-            Some(5) // Default thinking depth for deep-think model
+            Some(5)
         } else {
             None
         };
@@ -215,26 +378,24 @@ impl RARORuntime {
             agent_id: agent_id.to_string(),
             model,
             prompt: agent_config.prompt.clone(),
+            input_data: serde_json::json!({}), // Default empty
             parent_signature,
             cached_content_id,
             thinking_level,
-            file_paths: Vec::new(), // Set by upstream (e.g., from research project)
+            file_paths: Vec::new(),
             tools: agent_config.tools.clone(),
         })
     }
 
-    /// Store a cache resource ID for this run (e.g., from orchestrator's PDF uploads)
     pub fn set_cache_resource(&self, run_id: &str, cached_content_id: String) -> Result<(), String> {
         self.cache_resources.insert(run_id.to_string(), cached_content_id);
         Ok(())
     }
 
-    /// Retrieve the cache resource ID for cost-optimized subsequent invocations
     pub fn get_cache_resource(&self, run_id: &str) -> Option<String> {
         self.cache_resources.get(run_id).map(|c| c.clone())
     }
 
-    /// Get the DAG for a workflow run (for debugging/visualization)
     pub fn has_dag(&self, run_id: &str) -> bool {
         self.dag_store.contains_key(run_id)
     }

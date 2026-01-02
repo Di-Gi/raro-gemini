@@ -1,3 +1,8 @@
+// [[RARO]]/apps/kernel-server/src/main.rs
+// Purpose: Entry point. Added cors configuration to allow frontend access.
+// Architecture: Application Boot
+// Dependencies: Axum, Tower
+
 mod dag;
 mod models;
 mod server;
@@ -7,9 +12,10 @@ mod observability;
 use axum::{
     Router,
     routing::{get, post},
+    http::Method,
 };
 use std::sync::Arc;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{CorsLayer, Any};
 use tracing_subscriber;
 
 use crate::runtime::RARORuntime;
@@ -21,11 +27,18 @@ async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("raro_kernel=debug".parse().unwrap()),
+                .add_directive("raro_kernel=debug".parse().unwrap())
+                .add_directive("tower_http=trace".parse().unwrap()),
         )
         .init();
 
     let runtime = Arc::new(RARORuntime::new());
+
+    // Configure CORS
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([Method::GET, Method::POST])
+        .allow_headers(Any);
 
     // Build router
     let app = Router::new()
@@ -35,14 +48,16 @@ async fn main() {
         .route("/runtime/:run_id/agent/:agent_id/invoke", post(handlers::invoke_agent))
         .route("/runtime/signatures", get(handlers::get_signatures))
         .route("/ws/runtime/:run_id", axum::routing::get(handlers::ws_runtime_stream))
-        .layer(CorsLayer::permissive())
+        .layer(cors)
         .with_state(runtime);
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:3000")
+    let port = std::env::var("KERNEL_PORT").unwrap_or_else(|_| "3000".to_string());
+    let addr = format!("0.0.0.0:{}", port);
+    let listener = tokio::net::TcpListener::bind(&addr)
         .await
-        .expect("Failed to bind to port 3000");
+        .expect("Failed to bind to port");
 
-    tracing::info!("RARO Kernel Server listening on http://127.0.0.1:3000");
+    tracing::info!("RARO Kernel Server listening on http://{}", addr);
 
     axum::serve(listener, app)
         .await

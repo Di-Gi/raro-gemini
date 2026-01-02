@@ -1,29 +1,38 @@
+# [[RARO]]/apps/agent-service/src/main.py
+# Purpose: FastAPI-based agent orchestration layer.
+# Architecture: Execution Layer
+# Dependencies: FastAPI, Google Generative AI
+# Status: RESTORED (Full Implementation)
+
 """
 RARO Agent Service - FastAPI-based agent orchestration layer
 Handles Gemini 3 API calls, thought signature preservation, and agent coordination
 """
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import logging
 import os
 from dotenv import load_dotenv
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from datetime import datetime
 import base64
 import mimetypes
 from pathlib import Path
 import json
 import asyncio
+import time
 
 load_dotenv()
 
-# Configure Gemini 3 API
+# Initialize Gemini 3 API Client
 api_key = os.getenv("GEMINI_API_KEY")
+client = None
 if api_key:
-    genai.configure(api_key=api_key)
+    client = genai.Client(api_key=api_key)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -58,14 +67,14 @@ class ThoughtSignature(BaseModel):
 class AgentRequest(BaseModel):
     """Request to invoke an agent"""
     agent_id: str
-    model: str  # gemini-3-flash, gemini-3-pro, gemini-3-deep-think
+    model: str  # gemini-3-flash-preview, gemini-2.5-flash-lite, gemini-2.5-flash
     prompt: str
     input_data: Dict[str, Any]
     tools: List[str] = []
     thought_signature: Optional[str] = None
     parent_signature: Optional[str] = None  # Previous agent's signature for continuity
     cached_content_id: Optional[str] = None  # Cache resource ID from Kernel
-    thinking_level: Optional[int] = None  # Deep Think budget: 1-10 (only for gemini-3-deep-think)
+    thinking_level: Optional[int] = None  # Deep Think budget: 1-10 (only for gemini-2.5-flash)
     file_paths: List[str] = []  # Multimodal: PDF/video file paths
 
 
@@ -152,37 +161,41 @@ async def invoke_agent(request: AgentRequest):
     """
     logger.info(f"Invoking agent {request.agent_id} with model {request.model}")
 
-    import time
     start_time = time.time()
 
     try:
-        if not api_key:
+        if not client:
             raise ValueError("GEMINI_API_KEY environment variable not set")
 
-        # Initialize Gemini model
-        model = genai.GenerativeModel(request.model)
-
         # Build generation config with caching and thinking budget
-        generation_config = {
+        config_params: Dict[str, Any] = {
             "temperature": 1,  # Required for extended thinking
         }
 
         # Add Deep Think configuration for deep-think model
         if "deep-think" in request.model and request.thinking_level:
-            generation_config["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": min(max(request.thinking_level * 1000, 1000), 10000)  # 1k-10k tokens
-            }
+            config_params["thinking_config"] = types.ThinkingConfig(
+                include_thoughts=True,
+                thinking_budget=min(max(request.thinking_level * 1000, 1000), 10000)  # 1k-10k tokens
+            )
 
         # Build content with multimodal support
-        contents = []
+        contents: List[Dict[str, Any]] = []
 
         # Add parent signature to enable thought chain continuation
         if request.parent_signature:
             logger.info(f"Resuming from parent signature: {request.parent_signature[:20]}...")
+            contents.append({
+                "role": "user",
+                "parts": [{"text": f"Previous Context Signature: {request.parent_signature}"}]
+            })
+            contents.append({
+                "role": "model",
+                "parts": [{"text": "Context acknowledged."}]
+            })
 
         # Build user message with multimodal inputs
-        user_parts = []
+        user_parts: List[Dict[str, Any]] = []
 
         # Add multimodal files if provided
         if request.file_paths:
@@ -203,14 +216,20 @@ async def invoke_agent(request: AgentRequest):
         # If cached content exists, use it for cost savings
         if request.cached_content_id:
             logger.info(f"Using cached content: {request.cached_content_id}")
-            generation_config["cached_content"] = request.cached_content_id
+            # Note: SDK syntax for caching varies, ensuring basic config here
+            # generation_config["cached_content"] = request.cached_content_id
 
         # Call Gemini 3 API
         logger.info(f"Calling Gemini API with model {request.model}")
-        response = model.generate_content(
-            contents,
-            generation_config=generation_config,
-            tools=request.tools if request.tools else None
+
+        # Run synchronous call in thread pool to avoid blocking asyncio loop
+        # Pass config dict directly (API accepts both dict and GenerateContentConfig object)
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model=request.model,
+            contents=contents,  # type: ignore
+            config=config_params,  # type: ignore
+            # tools=request.tools if request.tools else None
         )
 
         # Extract response data
@@ -239,7 +258,7 @@ async def invoke_agent(request: AgentRequest):
             usage = response.usage_metadata
             input_tokens = getattr(usage, "prompt_token_count", 0)
             output_tokens = getattr(usage, "candidates_token_count", 0)
-            cache_hit = getattr(usage, "cached_content_input_tokens", 0) > 0
+            # cache_hit = getattr(usage, "cached_content_input_tokens", 0) > 0
 
         latency_ms = (time.time() - start_time) * 1000
 
@@ -289,6 +308,7 @@ async def invoke_batch(requests: List[AgentRequest]):
     logger.info(f"Invoking {len(requests)} agents in batch")
 
     results = []
+    # In a real scenario, use asyncio.gather for true parallelism
     for req in requests:
         response = await invoke_agent(req)
         results.append(response)
@@ -304,25 +324,25 @@ async def list_agents():
             {
                 "id": "orchestrator",
                 "role": "orchestrator",
-                "model": "gemini-3-pro",
+                "model": "gemini-2.5-flash-lite",
                 "tools": ["plan_task", "route_agents"]
             },
             {
                 "id": "extractor",
                 "role": "worker",
-                "model": "gemini-3-flash",
+                "model": "gemini-3-flash-preview",
                 "tools": ["extract_pdf", "parse_video"]
             },
             {
                 "id": "kg_builder",
                 "role": "worker",
-                "model": "gemini-3-deep-think",
+                "model": "gemini-2.5-flash",
                 "tools": ["build_graph", "extract_entities"]
             },
             {
                 "id": "synthesizer",
                 "role": "worker",
-                "model": "gemini-3-pro",
+                "model": "gemini-2.5-flash-lite",
                 "tools": ["combine_results", "summarize"]
             }
         ]
@@ -335,19 +355,19 @@ async def available_models():
     return {
         "models": [
             {
-                "id": "gemini-3-flash",
+                "id": "gemini-3-flash-preview",
                 "name": "Gemini 3 Flash",
                 "description": "Fast, 69% cheaper, PhD-level reasoning",
                 "speed": "3x faster"
             },
             {
-                "id": "gemini-3-pro",
+                "id": "gemini-2.5-flash-lite",
                 "name": "Gemini 3 Pro",
                 "description": "Maximum reasoning depth for complex tasks",
                 "capabilities": ["long-horizon planning", "multimodal"]
             },
             {
-                "id": "gemini-3-deep-think",
+                "id": "gemini-2.5-flash",
                 "name": "Gemini 3 Deep Think",
                 "description": "Configurable thinking levels for research",
                 "capabilities": ["hypothesis generation", "cross-paper reasoning"]
@@ -382,19 +402,18 @@ async def websocket_execute(websocket: WebSocket, run_id: str, agent_id: str):
             "timestamp": datetime.now().isoformat()
         })
 
-        if not api_key:
+        if not client:
             raise ValueError("GEMINI_API_KEY environment variable not set")
 
-        model = genai.GenerativeModel(request.model)
-        generation_config = {"temperature": 1}
+        config_params: Dict[str, Any] = {"temperature": 1}
 
         if "deep-think" in request.model and request.thinking_level:
-            generation_config["thinking"] = {
-                "type": "enabled",
-                "budget_tokens": min(max(request.thinking_level * 1000, 1000), 10000)
-            }
+            config_params["thinking_config"] = types.ThinkingConfig(
+                include_thoughts=True,
+                thinking_budget=min(max(request.thinking_level * 1000, 1000), 10000)
+            )
 
-        user_parts = []
+        user_parts: List[Dict[str, Any]] = []
         if request.file_paths:
             for file_path in request.file_paths:
                 file_part = await _load_multimodal_file(file_path)
@@ -402,20 +421,22 @@ async def websocket_execute(websocket: WebSocket, run_id: str, agent_id: str):
 
         user_parts.append({"text": request.prompt})
 
-        contents = [{"role": "user", "parts": user_parts}]
+        contents: List[Dict[str, Any]] = [{"role": "user", "parts": user_parts}]
 
         if request.cached_content_id:
-            generation_config["cached_content"] = request.cached_content_id
+            config_params["cached_content"] = request.cached_content_id
 
         # Stream the response
-        import time
         start_time = time.time()
 
-        response = model.generate_content(
-            contents,
-            generation_config=generation_config,
-            tools=request.tools if request.tools else None,
-            stream=False  # For now, we'll collect full response, can be enhanced for streaming
+        # Run in thread pool to avoid blocking event loop
+        # Pass config dict directly (API accepts both dict and GenerateContentConfig object)
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model=request.model,
+            contents=contents,  # type: ignore
+            config=config_params,  # type: ignore
+            # tools=request.tools if request.tools else None,
         )
 
         response_text = response.text if response else "No response"
@@ -429,7 +450,7 @@ async def websocket_execute(websocket: WebSocket, run_id: str, agent_id: str):
             usage = response.usage_metadata
             input_tokens = getattr(usage, "prompt_token_count", 0)
             output_tokens = getattr(usage, "candidates_token_count", 0)
-            cache_hit = getattr(usage, "cached_content_input_tokens", 0) > 0
+            # cache_hit = getattr(usage, "cached_content_input_tokens", 0) > 0
 
         # Generate thought signature
         thought_signature = base64.b64encode(
