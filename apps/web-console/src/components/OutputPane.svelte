@@ -120,9 +120,9 @@
 <style>
   /* Error Block Styling - Global for HTML injection */
   :global(.error-block) {
-    background: #fff5f5;
-    border-left: 3px solid #d32f2f;
-    color: #c62828;
+    background: rgba(211, 47, 47, 0.05); /* Subtle red tint that works on light and dark */
+    border-left: 3px solid #d32f2f;      /* Semantic Red - kept constant */
+    color: var(--paper-ink);             /* Adaptive text color */
     padding: 10px;
     margin-top: 8px;
     font-family: var(--font-code);
@@ -132,8 +132,8 @@
   }
 
   :global(.log-content strong) {
-    color: #000;
-    font-weight: 600;
+    color: var(--paper-ink);
+    font-weight: 700;
   }
 
   #output-pane {
@@ -175,11 +175,17 @@
   .meta-tag {
     font-family: var(--font-code);
     font-size: 9px;
-    color: #888;
-    background: #f5f5f5;
+    color: var(--paper-line); /* Replaced #888 */
+    background: var(--paper-surface); /* Replaced #f5f5f5 */
     padding: 2px 6px;
     border-radius: 2px;
     display: inline-block;
+    border: 1px solid transparent;
+  }
+  
+  /* In dark mode, we might want a slight border to define the tag */
+  :global(.mode-phosphor) .meta-tag {
+      border-color: var(--paper-line);
   }
 
   .log-body {
@@ -200,6 +206,7 @@
   .log-content {
     font-size: 13px;
     line-height: 1.6;
-    color: #333;
+    color: var(--paper-ink); /* Replaced #333 */
+    opacity: 0.9;
   }
 </style>

@@ -49,6 +49,14 @@ export const runtimeStore = writable<{ status: string; runId: string | null }>({
   runId: null
 });
 
+// === THEME STORE ===
+export type ThemeMode = 'ARCHIVAL' | 'PHOSPHOR';
+export const themeStore = writable<ThemeMode>('ARCHIVAL');
+
+export function toggleTheme() {
+    themeStore.update(current => current === 'ARCHIVAL' ? 'PHOSPHOR' : 'ARCHIVAL');
+}
+
 // Initial Nodes State
 const initialNodes: AgentNode[] = [
   { id: 'n1', label: 'ORCHESTRATOR', x: 20, y: 50, model: 'GEMINI-3-PRO', prompt: 'Analyze the user request and determine optimal sub-tasks.', status: 'idle', role: 'orchestrator' },

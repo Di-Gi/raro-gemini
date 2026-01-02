@@ -179,10 +179,10 @@
     transition: height 0.5s var(--ease-snap), border-color 0.3s;
     overflow: hidden;
     cursor: pointer;
-    /* Detailed Grid Background */
+    /* Detailed Grid Background using variables with transparency via color-mix */
     background-image: 
-        linear-gradient(rgba(48, 54, 61, 0.5) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(48, 54, 61, 0.5) 1px, transparent 1px);
+        linear-gradient(color-mix(in srgb, var(--digi-line), transparent 50%) 1px, transparent 1px),
+        linear-gradient(90deg, color-mix(in srgb, var(--digi-line), transparent 50%) 1px, transparent 1px);
     background-size: 40px 40px;
   }
 
@@ -203,7 +203,7 @@
     position: absolute;
     top: 0; left: 0; right: 0;
     height: 32px;
-    background: rgba(9, 12, 16, 0.95);
+    background: var(--digi-void); /* Matches container bg */
     border-bottom: 1px solid var(--digi-line);
     display: flex;
     align-items: center;
@@ -219,7 +219,7 @@
   }
 
   .hud-title {
-    color: #8b949e; 
+    color: var(--digi-text-dim); /* Replaced #8b949e */
     font-family: var(--font-code);
     font-size: 10px;
     letter-spacing: 1px;
@@ -233,7 +233,7 @@
 
   .hud-status-dot {
     width: 6px; height: 6px;
-    background: #484f58;
+    background: var(--digi-text-dim); /* Replaced #484f58 */
     border-radius: 50%;
   }
 
@@ -251,7 +251,7 @@
   .btn-minimize {
     background: transparent;
     border: none;
-    color: #484f58;
+    color: var(--digi-text-dim); /* Replaced #484f58 */
     font-size: 10px;
     font-family: var(--font-code);
     cursor: pointer;
@@ -274,7 +274,7 @@
     position: absolute;
     background: var(--digi-panel);
     border: 1px solid var(--digi-line);
-    color: #8b949e;
+    color: var(--digi-text-dim); /* Replaced #8b949e */
     min-width: 140px;
     padding: 0; /* Reset */
     font-family: var(--font-code);
@@ -306,14 +306,15 @@
   :global(.node-role) {
     font-size: 8px;
     text-transform: uppercase;
-    color: #484f58;
+    color: var(--digi-text-dim); /* Replaced #484f58 */
+    opacity: 0.7;
     letter-spacing: 0.5px;
   }
 
   :global(.node-label) {
     font-size: 11px;
     font-weight: 600;
-    color: #c9d1d9;
+    color: var(--digi-text); /* Replaced #c9d1d9 */
   }
   
   /* Decor (Right) */
@@ -338,7 +339,7 @@
 
   /* HOVER */
   #pipeline-stage.expanded :global(.node:hover) {
-    border-color: #58a6ff;
+    border-color: var(--arctic-cyan); /* Replaced #58a6ff */
     transform: translate(-50%, -52%);
     box-shadow: 0 8px 20px rgba(0,0,0,0.5);
   }
@@ -347,7 +348,7 @@
   /* SELECTED */
   :global(.node.selected) {
     border-color: var(--arctic-cyan);
-    background: rgba(0, 240, 255, 0.05);
+    background: var(--arctic-dim);
   }
   :global(.node.selected .node-indicator) { background: var(--arctic-cyan); }
   :global(.node.selected .node-label) { color: var(--arctic-cyan); }
@@ -365,10 +366,10 @@
 
   /* COMPLETE */
   :global(.node.complete) {
-    border-color: #238636; 
+    border-color: var(--signal-success); /* Replaced #238636 */
   }
-  :global(.node.complete .node-indicator) { background: #238636; }
-  :global(.node.complete .node-label) { color: #238636; }
+  :global(.node.complete .node-indicator) { background: var(--signal-success); }
+  :global(.node.complete .node-label) { color: var(--signal-success); }
 
   :global(.cable) {
     fill: none;

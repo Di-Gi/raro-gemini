@@ -362,8 +362,8 @@
   }
 
   .line { margin-bottom: 4px; word-break: break-all; }
-  .prompt { color: rgb(55, 49, 242); margin-right: 6px; }
-  .cursor { color: rgb(55, 49, 242); }
+  .prompt { color: var(--arctic-lilac); margin-right: 6px; }
+  .cursor { color: var(--arctic-lilac); }
 
   /* === 5. TRIGGER DECK === */
   .machine-footer {
@@ -394,7 +394,7 @@
   }
   
   /* Success State */
-  .trigger-plate:disabled .capacitor-bar { background: rgba(55, 49, 242, 0.2); transition: background 0.4s; }
+  .trigger-plate:disabled .capacitor-bar { background: var(--arctic-lilac-lite); transition: background 0.4s; }
 
   /* Data Overlay */
   .trigger-data {
