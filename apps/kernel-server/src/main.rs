@@ -1,7 +1,7 @@
 // [[RARO]]/apps/kernel-server/src/main.rs
-// Purpose: Entry point. Added cors configuration to allow frontend access.
+// Purpose: Entry point. Invokes state hydration before starting the server.
 // Architecture: Application Boot
-// Dependencies: Axum, Tower
+// Dependencies: Axum, Tower, Tokio
 
 mod dag;
 mod models;
@@ -32,7 +32,13 @@ async fn main() {
         )
         .init();
 
+    tracing::info!("Initializing RARO Kernel...");
+
     let runtime = Arc::new(RARORuntime::new());
+
+    // === PERSISTENCE RECOVERY ===
+    // Attempt to load previous run states from Redis into memory
+    runtime.rehydrate_from_redis().await;
 
     // Configure CORS
     let cors = CorsLayer::new()

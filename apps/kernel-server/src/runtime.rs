@@ -1,7 +1,7 @@
 // [[RARO]]/apps/kernel-server/src/runtime.rs
-// Purpose: Core orchestration logic. Manages DAG execution, state updates, and remote agent invocation.
+// Purpose: Core orchestration logic with Redis Persistence added.
 // Architecture: Domain Logic Layer
-// Dependencies: reqwest, dashmap, tokio
+// Dependencies: reqwest, dashmap, tokio, redis, serde_json
 
 use crate::dag::DAG;
 use crate::models::*;
@@ -63,13 +63,13 @@ impl RARORuntime {
                         Some(client)
                     }
                     Err(e) => {
-                        tracing::warn!("Failed to create Redis client: {}. Artifacts will not be stored.", e);
+                        tracing::warn!("Failed to create Redis client: {}. Persistence disabled.", e);
                         None
                     }
                 }
             }
             Err(_) => {
-                tracing::warn!("REDIS_URL not set. Running without artifact storage.");
+                tracing::warn!("REDIS_URL not set. Running without persistence.");
                 None
             }
         };
@@ -84,6 +84,101 @@ impl RARORuntime {
             redis_client,
         }
     }
+
+    // === PERSISTENCE LAYER ===
+
+    /// Saves the current state of a run to Redis and manages the active index
+    async fn persist_state(&self, run_id: &str) {
+        if let Some(client) = &self.redis_client {
+            if let Some(state) = self.runtime_states.get(run_id) {
+                let state_key = format!("run:{}:state", run_id);
+                let active_set_key = "sys:active_runs";
+                
+                match serde_json::to_string(&*state) {
+                    Ok(json) => {
+                        match client.get_async_connection().await {
+                            Ok(mut con) => {
+                                // 1. Save State JSON
+                                let _: redis::RedisResult<()> = con.set(&state_key, json).await;
+                                
+                                // 2. Manage Index
+                                // If Completed or Failed, remove from active set. Otherwise add.
+                                if state.status == RuntimeStatus::Completed || state.status == RuntimeStatus::Failed {
+                                    let _: redis::RedisResult<()> = con.srem(active_set_key, run_id).await;
+                                    // Optional: Set expiry on the state key so old runs eventually clean up (e.g., 24 hours)
+                                    let _: redis::RedisResult<()> = con.expire(&state_key, 86400).await;
+                                } else {
+                                    let _: redis::RedisResult<()> = con.sadd(active_set_key, run_id).await;
+                                }
+                            },
+                            Err(e) => tracing::error!("Redis connection failed during persist: {}", e),
+                        }
+                    },
+                    Err(e) => tracing::error!("Failed to serialize state for {}: {}", run_id, e),
+                }
+            }
+        }
+    }
+
+    /// Rehydrate state from Redis on boot
+    pub async fn rehydrate_from_redis(&self) {
+        if let Some(client) = &self.redis_client {
+            tracing::info!("Attempting to rehydrate state from Redis...");
+            match client.get_async_connection().await {
+                Ok(mut con) => {
+                    // 1. Get all active run IDs
+                    let active_ids: Vec<String> = con.smembers("sys:active_runs").await.unwrap_or_default();
+                    tracing::info!("Found {} active runs in persistence layer.", active_ids.len());
+
+                    for run_id in active_ids {
+                        let state_key = format!("run:{}:state", run_id);
+                        let state_json: Option<String> = con.get(&state_key).await.unwrap_or(None);
+
+                        if let Some(json) = state_json {
+                            match serde_json::from_str::<RuntimeState>(&json) {
+                                Ok(mut state) => {
+                                    // IMPORTANT: On recovery, we might find a run that was "Running" 
+                                    // when the server crashed. We should probably mark it as "Failed" 
+                                    // or "Interrupted" so the UI knows it's not actually processing anymore.
+                                    // For now, we will leave it as is to allow for potential resume logic later,
+                                    // but logging it is essential.
+                                    tracing::warn!("Rehydrating run: {} (Status: {:?})", state.run_id, state.status);
+                                    
+                                    // Restore DAG store if possible (Note: DAG structure isn't currently persisted in this simple implementation, 
+                                    // so complex resume isn't possible without rebuilding DAG from workflow config. 
+                                    // We will mark orphan runs as Failed for safety in this iteration).
+                                    
+                                    if state.status == RuntimeStatus::Running {
+                                        state.status = RuntimeStatus::Failed; 
+                                        // We treat crash recovery as failure for now
+                                        state.invocations.push(AgentInvocation {
+                                             id: Uuid::new_v4().to_string(),
+                                             agent_id: "KERNEL".to_string(),
+                                             model_variant: ModelVariant::GeminiPro,
+                                             thought_signature: None,
+                                             tools_used: vec![],
+                                             tokens_used: 0,
+                                             latency_ms: 0,
+                                             status: InvocationStatus::Failed,
+                                             timestamp: Utc::now().to_rfc3339(),
+                                             artifact_id: None,
+                                             error_message: Some("Kernel restarted unexpectedly. Workflow terminated.".to_string()),
+                                        });
+                                    }
+
+                                    self.runtime_states.insert(run_id.clone(), state);
+                                },
+                                Err(e) => tracing::error!("Failed to deserialize state for {}: {}", run_id, e),
+                            }
+                        }
+                    }
+                },
+                Err(e) => tracing::error!("Failed to connect to Redis for rehydration: {}", e),
+            }
+        }
+    }
+
+    // === EXECUTION LOGIC ===
 
     /// Start a new workflow execution
     pub fn start_workflow(self: &Arc<Self>, config: WorkflowConfig) -> Result<String, String> {
@@ -120,7 +215,7 @@ impl RARORuntime {
         let state = RuntimeState {
             run_id: run_id.clone(),
             workflow_id: workflow_id.clone(),
-            status: RuntimeStatus::Running, // Mark as running immediately
+            status: RuntimeStatus::Running,
             active_agents: Vec::new(),
             completed_agents: Vec::new(),
             failed_agents: Vec::new(),
@@ -146,6 +241,8 @@ impl RARORuntime {
         let order_clone = execution_order.clone();
 
         tokio::spawn(async move {
+            // Initial persist
+            runtime_clone.persist_state(&run_id_clone).await;
             runtime_clone.execute_dag(run_id_clone, order_clone).await;
         });
 
@@ -164,13 +261,13 @@ impl RARORuntime {
                 Ok(p) => p,
                 Err(e) => {
                     tracing::error!("Failed to prepare payload for agent {}: {}", agent_id, e);
-                    self.fail_run(&run_id, &agent_id, &e);
+                    self.fail_run(&run_id, &agent_id, &e).await;
                     return;
                 }
             };
 
             // 2. Update State: Agent Running
-            self.update_agent_status(&run_id, &agent_id, InvocationStatus::Running);
+            self.update_agent_status(&run_id, &agent_id, InvocationStatus::Running).await;
 
             // 3. Invoke Remote Agent Service
             tracing::info!("Invoking remote agent: {}", agent_id);
@@ -185,15 +282,13 @@ impl RARORuntime {
                             let _ = self.set_thought_signature(&run_id, &agent_id, sig);
                         }
 
-                        // === FIX START: PREVENT ARTIFACT OVERWRITE ===
-                        // Check if the agent service explicitly signaled that it stored the artifact
+                        // Check if artifact was stored by agent service
                         let artifact_id = if let Some(output_data) = &res.output {
                             let agent_stored_flag = output_data.get("artifact_stored")
                                 .and_then(|v| v.as_bool())
                                 .unwrap_or(false);
 
                             if agent_stored_flag {
-                                tracing::debug!("Agent {} already stored artifact, skipping overwrite", agent_id);
                                 Some(format!("run:{}:agent:{}:output", run_id, agent_id))
                             } else {
                                 self.store_artifact(&run_id, &agent_id, output_data).await
@@ -201,7 +296,6 @@ impl RARORuntime {
                         } else {
                             None
                         };
-                        // === FIX END ===
 
                         // Record metrics
                         let invocation_record = AgentInvocation {
@@ -219,22 +313,21 @@ impl RARORuntime {
                             status: InvocationStatus::Success,
                             timestamp: Utc::now().to_rfc3339(),
                             artifact_id,
-                            // ADD THIS:
                             error_message: None, 
                         };
 
-                        let _ = self.record_invocation(&run_id, invocation_record);
+                        let _ = self.record_invocation(&run_id, invocation_record).await;
                         tracing::info!("Agent {} completed successfully", agent_id);
                     } else {
                         let error_msg = res.error.unwrap_or_else(|| "Unknown error".to_string());
                         tracing::error!("Agent {} failed: {}", agent_id, error_msg);
-                        self.fail_run(&run_id, &agent_id, &error_msg);
+                        self.fail_run(&run_id, &agent_id, &error_msg).await;
                         return; // Stop execution on failure
                     }
                 }
                 Err(e) => {
                     tracing::error!("Network error invoking agent {}: {}", agent_id, e);
-                    self.fail_run(&run_id, &agent_id, &e.to_string());
+                    self.fail_run(&run_id, &agent_id, &e.to_string()).await;
                     return;
                 }
             }
@@ -244,12 +337,16 @@ impl RARORuntime {
         if let Some(mut state) = self.runtime_states.get_mut(&run_id) {
             state.status = RuntimeStatus::Completed;
             state.end_time = Some(Utc::now().to_rfc3339());
-            tracing::info!("Workflow run {} completed successfully", run_id);
         }
+        
+        // Persist final state
+        self.persist_state(&run_id).await;
+        
+        tracing::info!("Workflow run {} completed successfully", run_id);
     }
 
-    /// Helper to fail the run and update state
-    fn fail_run(&self, run_id: &str, agent_id: &str, error: &str) {
+    /// Helper to fail the run and update state (Async + Persistent)
+    async fn fail_run(&self, run_id: &str, agent_id: &str, error: &str) {
         if let Some(mut state) = self.runtime_states.get_mut(run_id) {
             state.status = RuntimeStatus::Failed;
             state.end_time = Some(Utc::now().to_rfc3339());
@@ -270,24 +367,31 @@ impl RARORuntime {
                 status: InvocationStatus::Failed,
                 timestamp: Utc::now().to_rfc3339(),
                 artifact_id: None,
-                // ADD THIS: Capture the error string
                 error_message: Some(error.to_string()), 
             });
         }
+        
+        self.persist_state(run_id).await;
         tracing::error!("Run {} failed at agent {}: {}", run_id, agent_id, error);
     }
 
-    /// Helper to update status to Running
-    fn update_agent_status(&self, run_id: &str, agent_id: &str, status: InvocationStatus) {
+    /// Helper to update status to Running (Async + Persistent)
+    async fn update_agent_status(&self, run_id: &str, agent_id: &str, status: InvocationStatus) {
+         let mut changed = false;
          if let Some(mut state) = self.runtime_states.get_mut(run_id) {
             match status {
                 InvocationStatus::Running => {
                      if !state.active_agents.contains(&agent_id.to_string()) {
                          state.active_agents.push(agent_id.to_string());
+                         changed = true;
                      }
                 },
                 _ => {}
             }
+         }
+         
+         if changed {
+             self.persist_state(run_id).await;
          }
     }
 
@@ -298,8 +402,6 @@ impl RARORuntime {
         let port = env::var("AGENT_PORT").unwrap_or_else(|_| "8000".to_string());
         let scheme = if host.contains("localhost") || host == "127.0.0.1" { "http" } else { "http" };
         
-        // Handle docker service names that don't need http:// prefix if already there, 
-        // but robustly constructing url is safer.
         let url = format!("{}://{}:{}/invoke", scheme, host, port);
 
         tracing::debug!("Sending invocation request to: {}", url);
@@ -314,7 +416,6 @@ impl RARORuntime {
     }
 
     /// Store agent output to Redis with TTL
-    /// Returns the artifact_id if successful, None otherwise
     async fn store_artifact(
         &self,
         run_id: &str,
@@ -360,32 +461,36 @@ impl RARORuntime {
         self.runtime_states.get(run_id).map(|r| (*r).clone())
     }
 
-    /// Record an agent invocation (Internal helper used by logic above)
-    pub fn record_invocation(&self, run_id: &str, invocation: AgentInvocation) -> Result<(), String> {
-        let mut state = self
-            .runtime_states
-            .get_mut(run_id)
-            .ok_or_else(|| "Run not found".to_string())?;
+    /// Record an agent invocation (Async + Persistent)
+    pub async fn record_invocation(&self, run_id: &str, invocation: AgentInvocation) -> Result<(), String> {
+        {
+            let mut state = self
+                .runtime_states
+                .get_mut(run_id)
+                .ok_or_else(|| "Run not found".to_string())?;
 
-        state.invocations.push(invocation.clone());
-        state.total_tokens_used += invocation.tokens_used;
+            state.invocations.push(invocation.clone());
+            state.total_tokens_used += invocation.tokens_used;
 
-        match invocation.status {
-            InvocationStatus::Running => {
-                if !state.active_agents.contains(&invocation.agent_id) {
-                    state.active_agents.push(invocation.agent_id);
+            match invocation.status {
+                InvocationStatus::Running => {
+                    if !state.active_agents.contains(&invocation.agent_id) {
+                        state.active_agents.push(invocation.agent_id.clone());
+                    }
                 }
+                InvocationStatus::Success => {
+                    state.active_agents.retain(|a| a != &invocation.agent_id);
+                    state.completed_agents.push(invocation.agent_id.clone());
+                }
+                InvocationStatus::Failed => {
+                    state.active_agents.retain(|a| a != &invocation.agent_id);
+                    state.failed_agents.push(invocation.agent_id.clone());
+                }
+                _ => {}
             }
-            InvocationStatus::Success => {
-                state.active_agents.retain(|a| a != &invocation.agent_id);
-                state.completed_agents.push(invocation.agent_id);
-            }
-            InvocationStatus::Failed => {
-                state.active_agents.retain(|a| a != &invocation.agent_id);
-                state.failed_agents.push(invocation.agent_id);
-            }
-            _ => {}
-        }
+        } // Drop write lock before persisting
+
+        self.persist_state(run_id).await;
 
         Ok(())
     }
@@ -411,9 +516,7 @@ impl RARORuntime {
         self.thought_signatures.get(run_id).map(|s| (*s).clone())
     }
 
-    /// Prepare invocation payload with signature routing
     /// Prepare invocation payload with signature routing AND artifact context
-    /// CHANGED: Now async to allow Redis fetching
     pub async fn prepare_invocation_payload(
         &self,
         run_id: &str,
