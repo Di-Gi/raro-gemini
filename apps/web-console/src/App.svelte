@@ -103,7 +103,7 @@
     --paper-surface: #090C10;
     --paper-surface-dim: #020202;
     --paper-ink: #E0E0E0;
-    --paper-line: #21262d;
+    --paper-line: #7087a7;
     --paper-accent: #30363d;
     
     --digi-void: #050505;

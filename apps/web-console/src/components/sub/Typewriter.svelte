@@ -195,9 +195,7 @@
 
   .stream-content {
     /* Important: Must be flex-col to handle mixing divs (CodeBlock) and spans (Text) */
-    display: flex;
-    flex-direction: column; 
-    align-items: flex-start;
+    display: block; 
     line-height: 1.6;
     word-break: break-word;
     color: var(--paper-ink);
@@ -206,7 +204,7 @@
   /* Text bodies need to handle newlines naturally via whitespace */
   .text-body {
     white-space: pre-wrap; 
-    width: 100%;
+    display: inline; /* Explicitly inline so cursor sits next to it */
   }
 
   /* Telemetry Footer styles (unchanged) */
