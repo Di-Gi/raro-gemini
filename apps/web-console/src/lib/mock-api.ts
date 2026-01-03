@@ -1,7 +1,7 @@
 // [[RARO]]/apps/web-console/src/lib/mock-api.ts
 import { type WorkflowConfig } from './api';
 
-// --- Types needed for simulation ---
+// --- Types ---
 type TopologySnapshot = {
     nodes: string[];
     edges: Array<{ from: string; to: string }>;
@@ -26,143 +26,56 @@ type SimulationStep = {
         }>;
     };
     signatures?: Record<string, string>;
-    topology?: TopologySnapshot; // <--- NEW: Topology support for layout engine
+    topology?: TopologySnapshot;
 };
 
 // --- Mock Data Generators ---
 
-// Define the static graph structure for this mock scenario
-const MOCK_TOPOLOGY: TopologySnapshot = {
-    nodes: ['n1', 'n2', 'n3', 'n4'],
-    edges: [
-        { from: 'n1', to: 'n2' },
-        { from: 'n1', to: 'n3' },
-        { from: 'n2', to: 'n4' },
-        { from: 'n3', to: 'n4' }
-    ]
+// Helper to generate the strict JSON format required by the Agent Service parser
+const generateDelegationArtifact = (reason: string, parentId: string, newAgentId: string) => {
+    const payload = {
+        reason: reason,
+        strategy: "child",
+        new_nodes: [
+            {
+                id: newAgentId,
+                role: "worker",
+                model: "gemini-2.5-flash",
+                prompt: `Dynamically delegated task from ${parentId}`,
+                tools: ["web_search"],
+                depends_on: [parentId]
+            }
+        ]
+    };
+
+    return `I need to delegate a sub-task to handle this request properly.
+
+\`\`\`json:delegation
+${JSON.stringify(payload, null, 2)}
+\`\`\`
+
+Delegating execution to ${newAgentId}...`;
 };
 
-const MOCK_ARTIFACTS: Record<string, any> = {
+const STATIC_ARTIFACTS: Record<string, any> = {
     'n1': { 
-        result: `## Strategic Orchestration Plan: Latency Regression Analysis
-
-Analysis of the user request indicates a high-complexity multi-step research process is required. To ensure accuracy and isolate the root cause of the "Gemini 3" performance regression, the agent will execute the following orchestration plan.
-
-### Phase 1: Contextual Retrieval & Data Gathering
-*Objective: Establish a baseline of expected behavior versus reported anomalies.*
-
-1.  **Vector Search Execution**: Query the internal documentation database for 'Gemini 3 Architecture', specifically targeting the "MoE Routing" and "Sparse Attention" modules.
-    *   *Rationale*: Recent changelogs indicate a shift in the expert selection logic which often correlates with tail latency spikes.
-2.  **Benchmark Cross-Reference**: Retrieve the 'H1 2024 Performance Benchmarks' dataset. We need to identify if this is a global regression or isolated to specific prompt topologies (e.g., long-context vs. short-burst).
-
-### Phase 2: Quantitative Verification
-*Objective: Prove the regression exists using hard data.*
-
-3.  **Log Ingestion**: Load the \`latency_metrics_2024\` dataset (n=10,000 samples) into the secure Python sandbox.
-4.  **Statistical Profiling**: 
-    *   Calculate P50, P95, and P99 latency.
-    *   Perform a variance analysis on the 'pre-fill' phase vs. the 'generation' phase.
-    *   **Hypothesis**: If pre-fill is stable but generation varies, the issue lies in the KV-cache quantization.
-
-### Phase 3: Synthesis & Executive Reporting
-*Objective: Deliver actionable insights.*
-
-5.  **Correlation Mapping**: Map the architectural changes found in Phase 1 to the timestamps of the spikes found in Phase 2.
-6.  **Final Output**: Generate a Markdown-formatted root-cause analysis report suitable for the Engineering Leadership team.`
+        result: `## Orchestration Plan
+Analysis indicates a need for deep retrieval and verification.
+1. **Retrieval**: Gather architecture docs.
+2. **Analysis**: Profile latency metrics.
+3. **Synthesis**: Generate final report.`
     },
-
-    'n2': { 
-        result: `### Retrieval Execution Log
-**Query Strategy**: Hybrid Search (Dense Vector + Keyword Sparse)
-**Embedding Model**: \`text-embedding-004\`
-**Top K**: 15 (Filtered to Top 5)
-
----
-
-#### 1. [DOC-882] Sparse Activation Patterns in Large Context Windows
-> **Relevance Score**: 0.94
-> **Source**: /wiki/architecture/gemini-3/moe-routing
->
-> **Snippet**: "...introduces a dynamic routing gate that skips up to 40% of parameters during idle context states. While this reduces compute by 30%, it introduces a 'cold-start' penalty when the context shifts rapidly between topics. This effectively hardens the model against long-context drifting but creates micro-stutters in diverse-topic batches..."
-
-#### 2. [DOC-104] Tensor Processing Unit v5 Optimization Guide
-> **Relevance Score**: 0.89
-> **Source**: /eng/hardware/tpu-v5/memory-alignment
->
-> **Snippet**: "Optimizing for Gemini 3 requires strictly typed memory mapping. Failure to align memory pages results in a 12% cache miss rate during expert switching. **Critical**: The new 'Flash-Lite' variant defaults to aggressive page-swapping, which can cause P99 latency spikes if the host memory is fragmented."
-
-#### 3. [DOC-339] The RARO Orchestrator Whitepaper
-> **Relevance Score**: 0.82
-> **Source**: /internal/whitepapers/raro-system
->
-> **Snippet**: "...integration allows for iterative reasoning. The orchestrator maintains a global state separate from the model's context window. This decoupling allows for 'Thought Loops' where the model can pause generation to retrieve fresh data without polluting the KV-cache."
-
-#### 4. [DOC-401] Legacy Architecture Comparison (Gemini 1.5 vs 3.0)
-> **Relevance Score**: 0.65
-> **Source**: /marketing/comparison-sheets
->
-> **Snippet**: "Compared to Gemini 1.5, the new sparsely gated mechanism reduces inference costs by approximately 30%. However, developers migrating from 1.5 Pro may notice a difference in 'Time to First Token' (TTFT) due to the Just-In-Time (JIT) loading of expert weights."
-
-#### 5. [DOC-112] Security Posture for MoE Models
-> **Relevance Score**: 0.61
-> **Source**: /security/compliance/data-leakage
->
-> **Snippet**: "Ensuring that expert routes do not leak private data remains a top priority. The 'Secure Enclave' routing layer adds an overhead of ~5ms per token but guarantees ISO-27001 compliance for enterprise workloads."`
-    },
-
     'n3': { 
-        result: "```python\nimport pandas as pd\n\n# Loading dataset with low_memory=False to prevent dtype warnings\ndata = load_dataset('latency_metrics_2024')\n\n# Calculate specific variance\nvar = data['response_time'].var()\nmean = data['response_time'].mean()\n\nprint(f'{var=}, {mean=}')\n```\n\n**Output:**\n`var=0.04231`\n`mean=145.2ms`" 
+        result: "testing\n```python\n# Analyzing latency variance\nvar = data['p99'].var()\nprint(f'Variance: {var}')\n```\n**Output:** `Variance: 0.042`" 
     },
-
     'n4': { 
-        result: `# Final Report: RARO System Analysis & Gemini 3 Integration
-
-## 1. Executive Summary
-The integration of Gemini 3 Pro with the RARO (Reasoning-Acting-Retrieval-Orchestration) system has concluded with significant performance improvements. By leveraging the new sparse activation architecture, we have observed a **40% reduction in token wastage** and a marked improvement in logical consistency over long-running tasks.
-
-However, the analysis also uncovered a trade-off regarding P99 latency during high-variance context switching, identified as a "Cold Expert" phenomenon.
-
-## 2. Key Performance Metrics
-
-We conducted a comprehensive A/B test comparing the legacy monolith architecture against the new MoE (Mixture of Experts) setup.
-
-| Metric | Legacy System (v2.5) | Gemini 3 + RARO | Improvement |
-| :--- | :--- | :--- | :--- |
-| **P50 Latency** | 120ms | 95ms | **20% Faster** |
-| **P99 Latency** | 450ms | 210ms | **53% Faster** |
-| **Hallucination Rate** | 2.4% | <0.1% | **Significant** |
-| **Context Window** | 32k | 100k+ | **3x Capacity** |
-| **Cost per 1k Tokens** | $0.03 | $0.018 | **40% Cheaper** |
-
-## 3. Root Cause Analysis: The "Cold Expert" Spike
-
-During Phase 2 quantitative analysis, we observed sporadic latency spikes. Correlating this with [DOC-882] (Retrieved in Phase 1), we have confirmed:
-
-1.  **Mechanism**: The dynamic routing gate skips 40% of parameters.
-2.  **Trigger**: When a prompt shifts topics rapidly (e.g., Coding -> Creative Writing -> Math), the model must load previously "cold" experts into high-bandwidth memory.
-3.  **Impact**: This results in a 12-15ms stutter per token for the first 5 tokens of the new sequence.
-
-### 3.1 Mitigation Strategy
-We successfully tested a pre-warming strategy using the RARO orchestrator's predictive capabilities:
-
-> *Recommendation*: The Orchestrator should inject a hidden "priming" token when it detects a tool-use switch, effectively loading the necessary experts 200ms before the actual generation begins.
-
-## 4. Architectural Deep Dive
-
-### 4.1 Retrieval Precision
-The RARO orchestrator utilizes a two-stage retrieval process. Initially, a broad vector search retrieves candidate documents. Subsequently, a cross-encoder reranks these documents, resulting in a precision score of **0.92** (up from 0.78).
-
-### 4.2 Code Execution Safety
-One of the most critical findings was the stability of the sandboxed execution environment. Throughout the stress testing phase, the system executed over 5,000 Python snippets. The error rate dropped to near zero, primarily due to the model's self-correction capabilities when encountering \`ImportErrors\` or \`SyntaxErrors\`.
-
-## 5. Final Recommendations
-
-Based on these findings, we recommend:
-1.  **Immediate Deployment** to the production environment for "Chat" and "Analysis" workloads.
-2.  **Delayed Deployment** for "Real-time Voice" workloads until the *Cold Expert* mitigation patch is applied.
-3.  **Cost Savings**: The migration is projected to save the department approximately $12k/month in inference costs.`
+        result: `# Final Report
+The analysis confirms that the latency regression is caused by "Cold Expert" switching in the MoE layer.
+**Recommendation**: Enable pre-warming on the Orchestrator.`
     }
 };
+
+// --- API Methods ---
 
 export async function mockStartRun(config: WorkflowConfig): Promise<{ success: boolean; run_id: string }> {
     console.log('[MOCK] Starting run with config:', config);
@@ -176,12 +89,17 @@ export async function mockStartRun(config: WorkflowConfig): Promise<{ success: b
     });
 }
 
+// Global artifact store to hold dynamic outputs during a session
+let SESSION_ARTIFACTS: Record<string, any> = {};
+
 export async function mockGetArtifact(runId: string, agentId: string): Promise<any> {
     console.log(`[MOCK] Fetching artifact for ${agentId}`);
     return new Promise((resolve) => {
         setTimeout(() => {
-            resolve(MOCK_ARTIFACTS[agentId] || { text: "No artifact data found." });
-        }, 800); // Simulate network latency
+            // Check session artifacts (dynamic) first, then static
+            const artifact = SESSION_ARTIFACTS[agentId] || STATIC_ARTIFACTS[agentId];
+            resolve(artifact || { text: `[MOCK] Output generated by agent ${agentId}.` });
+        }, 600); 
     });
 }
 
@@ -198,14 +116,38 @@ export class MockWebSocket {
     private currentStep = 0;
     private timer: any;
 
+    // Current State Trackers
+    private topology: TopologySnapshot;
+    private activeAgents: string[] = [];
+    private completedAgents: string[] = [];
+    private invocations: any[] = [];
+    private signatures: Record<string, string> = {};
+    private totalTokens = 0;
+
     constructor(url: string) {
         this.url = url;
-        this.generateSimulationScenario();
         
-        // Simulate connection delay
+        // Reset Artifacts
+        SESSION_ARTIFACTS = {};
+        
+        // Initial Topology
+        this.topology = {
+            nodes: ['n1', 'n2', 'n3', 'n4'],
+            edges: [
+                { from: 'n1', to: 'n2' },
+                { from: 'n1', to: 'n3' },
+                { from: 'n2', to: 'n4' },
+                { from: 'n3', to: 'n4' }
+            ]
+        };
+
+        // Build the dynamic scenario
+        this.planSimulation();
+        
+        // Start simulation loop
         setTimeout(() => {
             if (this.onopen) this.onopen();
-            this.runSimulation();
+            this.runLoop();
         }, 500);
     }
 
@@ -219,84 +161,170 @@ export class MockWebSocket {
         if (this.onclose) this.onclose();
     }
 
-    private generateSimulationScenario() {
-        // SCENARIO: Linear success path matching the initialNodes in stores.ts
-        // n1 (Orchestrator) -> n2 (Retrieval) & n3 (Code) -> n4 (Synthesis)
+    /**
+     * Procedurally generates a simulation timeline with random delegation.
+     */
+    private planSimulation() {
+        // 1. Start State
+        this.addStep(500, 'RUNNING');
 
-        const baseState = {
-            status: 'RUNNING',
-            active_agents: [],
-            completed_agents: [],
-            failed_agents: [],
-            total_tokens_used: 0,
-            invocations: []
-        };
+        // 2. Orchestrator (n1) runs
+        this.simulateAgentExecution('n1', 1500, 450);
 
-        this.steps = [
-            // T+0: Start
-            { 
-                delay: 500, 
-                state: { ...baseState, active_agents: ['n1'] },
-                topology: MOCK_TOPOLOGY
-            },
-            // T+2s: Orchestrator finishes, triggers workers
-            { 
-                delay: 2000, 
-                state: { 
-                    ...baseState, 
-                    active_agents: ['n2', 'n3'], 
-                    completed_agents: ['n1'],
-                    total_tokens_used: 450,
-                    invocations: [{ id: 'inv-1', agent_id: 'n1', status: 'success', tokens_used: 450, latency_ms: 1200, artifact_id: 'art-n1' }]
-                },
-                signatures: { 'n1': 'hash_xc92' },
-                topology: MOCK_TOPOLOGY
-            },
-            // T+4s: Retrieval finishes first
-            { 
-                delay: 2000, 
-                state: { 
-                    ...baseState, 
-                    active_agents: ['n3'], 
-                    completed_agents: ['n1', 'n2'],
-                    total_tokens_used: 1200,
-                    invocations: [{ id: 'inv-2', agent_id: 'n2', status: 'success', tokens_used: 750, latency_ms: 800, artifact_id: 'art-n2' }]
-                },
-                signatures: { 'n2': 'hash_bm25' },
-                topology: MOCK_TOPOLOGY
-            },
-            // T+3s: Code finishes
-            { 
-                delay: 3000, 
-                state: { 
-                    ...baseState, 
-                    active_agents: ['n4'], 
-                    completed_agents: ['n1', 'n2', 'n3'],
-                    total_tokens_used: 2100,
-                    invocations: [{ id: 'inv-3', agent_id: 'n3', status: 'success', tokens_used: 900, latency_ms: 2500, artifact_id: 'art-n3' }]
-                },
-                signatures: { 'n3': 'hash_py39' },
-                topology: MOCK_TOPOLOGY
-            },
-            // T+5s: Synthesis finishes (Deep Think takes longer)
-            { 
-                delay: 5000, 
-                state: { 
-                    ...baseState, 
-                    status: 'COMPLETED',
-                    active_agents: [], 
-                    completed_agents: ['n1', 'n2', 'n3', 'n4'],
-                    total_tokens_used: 5400,
-                    invocations: [{ id: 'inv-4', agent_id: 'n4', status: 'success', tokens_used: 3300, latency_ms: 4800, artifact_id: 'art-n4' }]
-                },
-                signatures: { 'n4': 'hash_fin1' },
-                topology: MOCK_TOPOLOGY
-            }
-        ];
+        // 3. Fork: n2 (Retrieval) and n3 (Code) run in parallel
+        // We simulate this by queuing them. n3 is static. n2 is dynamic.
+        
+        // Start both
+        this.activeAgents.push('n2', 'n3');
+        this.addStep(200); // Visual update that they are running
+
+        // Complete n3 (Static path)
+        this.simulateAgentCompletion('n3', 2500, 800, false);
+
+        // Handle n2 (The Dynamic Path)
+        this.processDynamicChain('n2', 'n4'); // n2 -> ... -> n4
+
+        // 4. Synthesis (n4) runs (Waits for n3 and the n2-chain)
+        this.simulateAgentExecution('n4', 3000, 2500);
+
+        // 5. Completion
+        this.addStep(1000, 'COMPLETED');
     }
 
-    private runSimulation() {
-        // Updated logic: If we are past the steps, close the connection exactly like the real API
+    /**
+     * Recursively simulates a chain of agents that might delegate.
+     * @param currentId The agent currently running
+     * @param finalDependentId The node that is waiting for this chain to finish (n4)
+     */
+    private processDynamicChain(currentId: string, finalDependentId: string) {
+        // Random chance to delegate (60% for n2, 30% for others)
+        const isRoot = currentId === 'n2';
+        const chance = isRoot ? 0.6 : 0.3;
+        const shouldDelegate = Math.random() < chance;
+
+        // Ensure we don't go too deep (infinite recursion guard)
+        const depth = currentId.split('_').length;
+        const limitReached = depth > 3;
+
+        if (shouldDelegate && !limitReached) {
+            // --- DELEGATION PATH ---
+            const newAgentId = `${currentId}_sub${Math.floor(Math.random() * 100)}`;
+            const reason = isRoot 
+                ? "Topic too broad; spawning specialist." 
+                : "Additional verification required.";
+
+            // 1. Generate Delegation Artifact
+            const output = generateDelegationArtifact(reason, currentId, newAgentId);
+            SESSION_ARTIFACTS[currentId] = { result: output };
+
+            // 2. Complete Current Agent
+            this.activeAgents = this.activeAgents.filter(id => id !== currentId);
+            this.completedAgents.push(currentId);
+            this.totalTokens += 500;
+            
+            this.invocations.push({
+                id: `inv-${currentId}`,
+                agent_id: currentId,
+                status: 'success',
+                tokens_used: 500,
+                latency_ms: 1200,
+                artifact_id: `mock-art-${currentId}`
+            });
+
+            // 3. MUTATE TOPOLOGY (Graph Surgery)
+            this.topology.nodes.push(newAgentId);
+            
+            // Add edge: Current -> New
+            this.topology.edges.push({ from: currentId, to: newAgentId });
+            
+            // Rewire dependent: New -> Final
+            // Remove Old: Current -> Final
+            this.topology.edges = this.topology.edges.filter(e => 
+                !(e.from === currentId && e.to === finalDependentId)
+            );
+            // Add New: New -> Final
+            this.topology.edges.push({ from: newAgentId, to: finalDependentId });
+
+            // 4. Emit Update with New Topology
+            this.signatures[currentId] = `hash_${currentId}`;
+            this.addStep(1000); 
+
+            // 5. Start New Agent
+            this.activeAgents.push(newAgentId);
+            this.addStep(500);
+
+            // 6. Recurse
+            this.processDynamicChain(newAgentId, finalDependentId);
+
+        } else {
+            // --- STANDARD EXECUTION PATH ---
+            SESSION_ARTIFACTS[currentId] = { 
+                result: `Analysis complete for node ${currentId}. Validated 100% data points.` 
+            };
+            
+            this.simulateAgentCompletion(currentId, 1500 + Math.random() * 1000, 600, true);
+        }
+    }
+
+    private simulateAgentExecution(id: string, duration: number, tokens: number) {
+        // Start
+        if (!this.activeAgents.includes(id)) {
+            this.activeAgents.push(id);
+        }
+        this.addStep(200);
+
+        // Finish
+        this.simulateAgentCompletion(id, duration, tokens, false);
+    }
+
+    private simulateAgentCompletion(id: string, duration: number, tokens: number, isDynamic: boolean) {
+        this.addStep(duration, undefined, () => {
+            this.activeAgents = this.activeAgents.filter(a => a !== id);
+            this.completedAgents.push(id);
+            this.totalTokens += tokens;
+            this.signatures[id] = `hash_${Math.floor(Math.random()*10000).toString(16)}`;
+            
+            this.invocations.push({
+                id: `inv-${id}`,
+                agent_id: id,
+                status: 'success',
+                tokens_used: tokens,
+                latency_ms: duration,
+                artifact_id: `mock-art-${id}`
+            });
+        });
+    }
+
+    private addStep(delay: number, statusOverride?: string, action?: () => void) {
+        // We defer the state capture until the step actually runs (lazy eval)
+        // or we capture a snapshot now. For simplicity in this procedural generator,
+        // we push a closure that updates state, then captures it.
+        
+        // Actually, to keep the `steps` array static-like structure but generated dynamically:
+        // We create a step object. But since we are generating procedurally, 
+        // we can't capture 'future' state.
+        // We will execute the 'action' then snapshot the state.
+        
+        if (action) action();
+
+        const snapshot = {
+            delay,
+            state: {
+                status: statusOverride || 'RUNNING',
+                active_agents: [...this.activeAgents],
+                completed_agents: [...this.completedAgents],
+                failed_agents: [],
+                total_tokens_used: this.totalTokens,
+                invocations: [...this.invocations]
+            },
+            signatures: { ...this.signatures },
+            topology: JSON.parse(JSON.stringify(this.topology)) // Deep copy topology
+        };
+
+        this.steps.push(snapshot);
+    }
+
+    private runLoop() {
         if (this.currentStep >= this.steps.length) {
             this.close();
             return;
@@ -309,7 +337,7 @@ export class MockWebSocket {
                 type: 'state_update',
                 state: step.state,
                 signatures: step.signatures || {},
-                topology: step.topology || null // Emit topology
+                topology: step.topology || null
             };
 
             if (this.onmessage) {
@@ -317,7 +345,7 @@ export class MockWebSocket {
             }
 
             this.currentStep++;
-            this.runSimulation();
+            this.runLoop();
         }, step.delay);
     }
 }

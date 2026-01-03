@@ -2,12 +2,14 @@
 
 <script lang="ts">
   import CodeBlock from './CodeBlock.svelte';
+  import DelegationCard from './DelegationCard.svelte'; // Import new component
   import { parseMarkdown } from '$lib/markdown';
 
   let { text }: { text: string } = $props();
 
   function parseContent(input: string) {
-    const regex = /```(\w+)?\n([\s\S]*?)```/g;
+    // FIX: Regex now accepts colons, hyphens, and underscores in the lang tag
+    const regex = /```([a-zA-Z0-9:_-]+)?\n([\s\S]*?)```/g;
     const parts = [];
     let lastIndex = 0;
     let match;
@@ -45,7 +47,12 @@
 <div class="smart-text-wrapper">
   {#each blocks as block}
     {#if block.type === 'code'}
-      <CodeBlock code={block.content} language={block.lang || 'text'} />
+      <!-- ROUTING LOGIC -->
+      {#if block.lang === 'json:delegation'}
+        <DelegationCard rawJson={block.content} />
+      {:else}
+        <CodeBlock code={block.content} language={block.lang || 'text'} />
+      {/if}
     {:else}
       <!-- 
         Pass text segments through Marked.
