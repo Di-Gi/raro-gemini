@@ -109,7 +109,8 @@ export class MockWebSocket {
     url: string;
     onopen: (() => void) | null = null;
     onmessage: ((event: { data: string }) => void) | null = null;
-    onclose: (() => void) | null = null;
+    onclose: ((e: { code: number; reason: string; wasClean: boolean }) => void) | null = null;
+    
     onerror: ((err: any) => void) | null = null;
     
     private steps: SimulationStep[] = [];
@@ -158,7 +159,15 @@ export class MockWebSocket {
     close() {
         console.log('[MOCK WS] Closing connection');
         clearTimeout(this.timer);
-        if (this.onclose) this.onclose();
+        
+        // FIX 2: Pass a mock CloseEvent object
+        if (this.onclose) {
+            this.onclose({ 
+                code: 1000, 
+                reason: 'Mock Simulation Ended', 
+                wasClean: true 
+            });
+        }
     }
 
     /**
