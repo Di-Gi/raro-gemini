@@ -8,6 +8,8 @@ mod models;
 mod server;
 mod runtime;
 mod observability;
+mod events;
+mod registry;
 
 use axum::{
     Router,
@@ -39,6 +41,52 @@ async fn main() {
     // === PERSISTENCE RECOVERY ===
     // Attempt to load previous run states from Redis into memory
     runtime.rehydrate_from_redis().await;
+
+    // === CORTEX: Pattern Engine ===
+    // Subscribe to the event bus and spawn background pattern matcher
+    let mut rx = runtime.event_bus.subscribe();
+    let runtime_ref = runtime.clone();
+
+    tokio::spawn(async move {
+        tracing::info!("Cortex Pattern Engine started");
+        loop {
+            if let Ok(event) = rx.recv().await {
+                // 1. Find matching patterns
+                let patterns = runtime_ref.pattern_registry.get_patterns_for_trigger(&format!("{:?}", event.event_type));
+
+                for pattern in patterns {
+                    // 2. Evaluate Condition (Simple string match for MVP)
+                    // In Phase 4, we use a real JSONPath engine here.
+                    let condition_met = if pattern.condition == "*" {
+                        true
+                    } else {
+                        // Very basic check: Does payload string contain the condition keyword?
+                        event.payload.to_string().contains(&pattern.condition)
+                    };
+
+                    if condition_met {
+                        tracing::info!("⚠️  Pattern Triggered: {} on Agent {}", pattern.name, event.agent_id.as_deref().unwrap_or("?"));
+
+                        // 3. Execute Action
+                        match pattern.action {
+                            crate::registry::PatternAction::Interrupt { reason } => {
+                                if let Some(agent) = &event.agent_id {
+                                    // Direct call to fail_run (simulating interrupt)
+                                    runtime_ref.fail_run(&event.run_id, agent, &reason).await;
+                                }
+                            }
+                            crate::registry::PatternAction::RequestApproval { reason } => {
+                                tracing::warn!("Approval requested: {} (Not yet implemented)", reason);
+                            }
+                            crate::registry::PatternAction::SpawnAgent { .. } => {
+                                tracing::warn!("SpawnAgent action not yet implemented in Cortex");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
 
     // Configure CORS
     let cors = CorsLayer::new()

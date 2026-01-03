@@ -1,0 +1,21 @@
+# [[RARO]]/apps/web-console/Dockerfile.dev
+# Purpose: Development Dockerfile with hot reload and Vite proxy support
+# Usage: docker-compose up (with updated docker-compose.yml)
+
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install dependencies
+COPY package.json package-lock.json* ./
+RUN npm install
+
+# Copy source code (or use volume mount for hot reload)
+COPY . .
+
+# Expose Vite dev server port
+EXPOSE 5173
+
+# Run Vite in dev mode with proxy support
+# --host 0.0.0.0 makes it accessible from outside container
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]

@@ -1,5 +1,5 @@
 // [[RARO]]/apps/kernel-server/src/models.rs
-// Purpose: Shared data models. Cleaned up dependencies and ensuring Serde compatibility.
+// Purpose: Core data models. Updated to support Dynamic Delegation and Graph Mutation.
 // Architecture: Shared Data Layer
 // Dependencies: Serde
 
@@ -12,7 +12,7 @@ pub enum ModelVariant {
     GeminiFlash,
     #[serde(rename = "gemini-2.5-flash-lite")]
     GeminiPro,
-    #[serde(rename = "gemini-2.5-flash")]
+    #[serde(rename = "gemini-3.0-flash")]
     GeminiDeepThink,
 }
 
@@ -26,18 +26,29 @@ pub enum AgentRole {
     Observer,
 }
 
+/// Configuration for a single agent node.
+/// Used in both static workflow definitions and dynamic delegations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentNodeConfig {
     pub id: String,
     pub role: AgentRole,
     pub model: ModelVariant,
     pub tools: Vec<String>,
+    #[serde(default)]
     pub input_schema: serde_json::Value,
+    #[serde(default)]
     pub output_schema: serde_json::Value,
+    #[serde(default = "default_cache_policy")]
     pub cache_policy: String,
-    pub depends_on: Vec<String>,
+    // Dependencies relative to the context (Workflow or Subgraph)
+    #[serde(default)]
+    pub depends_on: Vec<String>, 
     pub prompt: String,
-    pub position: Option<Position>, // Added for UI coordination
+    pub position: Option<Position>,
+}
+
+fn default_cache_policy() -> String {
+    "ephemeral".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +65,59 @@ pub struct WorkflowConfig {
     pub max_token_budget: usize,
     pub timeout_ms: u64,
 }
+
+// === NEW: DYNAMIC GRAPH STRUCTURES ===
+
+/// A request from an active agent to spawn new sub-agents.
+/// This supports Flow B (Recursive Fork).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DelegationRequest {
+    /// The intent/reason for this delegation (for logging/patterns)
+    pub reason: String,
+    
+    /// The new nodes to inject into the graph
+    pub new_nodes: Vec<AgentNodeConfig>,
+    
+    /// How these nodes relate to the delegating agent.
+    /// Default: "child" (Parent -> New Nodes -> Original Children)
+    #[serde(default = "default_strategy")]
+    pub strategy: DelegationStrategy,
+}
+
+fn default_strategy() -> DelegationStrategy {
+    DelegationStrategy::Child
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum DelegationStrategy {
+    /// New nodes become children of the current node. 
+    /// Current node's original children are re-parented to these new nodes.
+    Child,
+    /// New nodes are siblings (parallel execution), not blocking dependent flow.
+    Sibling,
+}
+
+/// The standardized response from the Remote Agent Service.
+/// Moved here from runtime.rs to centralize the contract.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteAgentResponse {
+    pub agent_id: String,
+    pub success: bool,
+    pub output: Option<serde_json::Value>,
+    pub error: Option<String>,
+    pub tokens_used: usize,
+    pub thought_signature: Option<String>,
+    pub input_tokens: usize,
+    pub output_tokens: usize,
+    pub cache_hit: bool,
+    pub latency_ms: f64,
+    
+    // === NEW: The payload for dynamic graph changes ===
+    pub delegation: Option<DelegationRequest>,
+}
+
+// === RUNTIME STATE ===
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentInvocation {
@@ -77,6 +141,7 @@ pub enum InvocationStatus {
     Running,
     Success,
     Failed,
+    Paused, // Added for Human-in-the-Loop or Delegation pauses
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,6 +165,7 @@ pub enum RuntimeStatus {
     Running,
     Completed,
     Failed,
+    AwaitingApproval, // Added for Flow C (Safety)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

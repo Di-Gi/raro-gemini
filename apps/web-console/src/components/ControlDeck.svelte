@@ -4,9 +4,19 @@
 // Dependencies: Stores, API -->
 
 <script lang="ts">
-  import { selectedNode, agentNodes, pipelineEdges, addLog, updateNodeStatus, deselectNode, telemetry, connectRuntimeWebSocket } from '$lib/stores'
-  import { startRun, type WorkflowConfig, type AgentConfig } from '$lib/api'
+  import { selectedNode, agentNodes, pipelineEdges, addLog, updateNodeStatus,
+    deselectNode, telemetry, connectRuntimeWebSocket, runtimeStore, resumeRun, stopRun,
+    planningMode,           // Import new store
+    loadWorkflowManifest    // Import new action
+  } from '$lib/stores'
+  import { 
+    startRun, 
+    generateWorkflowPlan, // Import API call
+    type WorkflowConfig, 
+    type AgentConfig 
+  } from '$lib/api'
   import { get } from 'svelte/store'
+  import { fade } from 'svelte/transition'
 
   let { expanded }: { expanded: boolean } = $props();
 
@@ -18,6 +28,9 @@
   let isSubmitting = $state(false)
   let isInputFocused = $state(false)
 
+  // Reactive derivation for HITL state
+  let isAwaitingApproval = $derived($runtimeStore.status === 'AWAITING_APPROVAL' || $runtimeStore.status === 'PAUSED')
+
   // === STATE SYNCHRONIZATION ===
   $effect(() => {
     if ($selectedNode && expanded) {
@@ -28,7 +41,7 @@
         currentModel = node.model.toLowerCase()
         currentPrompt = node.prompt
       }
-      
+
       // Force switch to node-config if not already there
       if (activePane !== 'node-config') {
         activePane = 'node-config'
@@ -36,18 +49,51 @@
     } else if (!$selectedNode && activePane === 'node-config') {
       // 2. Node deselected while in config -> Fallback to Overview
       activePane = 'overview'
-    } else if (!expanded && activePane !== 'input') {
-      // 3. If collapsed, ensure we return to input mode
+    } else if (!expanded && activePane !== 'input' && !isAwaitingApproval) {
+      // 3. If collapsed, ensure we return to input mode (unless awaiting approval)
       activePane = 'input'
     }
   });
 
-  async function executeRun() {
-    if (!cmdInput) return
+  // Force expand if approval needed
+  $effect(() => {
+      if (isAwaitingApproval && !expanded) {
+          // In a real app we might emit an event to parent, here we just assume user sees the indicator
+      }
+  })
+
+  // === 1. THE ARCHITECT HANDLER (Flow A: Planning) ===
+  // Pure State Mutation: Generates graph, does NOT execute.
+  async function submitPlan() {
+    if (!cmdInput) return;
+    isSubmitting = true;
+    
+    addLog('ARCHITECT', `Analyzing directive: "${cmdInput}"`, 'THINKING');
+
+    try {
+        const manifest = await generateWorkflowPlan(cmdInput);
+        
+        // Pure state mutation via Store Action
+        loadWorkflowManifest(manifest);
+        
+        addLog('ARCHITECT', 'Graph construction complete.', 'DONE');
+
+    } catch (e: any) {
+        addLog('ARCHITECT', `Planning failed: ${e.message}`, 'ERR');
+    } finally {
+        isSubmitting = false;
+    }
+  }
+
+  // === 2. THE KERNEL HANDLER (Flow B: Execution) ===
+  // Pure Execution: Runs whatever is in the store.
+  async function submitRun() {
+    // Allow running if we have input OR if we have a graph to run
+    if (!cmdInput && $agentNodes.length === 0) return
     if (isSubmitting) return
 
-    isSubmitting = true
-    addLog('OPERATOR', `<strong>${cmdInput}</strong>`, 'USER_INPUT')
+    isSubmitting = true;
+    if (cmdInput) addLog('OPERATOR', `<strong>${cmdInput}</strong>`, 'EXECUTE');
 
     try {
         // 1. Construct Workflow Config from Store State
@@ -80,9 +126,10 @@
             };
         });
 
+        // Inject Runtime Command into Orchestrator if present
         const orchestrator = agents.find(a => a.role === 'orchestrator');
-        if (orchestrator) {
-            orchestrator.prompt = `${orchestrator.prompt}\n\nUSER REQUEST: ${cmdInput}`;
+        if (orchestrator && cmdInput) {
+            orchestrator.prompt = `${orchestrator.prompt}\n\nRUNTIME COMMAND: ${cmdInput}`;
         }
 
         const config: WorkflowConfig = {
@@ -103,7 +150,7 @@
         // 3. Connect WebSocket for live updates
         connectRuntimeWebSocket(response.run_id);
 
-        cmdInput = ''
+        cmdInput = '' // Clear input on successful run
 
     } catch (e: any) {
         addLog('KERNEL', `Execution failed: ${e.message}`, 'ERR');
@@ -112,6 +159,22 @@
     }
   }
 
+  // === 3. THE ROUTER ===
+  function handleCommand() {
+    if (isSubmitting) return;
+    
+    if ($planningMode) {
+        submitPlan();
+    } else {
+        submitRun();
+    }
+  }
+
+  function toggleMode() {
+    planningMode.update(v => !v);
+  }
+
+  // === HELPERS ===
   function handlePaneSelect(pane: string) {
     activePane = pane
     if ($selectedNode) deselectNode()
@@ -134,8 +197,21 @@
   function handleKey(e: KeyboardEvent) {
       if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault();
-          executeRun();
+          handleCommand(); // Route through the mode selector
       }
+  }
+
+  // HITL Handlers
+  async function handleApprove() {
+      if (!$runtimeStore.runId) return;
+      addLog('OPERATOR', 'APPROVAL GRANTED. Resuming execution.', 'HITL');
+      await resumeRun($runtimeStore.runId);
+  }
+
+  async function handleDeny() {
+      if (!$runtimeStore.runId) return;
+      addLog('OPERATOR', 'APPROVAL DENIED. Terminating run.', 'HITL');
+      await stopRun($runtimeStore.runId);
   }
 </script>
 
@@ -156,28 +232,91 @@
   {/if}
 
   <div class="pane-container">
+
+    <!-- === INTERVENTION OVERLAY === -->
+    {#if isAwaitingApproval}
+        <div class="intervention-overlay" transition:fade={{ duration: 200 }}>
+            <div class="intervention-card">
+                <div class="int-header">
+                    <span class="blink-dot"></span>
+                    SYSTEM INTERVENTION REQUIRED
+                </div>
+                <div class="int-body">
+                    A Safety Pattern or Delegation Request has paused execution.
+                    Please review the logs and authorize the next step.
+                </div>
+                <div class="int-actions">
+                    <button class="btn-deny" onclick={handleDeny}>ABORT RUN</button>
+                    <button class="btn-approve" onclick={handleApprove}>AUTHORIZE & RESUME</button>
+                </div>
+            </div>
+        </div>
+    {/if}
+
+    <!-- Normal Panes -->
     {#if !expanded || activePane === 'input'}
-      <!-- 1. INPUT CONSOLE (Refined Wrapper) -->
+      <!-- 1. INPUT CONSOLE -->
       <div id="pane-input" class="deck-pane">
-        <div class="cmd-wrapper {isInputFocused ? 'focused' : ''}">
+        
+        <!-- Input Wrapper: Changes visual state based on Planning Mode -->
+        <div class="cmd-wrapper {isInputFocused ? 'focused' : ''} {$planningMode ? 'mode-plan' : ''}">
             <textarea
                 id="cmd-input"
-                placeholder="ENTER DIRECTIVE..."
+                placeholder={$planningMode ? "ENTER ARCHITECTURAL DIRECTIVE..." : "ENTER RUNTIME DIRECTIVE..."}
                 bind:value={cmdInput}
-                disabled={isSubmitting}
+                disabled={isSubmitting || isAwaitingApproval}
                 onkeydown={handleKey}
                 onfocus={() => isInputFocused = true}
                 onblur={() => isInputFocused = false}
             ></textarea>
-            <button id="btn-run" onclick={executeRun} disabled={isSubmitting}>
+            
+            <!-- Main Action Button: Routes to handleCommand -->
+            <button 
+                id="btn-run" 
+                onclick={handleCommand} 
+                disabled={isSubmitting || isAwaitingApproval}
+            >
                 {#if isSubmitting}
                     <span class="loader"></span>
+                {:else if $planningMode}
+                    <!-- Plan Icon -->
+                    <span>◈</span> 
                 {:else}
-                    ↵
+                    <!-- Execute Icon -->
+                    <span>↵</span>
                 {/if}
             </button>
         </div>
-        <div class="input-hint">PRESS ENTER TO EXECUTE // SHIFT+ENTER FOR NEW LINE</div>
+
+        <!-- Footer: Mode Toggle & Hints -->
+        <div class="deck-footer">
+            
+            <!-- Mode Toggle Switch -->
+            <div 
+                class="mode-toggle" 
+                onclick={toggleMode} 
+                onkeydown={(e) => e.key === 'Enter' && toggleMode()}
+                role="button" 
+                tabindex="0"
+            >
+                <div class="toggle-label {!$planningMode ? 'active' : 'dim'}">EXEC</div>
+                
+                <div class="toggle-track">
+                    <div class="toggle-thumb" style="left: {$planningMode ? '14px' : '2px'}"></div>
+                </div>
+                
+                <div class="toggle-label {$planningMode ? 'active' : 'dim'}">PLAN</div>
+            </div>
+
+            <!-- Dynamic Hint -->
+            <div class="input-hint">
+                {#if $planningMode}
+                    GENERATIVE MODE // OVERWRITES GRAPH
+                {:else}
+                    RUNTIME MODE // EXECUTES GRAPH
+                {/if}
+            </div>
+        </div>
       </div>
 
     {:else if activePane === 'node-config'}
@@ -303,7 +442,7 @@
     font-weight: 600; 
     text-transform: uppercase; 
     letter-spacing: 0.5px; 
-    color: var(--paper-line); /* Replaced #888 */
+    color: var(--paper-line);
     cursor: pointer; 
     border-right: 1px solid var(--paper-line); 
     transition: all 0.2s; 
@@ -311,7 +450,7 @@
   
   .nav-item:hover { 
     color: var(--paper-ink); 
-    background: var(--paper-bg); /* Replaced white */
+    background: var(--paper-bg);
   }
   
   .nav-item.active { 
@@ -334,7 +473,7 @@
     flex: 0; 
     min-width: 50px; 
     font-size: 16px; 
-    color: #d32f2f; /* Kept semantic red, but it works on dark backgrounds too */
+    color: #d32f2f;
     border-right: none; 
     border-left: 1px solid var(--paper-line); 
   }
@@ -352,15 +491,22 @@
       display: flex;
       flex-direction: column;
       justify-content: center;
+      padding-bottom: 8px; /* Give space for the new footer */
   }
 
   /* The floating "Device" wrapper for input */
   .cmd-wrapper {
       display: flex;
-      background: var(--paper-bg); /* Replaced white */
+      background: var(--paper-bg);
       border: 1px solid var(--paper-line);
       height: 80px; 
       transition: border-color 0.2s, box-shadow 0.2s;
+  }
+
+  /* Highlight for Planning Mode */
+  .cmd-wrapper.mode-plan {
+      border-color: var(--arctic-cyan);
+      box-shadow: 0 0 10px rgba(0, 240, 255, 0.15); /* Soft cyan glow */
   }
 
   .cmd-wrapper.focused {
@@ -386,13 +532,18 @@
       width: 60px;
       border: none;
       border-left: 1px solid var(--paper-line);
-      background: var(--paper-surface); /* Replaced #FAFAFA */
-      color: var(--paper-ink); /* Replaced Rust #A53F2B for better dark mode support */
+      background: var(--paper-surface);
+      color: var(--paper-ink); /* Default for Execute */
       font-weight: 900;
       font-size: 20px;
       cursor: pointer;
       transition: all 0.1s;
       display: flex; align-items: center; justify-content: center;
+  }
+
+  /* Color change for button icon when in Planning Mode */
+  .cmd-wrapper.mode-plan #btn-run {
+      color: var(--arctic-cyan); /* Architect icon color */
   }
 
   #btn-run:hover:not(:disabled) { 
@@ -410,13 +561,71 @@
     cursor: not-allowed; 
   }
 
+  /* === DECK FOOTER & MODE TOGGLE === */
+  .deck-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 10px; /* Space from the cmd-wrapper */
+      padding: 0 4px; /* Slight horizontal padding */
+      width: 100%;
+  }
+
   .input-hint {
       font-family: var(--font-code);
       font-size: 9px;
-      color: var(--paper-line); /* Replaced #999 */
-      text-align: right;
-      margin-top: 8px;
+      color: var(--paper-line);
+      text-align: right; /* Aligned to the right of the footer */
       letter-spacing: 0.5px;
+  }
+
+  /* === MODE TOGGLE === */
+  .mode-toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      user-select: none;
+      opacity: 0.8;
+      transition: opacity 0.2s;
+      outline: none; /* Remove default focus outline */
+  }
+  .mode-toggle:hover { opacity: 1; }
+  /* Custom focus style */
+  .mode-toggle:focus-visible { outline: 1px dotted var(--arctic-cyan); outline-offset: 2px; }
+
+  .toggle-label {
+      font-family: var(--font-code);
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      transition: color 0.3s;
+  }
+  .toggle-label.active { color: var(--paper-ink); }
+  .toggle-label.dim { color: var(--paper-line); }
+
+  .toggle-track {
+      width: 28px; /* Slightly wider track */
+      height: 12px;
+      background: var(--paper-surface);
+      border: 1px solid var(--paper-line);
+      border-radius: 6px;
+      position: relative;
+      transition: background 0.2s;
+  }
+
+  .toggle-thumb {
+      width: 8px;
+      height: 8px;
+      background: var(--paper-ink);
+      border-radius: 50%;
+      position: absolute;
+      top: 1px; /* Center vertically in track */
+      transition: left 0.2s var(--ease-snap), background 0.2s;
+  }
+  /* Thumb color for Planning Mode */
+  .cmd-wrapper.mode-plan + .deck-footer .mode-toggle .toggle-thumb {
+      background: var(--arctic-cyan);
   }
 
   /* === FORMS & UTILS === */
@@ -426,7 +635,7 @@
   label { 
     display: block; 
     font-size: 9px; 
-    color: var(--paper-line); /* Replaced #888 */
+    color: var(--paper-line);
     text-transform: uppercase; 
     margin-bottom: 6px; 
     font-weight: 600; 
@@ -436,7 +645,7 @@
     width: 100%; 
     padding: 10px; 
     border: 1px solid var(--paper-line); 
-    background: var(--paper-bg); /* Replaced white */
+    background: var(--paper-bg);
     font-family: var(--font-code); 
     font-size: 12px; 
     color: var(--paper-ink); 
@@ -447,7 +656,7 @@
   
   .input-readonly { 
     background: var(--paper-surface); 
-    color: var(--paper-line); /* Replaced #666 */
+    color: var(--paper-line);
     cursor: default; 
   }
   
@@ -456,8 +665,8 @@
   .action-btn { 
     width: auto; 
     cursor: pointer; 
-    background: var(--paper-ink); /* Replaced #1a1918 */
-    color: var(--paper-bg); /* Replaced white */
+    background: var(--paper-ink);
+    color: var(--paper-bg);
     border: 1px solid var(--paper-ink);
   }
   .action-btn:hover {
@@ -468,8 +677,8 @@
   .sim-terminal { 
     font-family: var(--font-code); 
     font-size: 11px; 
-    color: var(--paper-ink); /* Replaced #555 */
-    background: var(--paper-bg); /* Replaced white */
+    color: var(--paper-ink);
+    background: var(--paper-bg);
     border: 1px solid var(--paper-line); 
     padding: 10px; 
     height: 100px; 
@@ -481,7 +690,7 @@
   
   .stat-card { 
     border: 1px solid var(--paper-line); 
-    background: var(--paper-bg); /* Replaced white */
+    background: var(--paper-bg);
     padding: 12px; 
     text-align: center; 
   }
@@ -495,7 +704,7 @@
   
   .stat-lbl { 
     font-size: 9px; 
-    color: var(--paper-line); /* Replaced #888 */
+    color: var(--paper-line);
     text-transform: uppercase; 
     margin-top: 4px; 
     display: block; 
@@ -504,7 +713,7 @@
   /* === SLIDER === */
   .deep-think-config { 
     padding: 16px; 
-    background: var(--paper-surface-dim); /* Replaced rgba(0,0,0,0.03) */
+    background: var(--paper-surface-dim);
     border: 1px solid var(--paper-line); 
     border-radius: 0; 
   }
@@ -512,7 +721,7 @@
   .slider-value-badge { 
     font-size: 10px; 
     background: var(--paper-ink); 
-    color: var(--paper-bg); /* Replaced white */
+    color: var(--paper-bg);
     padding: 2px 6px; 
     border-radius: 2px; 
   }
@@ -523,7 +732,7 @@
     flex: 1; 
     -webkit-appearance: none; 
     height: 4px; 
-    background: var(--paper-line); /* Replaced #ddd */
+    background: var(--paper-line);
     outline: none;
   }
   
@@ -534,7 +743,7 @@
     border-radius: 0; 
     background: var(--paper-ink); 
     cursor: ew-resize; 
-    border: 2px solid var(--paper-bg); /* Replaced white */
+    border: 2px solid var(--paper-bg);
     box-shadow: 0 1px 3px rgba(0,0,0,0.3); 
     transition: transform 0.1s;
   }
@@ -547,28 +756,118 @@
     border-radius: 0; 
     background: var(--paper-ink); 
     cursor: ew-resize; 
-    border: 2px solid var(--paper-bg); /* Replaced white */
+    border: 2px solid var(--paper-bg);
     box-shadow: 0 1px 3px rgba(0,0,0,0.3);
   }
 
   .slider-description { 
     font-size: 11px; 
-    color: var(--paper-line); /* Replaced #666 */
+    color: var(--paper-line);
     font-style: italic; 
     min-height: 1.2em; 
   }
   
   /* Loader */
   .loader {
-    width: 16px; 
-    height: 16px; 
-    border: 2px solid var(--paper-line); /* Replaced #ccc */
-    border-bottom-color: transparent; 
-    border-radius: 50%; 
-    display: inline-block; 
-    box-sizing: border-box; 
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--paper-line);
+    border-bottom-color: transparent;
+    border-radius: 50%;
+    display: inline-block;
+    box-sizing: border-box;
     animation: rotation 1s linear infinite;
   }
-  
+
   @keyframes rotation { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+  /* === INTERVENTION STYLES === */
+  .intervention-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0,0,0,0.6);
+      backdrop-filter: blur(4px);
+      z-index: 200;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+  }
+
+  .intervention-card {
+      background: var(--paper-bg);
+      border: 1px solid var(--alert-amber);
+      box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+      width: 400px;
+      padding: 2px; /* Border padding */
+  }
+
+  .int-header {
+      background: var(--alert-amber);
+      color: #000;
+      padding: 8px 12px;
+      font-weight: 700;
+      font-size: 11px;
+      letter-spacing: 1px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+  }
+
+  .blink-dot {
+      width: 8px;
+      height: 8px;
+      background: #000;
+      border-radius: 50%;
+      animation: blink 0.5s infinite alternate;
+  }
+
+  .int-body {
+      padding: 20px;
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--paper-ink);
+      border-bottom: 1px solid var(--paper-line);
+  }
+
+  .int-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+  }
+
+  .int-actions button {
+      border: none;
+      padding: 12px;
+      font-family: var(--font-code);
+      font-weight: 700;
+      font-size: 11px;
+      cursor: pointer;
+      transition: background 0.2s;
+  }
+
+  .btn-deny {
+      background: var(--paper-surface);
+      color: var(--paper-ink);
+  }
+
+  .btn-deny:hover {
+      background: #d32f2f;
+      color: white;
+  }
+
+  .btn-approve {
+      background: var(--paper-ink);
+      color: var(--paper-bg);
+  }
+
+  .btn-approve:hover {
+      opacity: 0.9;
+  }
+
+  @keyframes blink {
+      from { opacity: 1; }
+      to { opacity: 0.3; }
+  }
 </style>

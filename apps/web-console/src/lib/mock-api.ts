@@ -1,7 +1,12 @@
-// apps/web-console/src/lib/mock-api.ts
+// [[RARO]]/apps/web-console/src/lib/mock-api.ts
 import { type WorkflowConfig } from './api';
 
 // --- Types needed for simulation ---
+type TopologySnapshot = {
+    nodes: string[];
+    edges: Array<{ from: string; to: string }>;
+};
+
 type SimulationStep = {
     delay: number;
     state: {
@@ -21,9 +26,21 @@ type SimulationStep = {
         }>;
     };
     signatures?: Record<string, string>;
+    topology?: TopologySnapshot; // <--- NEW: Topology support for layout engine
 };
 
 // --- Mock Data Generators ---
+
+// Define the static graph structure for this mock scenario
+const MOCK_TOPOLOGY: TopologySnapshot = {
+    nodes: ['n1', 'n2', 'n3', 'n4'],
+    edges: [
+        { from: 'n1', to: 'n2' },
+        { from: 'n1', to: 'n3' },
+        { from: 'n2', to: 'n4' },
+        { from: 'n3', to: 'n4' }
+    ]
+};
 
 const MOCK_ARTIFACTS: Record<string, any> = {
     'n1': { 
@@ -219,7 +236,8 @@ export class MockWebSocket {
             // T+0: Start
             { 
                 delay: 500, 
-                state: { ...baseState, active_agents: ['n1'] } 
+                state: { ...baseState, active_agents: ['n1'] },
+                topology: MOCK_TOPOLOGY
             },
             // T+2s: Orchestrator finishes, triggers workers
             { 
@@ -231,7 +249,8 @@ export class MockWebSocket {
                     total_tokens_used: 450,
                     invocations: [{ id: 'inv-1', agent_id: 'n1', status: 'success', tokens_used: 450, latency_ms: 1200, artifact_id: 'art-n1' }]
                 },
-                signatures: { 'n1': 'hash_xc92' }
+                signatures: { 'n1': 'hash_xc92' },
+                topology: MOCK_TOPOLOGY
             },
             // T+4s: Retrieval finishes first
             { 
@@ -243,7 +262,8 @@ export class MockWebSocket {
                     total_tokens_used: 1200,
                     invocations: [{ id: 'inv-2', agent_id: 'n2', status: 'success', tokens_used: 750, latency_ms: 800, artifact_id: 'art-n2' }]
                 },
-                signatures: { 'n2': 'hash_bm25' }
+                signatures: { 'n2': 'hash_bm25' },
+                topology: MOCK_TOPOLOGY
             },
             // T+3s: Code finishes
             { 
@@ -255,7 +275,8 @@ export class MockWebSocket {
                     total_tokens_used: 2100,
                     invocations: [{ id: 'inv-3', agent_id: 'n3', status: 'success', tokens_used: 900, latency_ms: 2500, artifact_id: 'art-n3' }]
                 },
-                signatures: { 'n3': 'hash_py39' }
+                signatures: { 'n3': 'hash_py39' },
+                topology: MOCK_TOPOLOGY
             },
             // T+5s: Synthesis finishes (Deep Think takes longer)
             { 
@@ -268,7 +289,8 @@ export class MockWebSocket {
                     total_tokens_used: 5400,
                     invocations: [{ id: 'inv-4', agent_id: 'n4', status: 'success', tokens_used: 3300, latency_ms: 4800, artifact_id: 'art-n4' }]
                 },
-                signatures: { 'n4': 'hash_fin1' }
+                signatures: { 'n4': 'hash_fin1' },
+                topology: MOCK_TOPOLOGY
             }
         ];
     }
@@ -286,7 +308,8 @@ export class MockWebSocket {
             const message = {
                 type: 'state_update',
                 state: step.state,
-                signatures: step.signatures || {}
+                signatures: step.signatures || {},
+                topology: step.topology || null // Emit topology
             };
 
             if (this.onmessage) {

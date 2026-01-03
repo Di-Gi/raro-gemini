@@ -4,7 +4,15 @@
 // Dependencies: Stores -->
 
 <script lang="ts">
-  import { agentNodes, pipelineEdges, selectedNode, selectNode, deselectNode, runtimeStore, type PipelineEdge } from '$lib/stores'
+  import { 
+    agentNodes, 
+    pipelineEdges, 
+    selectedNode, 
+    selectNode, 
+    runtimeStore, 
+    planningMode, // Import global mode state
+    type PipelineEdge 
+  } from '$lib/stores'
 
   let { expanded, ontoggle }: { expanded: boolean, ontoggle?: () => void } = $props();
 
@@ -77,12 +85,15 @@
         el.className = `node ${$selectedNode === node.id ? 'selected' : ''} ${
           node.status === 'running' ? 'running' : ''
         } ${node.status === 'complete' ? 'complete' : ''}`
-        
+
+        // IMPORTANT: Ensure dynamic nodes get generic styling if role missing
+        const role = node.role ? node.role.toUpperCase() : 'WORKER';
+
         // Detailed "Chip" Layout
         el.innerHTML = `
             <div class="node-indicator"></div>
             <div class="node-content">
-                <div class="node-role">${node.role.toUpperCase()}</div>
+                <div class="node-role">${role}</div>
                 <div class="node-label">${node.label}</div>
             </div>
             <div class="node-decor"></div>
@@ -110,13 +121,17 @@
     }
   }
 
+  // KEY FIX: React to changes in the node list length (Dynamic Injection)
   $effect(() => {
     const _expanded = expanded;
+    const _nodeCount = $agentNodes.length;  // Track node count for dynamic injection
+    const _edgeCount = $pipelineEdges.length;
     const _nodes = $agentNodes;
     const _edges = $pipelineEdges;
     const _selected = $selectedNode;
-    const _status = $runtimeStore.status; 
-    
+    const _status = $runtimeStore.status;
+
+    // This dependency ensures renderGraph runs when the array grows
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         renderGraph();
@@ -148,9 +163,13 @@
       {:else if $runtimeStore.status === 'RUNNING'}
          <div class="hud-status-dot active"></div>
          PIPELINE ACTIVE // PROCESSING
+      {:else if $planningMode}
+         <!-- VISUAL CONFIRMATION FOR FLOW A -->
+         <div class="hud-status-dot blueprint"></div>
+         BLUEPRINT MODE // ARCHITECT ACTIVE
       {:else}
          <div class="hud-status-dot"></div>
-         ARCHITECT VIEW // EDIT MODE
+         READY // EXECUTION MODE
       {/if}
     </div>
     <button
@@ -246,6 +265,13 @@
   .hud-status-dot.complete {
     background: var(--arctic-cyan);
     box-shadow: 0 0 8px var(--arctic-cyan);
+  }
+
+  /* BLUEPRINT MODE STYLING */
+  .hud-status-dot.blueprint {
+    background: var(--arctic-cyan);
+    box-shadow: 0 0 8px var(--arctic-cyan);
+    animation: pulse 2s infinite;
   }
 
   .btn-minimize {
@@ -402,5 +428,10 @@
   @keyframes blink {
     from { opacity: 0.4; }
     to { opacity: 1; }
+  }
+  @keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.5; }
+    100% { opacity: 1; }
   }
 </style>

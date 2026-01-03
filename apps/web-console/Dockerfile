@@ -2,6 +2,12 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
+# 1. Accept the Argument (Default to false for production container safety)
+ARG VITE_USE_MOCK_API=false
+
+# 2. Set it as an ENV for the build process
+ENV VITE_USE_MOCK_API=$VITE_USE_MOCK_API
+
 # Copy package management files
 COPY package.json package-lock.json* ./
 

@@ -100,13 +100,3 @@ To ensure we support all flows, we will verify the following artifacts at the en
 | **Infrastructure** | `TraceCorrelation`: Ability to see that Agent B was spawned *by* Agent A in logs. | ⬜ Pending |
 
 ---
-
-## 4. Execution Order (Next Steps)
-
-We will proceed with **Phase 1 (The Foundation)** immediately, as it unlocks everything else without breaking the current build.
-
-**Step 1:** Define the `GraphMutation` and `Delegation` schemas in Rust.
-**Step 2:** Define the corresponding Pydantic models in Python.
-**Step 3:** Update the `models.rs` file in the Kernel to support these new types.
-
-*Shall I proceed with Step 1 & 2 (Schema Definition)?*

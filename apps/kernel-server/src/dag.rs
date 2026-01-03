@@ -1,3 +1,8 @@
+// [[RARO]]/apps/kernel-server/src/dag.rs
+// Purpose: DAG Data Structure. Updated with mutation methods for dynamic graph splicing.
+// Architecture: Core Data Structure
+// Dependencies: std, thiserror
+
 use std::collections::{HashMap, HashSet, VecDeque};
 use thiserror::Error;
 
@@ -9,11 +14,14 @@ pub enum DAGError {
     InvalidNode(String),
     #[error("Dependency not found: {0}")]
     DependencyNotFound(String),
+    #[error("Edge not found: {0} -> {1}")]
+    EdgeNotFound(String, String),
 }
 
+#[derive(Clone, Debug)] // Added Clone/Debug for easier state management
 pub struct DAG {
     nodes: HashSet<String>,
-    edges: HashMap<String, Vec<String>>,
+    edges: HashMap<String, Vec<String>>, // Adjacency list: Source -> [Targets]
 }
 
 impl DAG {
@@ -46,6 +54,22 @@ impl DAG {
 
         self.edges.entry(from).or_insert_with(Vec::new).push(to);
         Ok(())
+    }
+
+    /// Remove an edge from source to target (Required for splicing)
+    pub fn remove_edge(&mut self, from: &str, to: &str) -> Result<(), DAGError> {
+        if let Some(targets) = self.edges.get_mut(from) {
+            if let Some(pos) = targets.iter().position(|x| x == to) {
+                targets.remove(pos);
+                return Ok(());
+            }
+        }
+        Err(DAGError::EdgeNotFound(from.to_string(), to.to_string()))
+    }
+
+    /// Get all direct children (dependents) of a node
+    pub fn get_children(&self, node_id: &str) -> Vec<String> {
+        self.edges.get(node_id).cloned().unwrap_or_default()
     }
 
     /// Check if adding edge would create a cycle
@@ -83,6 +107,7 @@ impl DAG {
     }
 
     /// Compute topological order for execution
+    /// This is now used dynamically to recalculate the path after mutation
     pub fn topological_sort(&self) -> Result<Vec<String>, DAGError> {
         let mut in_degree: HashMap<String, usize> = self.nodes.iter().map(|n| (n.clone(), 0)).collect();
 
@@ -121,7 +146,7 @@ impl DAG {
         Ok(result)
     }
 
-    /// Get dependencies for a given node
+    /// Get dependencies for a given node (Reverse lookup)
     pub fn get_dependencies(&self, node_id: &str) -> Vec<String> {
         let mut deps = Vec::new();
         for (source, targets) in &self.edges {
@@ -130,6 +155,22 @@ impl DAG {
             }
         }
         deps
+    }
+    
+    /// Export edges as a flat vector for UI visualization
+    pub fn export_edges(&self) -> Vec<(String, String)> {
+        let mut edge_list = Vec::new();
+        for (source, targets) in &self.edges {
+            for target in targets {
+                edge_list.push((source.clone(), target.clone()));
+            }
+        }
+        edge_list
+    }
+
+    /// Export all known node IDs
+    pub fn export_nodes(&self) -> Vec<String> {
+        self.nodes.iter().cloned().collect()
     }
 
     /// Get dependents for a given node

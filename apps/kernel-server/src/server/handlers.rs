@@ -52,6 +52,31 @@ pub async fn start_workflow(
     }
 }
 
+pub async fn resume_run(
+    State(runtime): State<Arc<RARORuntime>>, 
+    Path(run_id): Path<String>
+) -> StatusCode {
+    // 1. Verify currently paused
+    let is_paused = runtime.get_state(&run_id)
+        .map(|s| s.status == RuntimeStatus::AwaitingApproval)
+        .unwrap_or(false);
+
+    if !is_paused { return StatusCode::BAD_REQUEST; }
+
+    // 2. Flip to Running
+    runtime.set_run_status(&run_id, RuntimeStatus::Running);
+    StatusCode::OK
+}
+
+pub async fn stop_run(
+    State(runtime): State<Arc<RARORuntime>>, 
+    Path(run_id): Path<String>
+) -> StatusCode {
+    runtime.fail_run(&run_id, "OPERATOR", "Manual Stop").await;
+    StatusCode::OK
+}
+
+
 pub async fn get_runtime_state(
     State(runtime): State<Arc<RARORuntime>>,
     Query(query): Query<RunQuery>,
@@ -191,10 +216,15 @@ async fn handle_runtime_stream(
             // Send periodic updates
             _ = interval.tick() => {
                 if let Some(state) = runtime.get_state(&run_id) {
+                    
+                    // === NEW: Fetch Topology ===
+                    let topology = runtime.get_topology_snapshot(&run_id);
+                    
                     let update = json!({
                         "type": "state_update",
                         "state": state,
                         "signatures": runtime.get_all_signatures(&run_id).map(|s| s.signatures),
+                        "topology": topology, // <--- THE BRIDGE
                         "timestamp": chrono::Utc::now().to_rfc3339()
                     });
 

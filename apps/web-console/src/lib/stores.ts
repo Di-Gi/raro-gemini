@@ -1,8 +1,9 @@
 // [[RARO]]/apps/web-console/src/lib/stores.ts
 
 import { writable, get } from 'svelte/store';
-import { getWebSocketURL, USE_MOCK } from './api'; // Import USE_MOCK
+import { getWebSocketURL, USE_MOCK, type WorkflowConfig } from './api'; // Import USE_MOCK
 import { MockWebSocket } from './mock-api';        // Import Mock Class
+import { DagLayoutEngine } from './layout-engine'; // Import Layout Engine
 
 // === TYPES ===
 export interface LogEntry {
@@ -32,6 +33,11 @@ export interface PipelineEdge {
   finalized: boolean; // True = Solid Line (Completed)
   pulseAnimation: boolean;
   signatureHash?: string;
+}
+
+interface TopologySnapshot {
+    nodes: string[];
+    edges: { from: string; to: string }[];
 }
 
 export interface TelemetryState {
@@ -87,7 +93,192 @@ export const telemetry = writable<TelemetryState>({
   tokensUsed: 0
 });
 
+// === NEW STORE ===
+// False = Execution Mode (Direct to Kernel)
+// True = Architect Mode (Query -> Agent Service -> Update Graph)
+export const planningMode = writable<boolean>(false);
+
+
 // === ACTIONS ===
+
+/**
+ * PURE STATE MUTATION
+ * Takes a backend manifest and paints it to the UI stores.
+ * Does NOT trigger execution.
+ */
+export function loadWorkflowManifest(manifest: WorkflowConfig) {
+  // 1. Transform Manifest Agents -> UI Nodes
+  const newNodes: AgentNode[] = manifest.agents.map((agent, index) => {
+    // Normalize model names
+    let modelName = 'GEMINI-3-PRO';
+    if (agent.model.includes('flash') && !agent.model.includes('lite')) modelName = 'GEMINI-3-FLASH';
+    if (agent.model.includes('deep')) modelName = 'GEMINI-3-DEEP-THINK';
+
+    return {
+      id: agent.id,
+      label: agent.id.replace(/^(agent_|node_)/i, '').toUpperCase().substring(0, 12),
+      // Use provided position or fallback calculation
+      x: agent.position?.x || (20 + (index * 15)),
+      y: agent.position?.y || (30 + (index * 10)),
+      model: modelName,
+      prompt: agent.prompt,
+      status: 'idle',
+      role: agent.role
+    };
+  });
+
+  // 2. Transform Dependencies -> UI Edges
+  const newEdges: PipelineEdge[] = [];
+  manifest.agents.forEach(agent => {
+    if (agent.depends_on) {
+      agent.depends_on.forEach(parentId => {
+        newEdges.push({
+          from: parentId,
+          to: agent.id,
+          active: false,
+          finalized: false,
+          pulseAnimation: false
+        });
+      });
+    }
+  });
+
+  // 3. Commit
+  agentNodes.set(newNodes);
+  pipelineEdges.set(newEdges);
+  selectedNode.set(null); // Clear selection
+}
+
+/**
+ * LOGIC GAP FIX: Flow A
+ * Translates Backend Manifest -> Frontend State
+ */
+export function overwriteGraphFromManifest(manifest: WorkflowConfig) {
+  // 1. Transform Manifest Agents -> UI Nodes
+  const newNodes: AgentNode[] = manifest.agents.map((agent, index) => {
+    // Normalize model names from backend variant to UI dropdown values
+    let modelName = 'GEMINI-3-PRO'; // Default
+    if (agent.model.includes('flash') && !agent.model.includes('lite')) modelName = 'GEMINI-3-FLASH';
+    if (agent.model.includes('deep')) modelName = 'GEMINI-3-DEEP-THINK';
+
+    return {
+      id: agent.id,
+      label: agent.id.replace(/^(agent_|node_)/i, '').toUpperCase(), // Clean ID for display
+      x: agent.position?.x || (20 + index * 15), // Fallback layout logic
+      y: agent.position?.y || (30 + index * 10),
+      model: modelName,
+      prompt: agent.prompt,
+      status: 'idle',
+      role: agent.role
+    };
+  });
+
+  // 2. Transform Manifest Dependencies -> UI Edges
+  const newEdges: PipelineEdge[] = [];
+  manifest.agents.forEach(agent => {
+    agent.depends_on.forEach(parentId => {
+      newEdges.push({
+        from: parentId,
+        to: agent.id,
+        active: false,
+        finalized: false,
+        pulseAnimation: false
+      });
+    });
+  });
+
+  // 3. Commit to Store
+  agentNodes.set(newNodes);
+  pipelineEdges.set(newEdges);
+}
+
+
+// HITL (Human-in-the-Loop) Actions
+export async function resumeRun(runId: string) {
+    if (USE_MOCK) {
+        runtimeStore.update(s => ({ ...s, status: 'RUNNING' }));
+        addLog('KERNEL', 'Mock: Resuming execution...', 'SYS');
+        return;
+    }
+    // Phase 4: Placeholder for the Resume API call
+    // await fetch(`${API_BASE}/runtime/${runId}/resume`, { method: 'POST' });
+    addLog('KERNEL', 'Resume API not yet implemented', 'WARN');
+}
+
+export async function stopRun(runId: string) {
+    if (USE_MOCK) {
+        runtimeStore.update(s => ({ ...s, status: 'FAILED' }));
+        addLog('KERNEL', 'Mock: Run terminated by operator', 'SYS');
+        return;
+    }
+    // await fetch(`${API_BASE}/runtime/${runId}/stop`, { method: 'POST' });
+    addLog('KERNEL', 'Stop API not yet implemented', 'WARN');
+}
+
+// === AUTHORITATIVE TOPOLOGY SYNC ===
+// This function trusts the Kernel's topology as the source of truth
+function syncTopology(topology: TopologySnapshot) {
+    const currentNodes = get(agentNodes);
+    const currentEdges = get(pipelineEdges);
+
+    // 1. Reconcile Edges (Source of Truth)
+    // Rebuild the edge list based on Kernel topology to ensure we capture rewiring
+    const newEdges: PipelineEdge[] = topology.edges.map(kEdge => {
+        // Try to preserve animation state if edge already existed
+        const existing = currentEdges.find(e => e.from === kEdge.from && e.to === kEdge.to);
+        return {
+            from: kEdge.from,
+            to: kEdge.to,
+            active: existing ? existing.active : false,
+            finalized: existing ? existing.finalized : false,
+            pulseAnimation: existing ? existing.pulseAnimation : false,
+            signatureHash: existing ? existing.signatureHash : undefined
+        };
+    });
+
+    // 2. Reconcile Nodes
+    const nodeMap = new Map(currentNodes.map(n => [n.id, n]));
+    const newNodes: AgentNode[] = [];
+    let structureChanged = false;
+
+    // Check for edge count mismatch or node count mismatch
+    if (newEdges.length !== currentEdges.length || topology.nodes.length !== currentNodes.length) {
+        structureChanged = true;
+    }
+
+    topology.nodes.forEach(nodeId => {
+        if (nodeMap.has(nodeId)) {
+            // Existing node: Keep it, preserve state
+            newNodes.push(nodeMap.get(nodeId)!);
+        } else {
+            // NEW NODE DETECTED (Delegation)
+            // Initialize at 0,0. The Layout Engine will move it immediately.
+            structureChanged = true;
+            newNodes.push({
+                id: nodeId,
+                // Heuristic Labeling since Kernel currently sends IDs only in topology
+                label: nodeId.toUpperCase().substring(0, 12),
+                x: 0,
+                y: 0,
+                model: 'DYNAMIC', // Visual indicator
+                prompt: 'Dynamic Agent',
+                status: 'running', // Usually spawned active
+                role: 'worker'
+            });
+        }
+    });
+
+    // 3. APPLY LAYOUT (Only if structure changed)
+    if (structureChanged) {
+        console.log('[UI] Topology mutation detected. Recalculating layout...');
+        const layoutNodes = DagLayoutEngine.computeLayout(newNodes, newEdges);
+        agentNodes.set(layoutNodes);
+        pipelineEdges.set(newEdges);
+    } else {
+        // If structure is same, update edges to respect any strict rewiring
+        pipelineEdges.set(newEdges);
+    }
+}
 
 export function addLog(role: string, message: string, metadata: string = '', isAnimated: boolean = false, customId?: string) {
   logs.update(l => {
@@ -136,6 +327,7 @@ export function connectRuntimeWebSocket(runId: string) {
   }
 
   const url = getWebSocketURL(runId);
+  console.log('[WS] Connecting to:', url);
 
   // ** MOCK SWITCHING **
   if (USE_MOCK) {
@@ -145,20 +337,30 @@ export function connectRuntimeWebSocket(runId: string) {
     ws = new WebSocket(url);
   }
 
-  // TypeScript note: MockWebSocket and WebSocket need matching signatures 
+  // TypeScript note: MockWebSocket and WebSocket need matching signatures
   // for the methods we use below. Since we defined them similarly in mock-api, this works.
-  
+
   ws.onopen = () => {
+    console.log('[WS] Connected successfully to:', url);
     addLog('KERNEL', `Connected to runtime stream: ${runId}`, 'NET_OK');
     runtimeStore.set({ status: 'RUNNING', runId });
   };
 
   ws.onmessage = (event: any) => { // Use 'any' or generic event type
+    console.log('[WS] Message received:', event.data.substring(0, 200));
     try {
       const data = JSON.parse(event.data);
       if (data.type === 'state_update' && data.state) {
-        syncState(data.state, data.signatures);
-        
+        console.log('[WS] State update:', {
+          status: data.state.status,
+          active: data.state.active_agents,
+          completed: data.state.completed_agents,
+          topology: data.topology ? `${data.topology.nodes?.length || 0} nodes, ${data.topology.edges?.length || 0} edges` : 'none'
+        });
+
+        // CRITICAL FIX: Pass topology to syncState
+        syncState(data.state, data.signatures, data.topology);
+
         if (data.state.status) {
              runtimeStore.update(s => ({ ...s, status: data.state.status.toUpperCase() }));
         }
@@ -166,11 +368,12 @@ export function connectRuntimeWebSocket(runId: string) {
         addLog('KERNEL', `Runtime error: ${data.error}`, 'ERR');
       }
     } catch (e) {
-      console.error('Failed to parse WS message', e);
+      console.error('[WS] Failed to parse message:', e, event.data);
     }
   };
 
-  ws.onclose = () => {
+  ws.onclose = (e) => {
+    console.log('[WS] Connection closed:', e.code, e.reason);
     addLog('KERNEL', 'Connection closed.', 'NET_END');
     
     // 1. Force Global Status to COMPLETED (if not failed)
@@ -192,6 +395,7 @@ export function connectRuntimeWebSocket(runId: string) {
 
   if (!USE_MOCK) {
       (ws as WebSocket).onerror = (e) => {
+        console.error('[WS] Error event:', e);
         addLog('KERNEL', 'WebSocket connection error.', 'ERR');
       };
   }
@@ -201,112 +405,117 @@ export function connectRuntimeWebSocket(runId: string) {
 
 const processedInvocations = new Set<string>();
 
-function syncState(state: any, signatures: Record<string, string> = {}) {
-  // Normalize status to handle lowercase from Rust serialization
-  const rawStatus = state.status ? state.status.toLowerCase() : 'running';
-  const isRunComplete = rawStatus === 'completed' || rawStatus === 'failed';
+function syncState(state: any, signatures: Record<string, string> = {}, topology?: TopologySnapshot) {
+    // 1. Sync Topology FIRST (Create/update nodes/edges from Kernel's authoritative view)
+    if (topology) {
+        syncTopology(topology);
+    }
 
-  // 1. Sync Node Status
-  agentNodes.update(nodes => {
-    return nodes.map(n => {
-      let status: 'idle' | 'running' | 'complete' | 'failed' = 'idle';
-      if (state.active_agents.includes(n.id)) status = 'running';
-      else if (state.completed_agents.includes(n.id)) status = 'complete';
-      else if (state.failed_agents.includes(n.id)) status = 'failed';
-      return { ...n, status };
+    // Normalize status to handle lowercase from Rust serialization
+    const rawStatus = state.status ? state.status.toLowerCase() : 'running';
+    const isRunComplete = rawStatus === 'completed' || rawStatus === 'failed';
+
+    // 2. Sync Node Status
+    agentNodes.update(nodes => {
+        return nodes.map(n => {
+            let status: 'idle' | 'running' | 'complete' | 'failed' = 'idle';
+            if (state.active_agents.includes(n.id)) status = 'running';
+            else if (state.completed_agents.includes(n.id)) status = 'complete';
+            else if (state.failed_agents.includes(n.id)) status = 'failed';
+            return { ...n, status };
+        });
     });
-  });
 
-  // 2. Sync Edges
-  pipelineEdges.update(edges => {
-    return edges.map(e => {
-      const fromComplete = state.completed_agents.includes(e.from);
-      const toStarted = state.active_agents.includes(e.to) || state.completed_agents.includes(e.to);
-      
-      const hasDataFlowed = fromComplete && toStarted;
-      
-      // Active: Flowing but not done
-      const active = hasDataFlowed && !isRunComplete;
-      
-      // Finalized: Flowed and now done
-      const finalized = hasDataFlowed && isRunComplete;
+    // 3. Sync Edges
+    pipelineEdges.update(edges => {
+        return edges.map(e => {
+            const fromComplete = state.completed_agents.includes(e.from);
+            const toStarted = state.active_agents.includes(e.to) || state.completed_agents.includes(e.to);
 
-      const sig = signatures[e.from];
+            const hasDataFlowed = fromComplete && toStarted;
 
-      return {
-        ...e,
-        active,
-        finalized,
-        pulseAnimation: state.active_agents.includes(e.to),
-        signatureHash: sig
-      };
+            // Active: Flowing but not done
+            const active = hasDataFlowed && !isRunComplete;
+
+            // Finalized: Flowed and now done
+            const finalized = hasDataFlowed && isRunComplete;
+
+            const sig = signatures[e.from];
+
+            return {
+                ...e,
+                active,
+                finalized,
+                pulseAnimation: state.active_agents.includes(e.to),
+                signatureHash: sig
+            };
+        });
     });
-  });
 
-  // 3. Sync Telemetry
-  const cost = (state.total_tokens_used / 1_000_000) * 2.0;
-  telemetry.set({
-    latency: 0,
-    cacheHitRate: 0,
-    totalCost: cost,
-    errorCount: state.failed_agents.length,
-    tokensUsed: state.total_tokens_used
-  });
+    // 4. Sync Telemetry
+    const cost = (state.total_tokens_used / 1_000_000) * 2.0;
+    telemetry.set({
+        latency: 0,
+        cacheHitRate: 0,
+        totalCost: cost,
+        errorCount: state.failed_agents.length,
+        tokensUsed: state.total_tokens_used
+    });
 
-  // 4. Sync Logs
-  if (state.invocations && Array.isArray(state.invocations)) {
-    state.invocations.forEach(async (inv: any) => {
-      if (!inv || !inv.id || processedInvocations.has(inv.id)) return;
+    // 5. Sync Logs
+    if (state.invocations && Array.isArray(state.invocations)) {
+        state.invocations.forEach(async (inv: any) => {
+            if (!inv || !inv.id || processedInvocations.has(inv.id)) return;
 
-      processedInvocations.add(inv.id);
-      const agentLabel = (inv.agent_id || 'UNKNOWN').toUpperCase();
+            processedInvocations.add(inv.id);
+            const agentLabel = (inv.agent_id || 'UNKNOWN').toUpperCase();
 
-      try {
-        if (inv.status === 'success') {
-          if (inv.artifact_id) {
-            addLog(agentLabel, 'Initiating output retrieval...', 'LOADING', false, inv.id);
             try {
-              const { getArtifact } = await import('./api');
-              const fetchPromise = getArtifact(state.run_id, inv.agent_id);
-              const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000));
-              const artifact: any = await Promise.race([fetchPromise, timeoutPromise]);
+                if (inv.status === 'success') {
+                    if (inv.artifact_id) {
+                        addLog(agentLabel, 'Initiating output retrieval...', 'LOADING', false, inv.id);
+                        try {
+                            const { getArtifact } = await import('./api');
+                            const fetchPromise = getArtifact(state.run_id, inv.agent_id);
+                            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000));
+                            const artifact: any = await Promise.race([fetchPromise, timeoutPromise]);
 
-              if (artifact) {
-                let outputText = 'Output received';
-                if (typeof artifact === 'string') outputText = artifact;
-                else if (typeof artifact === 'object') {
-                   if (artifact.result) outputText = artifact.result;
-                   else if (artifact.output) outputText = artifact.output;
-                   else if (artifact.text) outputText = artifact.text;
-                   else outputText = JSON.stringify(artifact, null, 2);
+                            if (artifact) {
+                                let outputText = 'Output received';
+                                if (typeof artifact === 'string') outputText = artifact;
+                                else if (typeof artifact === 'object') {
+                                    if (artifact.result) outputText = artifact.result;
+                                    else if (artifact.output) outputText = artifact.output;
+                                    else if (artifact.text) outputText = artifact.text;
+                                    else outputText = JSON.stringify(artifact, null, 2);
+                                }
+                                updateLog(inv.id, {
+                                    message: outputText,
+                                    metadata: `TOKENS: ${inv.tokens_used || 0} | LATENCY: ${inv.latency_ms || 0}ms`,
+                                    isAnimated: true
+                                });
+                            } else {
+                                updateLog(inv.id, { message: 'Artifact empty or expired', metadata: 'WARN' });
+                            }
+                        } catch (err) {
+                            console.error('Artifact fetch failed:', err);
+                            updateLog(inv.id, { message: 'Output retrieval failed. Check connection.', metadata: 'NET_ERR' });
+                        }
+                    } else {
+                        addLog(agentLabel, 'Completed (No Output)', `TOKENS: ${inv.tokens_used}`, false, inv.id);
+                    }
+                } else if (inv.status === 'failed') {
+                    let errorDisplay = 'Execution Failed';
+                    if (inv.error_message) {
+                        errorDisplay = `<div style="color:#d32f2f; font-weight:bold; margin-bottom:4px">EXECUTION HALTED</div><div style="background: rgba(211, 47, 47, 0.05); border-left: 3px solid #d32f2f; padding: 8px; font-family: monospace; font-size: 11px; white-space: pre-wrap; color: #b71c1c;">${escapeHtml(inv.error_message)}</div>`;
+                    }
+                    addLog(agentLabel, errorDisplay, 'ERR', false, inv.id);
                 }
-                updateLog(inv.id, {
-                  message: outputText,
-                  metadata: `TOKENS: ${inv.tokens_used || 0} | LATENCY: ${inv.latency_ms || 0}ms`,
-                  isAnimated: true 
-                });
-              } else {
-                updateLog(inv.id, { message: 'Artifact empty or expired', metadata: 'WARN' });
-              }
-            } catch (err) {
-              console.error('Artifact fetch failed:', err);
-              updateLog(inv.id, { message: 'Output retrieval failed. Check connection.', metadata: 'NET_ERR' });
+            } catch (e) {
+                console.error('Error processing invocation log:', e);
             }
-          } else {
-            addLog(agentLabel, 'Completed (No Output)', `TOKENS: ${inv.tokens_used}`, false, inv.id);
-          }
-        } else if (inv.status === 'failed') {
-          let errorDisplay = 'Execution Failed';
-          if (inv.error_message) {
-            errorDisplay = `<div style="color:#d32f2f; font-weight:bold; margin-bottom:4px">EXECUTION HALTED</div><div style="background: rgba(211, 47, 47, 0.05); border-left: 3px solid #d32f2f; padding: 8px; font-family: monospace; font-size: 11px; white-space: pre-wrap; color: #b71c1c;">${escapeHtml(inv.error_message)}</div>`;
-          }
-          addLog(agentLabel, errorDisplay, 'ERR', false, inv.id);
-        }
-      } catch (e) {
-        console.error('Error processing invocation log:', e);
-      }
-    });
-  }
+        });
+    }
 }
 
 function escapeHtml(unsafe: string) {

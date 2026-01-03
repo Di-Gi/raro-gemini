@@ -1,0 +1,53 @@
+
+INFO:     172.19.0.5:59082 - "POST /invoke HTTP/1.1" 200 OK
+kernel  
+
+2026-01-03T05:01:04.473175Z  INFO raro_kernel::runtime: Processing agent: n2
+
+2026-01-03T05:01:04.475183Z DEBUG raro_kernel::runtime: Sending invocation request to: http://agents:8000/invoke⁠
+agents  
+
+INFO:raro.agent:Resuming from parent signature: bjFfMjAyNi0wMS0wM1Qw...
+
+INFO:raro.agent:Calling Gemini API: model=gemini-2.5-flash, agent=n2
+
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent⁠ "HTTP/1.1 200 OK"
+
+INFO:     172.19.0.5:59082 - "POST /invoke HTTP/1.1" 200 OK
+kernel  
+
+2026-01-03T05:01:07.315159Z  INFO raro_kernel::runtime: Processing agent: n3
+
+2026-01-03T05:01:07.317017Z DEBUG raro_kernel::runtime: Sending invocation request to: http://agents:8000/invoke⁠
+agents  
+
+INFO:raro.agent:Resuming from parent signature: bjFfMjAyNi0wMS0wM1Qw...
+
+INFO:raro.agent:Calling Gemini API: model=gemini-2.5-flash, agent=n3
+
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent⁠ "HTTP/1.1 200 OK"
+
+INFO:     172.19.0.5:59082 - "POST /invoke HTTP/1.1" 200 OK
+kernel  
+
+2026-01-03T05:01:15.107009Z  INFO raro_kernel::runtime: Processing agent: n4
+
+2026-01-03T05:01:15.108848Z DEBUG raro_kernel::runtime: Sending invocation request to: http://agents:8000/invoke⁠
+agents  
+
+INFO:raro.agent:Resuming from parent signature: bjJfMjAyNi0wMS0wM1Qw...
+
+INFO:raro.agent:Calling Gemini API: model=gemini-2.5-flash, agent=n4
+
+INFO:google_genai.models:AFC is enabled with max remote calls: 10.
+
+INFO:httpx:HTTP Request: POST https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent⁠ "HTTP/1.1 200 OK"
+
+INFO:     172.19.0.5:59082 - "POST /invoke HTTP/1.1" 200 OK
+kernel  
+
+2026-01-03T05:01:20.843150Z  INFO raro_kernel::runtime: Workflow run 2ea77c64-5da9-4911-af6d-8ab90c9a395a completed successfully (Dynamic)

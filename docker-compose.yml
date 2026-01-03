@@ -53,18 +53,25 @@ services:
       redis:
         condition: service_healthy
 
-  # 3. THE FACE: SvelteKit Web Console
+  # 3. THE FACE: Svelte Web Console
   # Reactive UI for visualization and control.
   web:
     build:
       context: ./apps/web-console
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.dev  # Use dev Dockerfile with hot reload
     container_name: raro-web
     ports:
       - "5173:5173"
     environment:
-      # Browser runs on Host, so it must hit localhost:3000, not the internal docker name
-      - VITE_API_URL=http://localhost:3000
+      # - VITE_KERNEL_URL=http://kernel:3000
+      # - VITE_AGENT_URL=http://agents:8000
+      # FORCE DISABLE MOCK IN DOCKER
+      - VITE_USE_MOCK_API=false 
+      - DOCKER_ENV=true
+    volumes:
+      # Hot reload: mount source code
+      - ./apps/web-console/src:/app/src
+      - ./apps/web-console/vite.config.ts:/app/vite.config.ts
     depends_on:
       kernel:
         condition: service_healthy
