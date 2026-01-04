@@ -4,9 +4,10 @@
 // Dependencies: Typewriter, Stores -->
 
 <script lang="ts">
-  import { logs, updateLog } from '$lib/stores'
+  import { logs, updateLog, runtimeStore } from '$lib/stores'
   import Typewriter from './sub/Typewriter.svelte'
-  import SmartText from './sub/SmartText.svelte' // Import the new component
+  import SmartText from './sub/SmartText.svelte'
+  import ApprovalCard from './sub/ApprovalCard.svelte'
   import { tick } from 'svelte';
 
   // Refs
@@ -16,8 +17,6 @@
   // State
   let isPinnedToBottom = $state(true);
   let isAutoScrolling = false;
-
-  // ... (Keep handleScroll, scrollToBottom, and Observers as they were) ...
 
   function handleScroll() {
     if (!scrollContainer) return;
@@ -79,17 +78,23 @@
           <span class="log-role">{log.role}</span>
           
           <div class="log-content">
-            {#if log.isAnimated}
-              <!-- 
+            {#if log.metadata === 'INTERVENTION'}
+              <!-- RENDER APPROVAL CARD -->
+              <ApprovalCard
+                reason={log.message === 'SAFETY_PATTERN_TRIGGERED' ? "System Policy Violation or Manual Pause Triggered" : log.message}
+                runId={$runtimeStore.runId || ''}
+              />
+            {:else if log.isAnimated}
+              <!--
                  Typewriter View:
                  Pass the ID to handle completion.
               -->
-              <Typewriter 
-                text={log.message} 
-                onComplete={() => handleTypewriterComplete(log.id)} 
+              <Typewriter
+                text={log.message}
+                onComplete={() => handleTypewriterComplete(log.id)}
               />
             {:else}
-              <!-- 
+              <!--
                  Static / Complete View:
                  Uses SmartText to render code blocks beautifully.
               -->

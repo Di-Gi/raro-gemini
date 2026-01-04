@@ -5,7 +5,7 @@
 
 <script lang="ts">
   import { selectedNode, agentNodes, pipelineEdges, addLog, updateNodeStatus,
-    deselectNode, telemetry, connectRuntimeWebSocket, runtimeStore, resumeRun, stopRun,
+    deselectNode, telemetry, connectRuntimeWebSocket, runtimeStore,
     planningMode,           // Import new store
     loadWorkflowManifest    // Import new action
   } from '$lib/stores'
@@ -16,7 +16,7 @@
     type AgentConfig 
   } from '$lib/api'
   import { get } from 'svelte/store'
-  import { fade } from 'svelte/transition'
+  // import { fade } from 'svelte/transition'
 
   let { expanded }: { expanded: boolean } = $props();
 
@@ -30,7 +30,6 @@
 
   // Reactive derivation for HITL state
   let isAwaitingApproval = $derived($runtimeStore.status === 'AWAITING_APPROVAL' || $runtimeStore.status === 'PAUSED')
-
   // === STATE SYNCHRONIZATION ===
   $effect(() => {
     if ($selectedNode && expanded) {
@@ -197,17 +196,17 @@
   }
 
   // HITL Handlers
-  async function handleApprove() {
-      if (!$runtimeStore.runId) return;
-      addLog('OPERATOR', 'APPROVAL GRANTED. Resuming execution.', 'HITL');
-      await resumeRun($runtimeStore.runId);
-  }
+  // async function handleApprove() {
+  //     if (!$runtimeStore.runId) return;
+  //     addLog('OPERATOR', 'APPROVAL GRANTED. Resuming execution.', 'HITL');
+  //     await resumeRun($runtimeStore.runId);
+  // }
 
-  async function handleDeny() {
-      if (!$runtimeStore.runId) return;
-      addLog('OPERATOR', 'APPROVAL DENIED. Terminating run.', 'HITL');
-      await stopRun($runtimeStore.runId);
-  }
+  // async function handleDeny() {
+  //     if (!$runtimeStore.runId) return;
+  //     addLog('OPERATOR', 'APPROVAL DENIED. Terminating run.', 'HITL');
+  //     await stopRun($runtimeStore.runId);
+  // }
 </script>
 
 <div id="control-deck" class:architect-mode={expanded}>
@@ -229,7 +228,7 @@
   <div class="pane-container">
 
     <!-- === INTERVENTION OVERLAY === -->
-    {#if isAwaitingApproval}
+    <!-- {#if isAwaitingApproval}
         <div class="intervention-overlay" transition:fade={{ duration: 200 }}>
             <div class="intervention-card">
                 <div class="int-header">
@@ -246,7 +245,7 @@
                 </div>
             </div>
         </div>
-    {/if}
+    {/if} -->
 
     <!-- Normal Panes -->
     {#if !expanded || activePane === 'input'}
@@ -777,7 +776,7 @@
   @keyframes rotation { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
 
   /* === INTERVENTION STYLES === */
-  .intervention-overlay {
+  /* .intervention-overlay {
       position: absolute;
       top: 0;
       left: 0;
@@ -796,7 +795,7 @@
       border: 1px solid var(--alert-amber);
       box-shadow: 0 10px 40px rgba(0,0,0,0.5);
       width: 400px;
-      padding: 2px; /* Border padding */
+      padding: 2px;
   }
 
   .int-header {
@@ -809,9 +808,9 @@
       display: flex;
       align-items: center;
       gap: 8px;
-  }
+  } */
 
-  .blink-dot {
+  /* .blink-dot {
       width: 8px;
       height: 8px;
       background: #000;
@@ -859,10 +858,10 @@
 
   .btn-approve:hover {
       opacity: 0.9;
-  }
+  } */
 
-  @keyframes blink {
+  /* @keyframes blink {
       from { opacity: 1; }
       to { opacity: 0.3; }
-  }
+  } */
 </style>

@@ -11,7 +11,7 @@ import asyncio
 from pathlib import Path
 from datetime import datetime
 from google.genai import types
-from core.config import gemini_client, logger
+from core.config import gemini_client, logger, resolve_model
 
 # Import Tooling Logic
 try:
@@ -170,11 +170,13 @@ async def call_gemini_with_context(
     """
     if not gemini_client:
         raise ValueError("GEMINI_API_KEY not set")
+    concrete_model = resolve_model(model)
+    logger.debug(f"Resolved model alias '{model}' to '{concrete_model}'")
 
     try:
         # Prepare initial request
         params = await _prepare_gemini_request(
-            model, prompt, input_data, file_paths, 
+            concrete_model, prompt, input_data, file_paths, # <--- Pass concrete_model here
             parent_signature, thinking_level, tools
         )
 
@@ -296,10 +298,10 @@ async def stream_gemini_response(
     """
     if not gemini_client:
         raise ValueError("GEMINI_API_KEY not set")
-
+    concrete_model = resolve_model(model)
     # Reuse helper to setup context
     params = await _prepare_gemini_request(
-        model, prompt, input_data, file_paths, 
+        concrete_model, prompt, input_data, file_paths, # <--- Pass concrete_model here
         tools=tools, **kwargs
     )
     

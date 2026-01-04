@@ -2,8 +2,11 @@
 
 import { writable, get } from 'svelte/store';
 import { getWebSocketURL, USE_MOCK, type WorkflowConfig } from './api'; // Import USE_MOCK
-import { MockWebSocket } from './mock-api';        // Import Mock Class
+import { MockWebSocket, mockResumeRun, mockStopRun } from './mock-api'; 
 import { DagLayoutEngine } from './layout-engine'; // Import Layout Engine
+
+// Import KERNEL_API for resume/stop endpoints
+const KERNEL_API = import.meta.env.VITE_KERNEL_URL || '/api';
 
 // === TYPES ===
 export interface LogEntry {
@@ -192,23 +195,47 @@ export async function resumeRun(runId: string) {
     if (USE_MOCK) {
         runtimeStore.update(s => ({ ...s, status: 'RUNNING' }));
         addLog('KERNEL', 'Mock: Resuming execution...', 'SYS');
+        // CHANGE: Actually trigger the mock engine
+        await mockResumeRun(runId);
         return;
     }
-    // Phase 4: Placeholder for the Resume API call
-    // await fetch(`${API_BASE}/runtime/${runId}/resume`, { method: 'POST' });
-    addLog('KERNEL', 'Resume API not yet implemented', 'WARN');
+
+    try {
+        const res = await fetch(`${KERNEL_API}/runtime/${runId}/resume`, { method: 'POST' });
+
+        if (!res.ok) {
+            throw new Error(`Resume failed: ${res.status} ${res.statusText}`);
+        }
+
+        addLog('KERNEL', 'Execution resumed by operator', 'SYS');
+    } catch (e) {
+        console.error('Resume API error:', e);
+        addLog('KERNEL', `Resume failed: ${e}`, 'ERR');
+    }
 }
 
 export async function stopRun(runId: string) {
     if (USE_MOCK) {
         runtimeStore.update(s => ({ ...s, status: 'FAILED' }));
         addLog('KERNEL', 'Mock: Run terminated by operator', 'SYS');
+        // CHANGE: Actually trigger the mock engine
+        await mockStopRun(runId);
         return;
     }
-    // await fetch(`${API_BASE}/runtime/${runId}/stop`, { method: 'POST' });
-    addLog('KERNEL', 'Stop API not yet implemented', 'WARN');
-}
 
+    try {
+        const res = await fetch(`${KERNEL_API}/runtime/${runId}/stop`, { method: 'POST' });
+
+        if (!res.ok) {
+            throw new Error(`Stop failed: ${res.status} ${res.statusText}`);
+        }
+
+        addLog('KERNEL', 'Run terminated by operator', 'SYS');
+    } catch (e) {
+        console.error('Stop API error:', e);
+        addLog('KERNEL', `Stop failed: ${e}`, 'ERR');
+    }
+}
 // === AUTHORITATIVE TOPOLOGY SYNC ===
 // This function trusts the Kernel's topology as the source of truth
 function syncTopology(topology: TopologySnapshot) {
@@ -345,12 +372,27 @@ export function connectRuntimeWebSocket(runId: string) {
     try {
       const data = JSON.parse(event.data);
       if (data.type === 'state_update' && data.state) {
-        console.log('[WS] State update:', {
-          status: data.state.status,
-          active: data.state.active_agents,
-          completed: data.state.completed_agents,
-          topology: data.topology ? `${data.topology.nodes?.length || 0} nodes, ${data.topology.edges?.length || 0} edges` : 'none'
-        });
+        
+        // === APPROVAL DETECTION ===
+        const currentState = get(runtimeStore);
+        // FIXED: Normalize to uppercase and check for underscore format
+        const newStateStr = (data.state.status || '').toUpperCase();
+
+        if (newStateStr === 'AWAITING_APPROVAL' && currentState.status !== 'AWAITING_APPROVAL') {
+          // Check if we already logged this approval request to avoid duplicates
+          const logsList = get(logs);
+          const hasPending = logsList.some(l => l.metadata === 'INTERVENTION');
+
+          if (!hasPending) {
+            addLog(
+              'CORTEX',
+              'SAFETY_PATTERN_TRIGGERED',
+              'INTERVENTION', // Metadata tag
+              false,
+              'approval-req-' + Date.now() // Custom ID
+            );
+          }
+        }
 
         // CRITICAL FIX: Pass topology to syncState
         syncState(data.state, data.signatures, data.topology);

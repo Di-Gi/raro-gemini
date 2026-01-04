@@ -193,9 +193,31 @@ impl RARORuntime {
     // === EVENT EMISSION ===
 
     /// Emit an event to the event bus for Cortex pattern matching
-    fn emit_event(&self, event: RuntimeEvent) {
+    pub(crate) fn emit_event(&self, event: RuntimeEvent) {
         // Broadcast to subscribers (Observers, WebSocket, PatternEngine)
         let _ = self.event_bus.send(event);
+    }
+
+    // === APPROVAL CONTROL ===
+
+    /// Request approval from user, pausing execution
+    pub async fn request_approval(&self, run_id: &str, agent_id: Option<&str>, reason: &str) {
+        if let Some(mut state) = self.runtime_states.get_mut(run_id) {
+            state.status = RuntimeStatus::AwaitingApproval;
+
+            // Log the intervention event
+            self.emit_event(RuntimeEvent::new(
+                run_id,
+                EventType::SystemIntervention,
+                agent_id.map(|s| s.to_string()),
+                serde_json::json!({
+                    "action": "pause",
+                    "reason": reason
+                }),
+            ));
+        }
+        self.persist_state(run_id).await;
+        tracing::info!("Run {} PAUSED for approval: {}", run_id, reason);
     }
 
     // === EXECUTION LOGIC ===
@@ -270,19 +292,28 @@ impl RARORuntime {
     /// DYNAMIC EXECUTION LOOP
     /// Keeps pulling 'ready' nodes from the DAG until completion or failure.
     /// Handles graph mutations (delegation) mid-flight.
-    async fn execute_dynamic_dag(&self, run_id: String) {
+    pub(crate) async fn execute_dynamic_dag(&self, run_id: String) {
         tracing::info!("Starting DYNAMIC DAG execution for run_id: {}", run_id);
 
         // We use a simplified loop: Re-calculate topology, filter for uncompleted, take the next one.
         // In a real high-throughput system, we'd use a proper ready-queue, but re-calculating topology
         // on a small graph (<100 nodes) is negligible and safer for consistency.
         loop {
-            // 1. Check if Run is still valid/active
-            let is_failed = self.runtime_states.get(&run_id)
-                .map(|s| s.status == RuntimeStatus::Failed)
-                .unwrap_or(true);
-
-            if is_failed { break; }
+            // 1. Check if Run is still valid/active or paused
+            if let Some(state) = self.runtime_states.get(&run_id) {
+                // Check for pause state
+                if state.status == RuntimeStatus::AwaitingApproval {
+                    tracing::info!("Execution loop for {} suspending (Awaiting Approval).", run_id);
+                    break;
+                }
+                // Check for terminal states
+                if state.status == RuntimeStatus::Failed || state.status == RuntimeStatus::Completed {
+                    break;
+                }
+            } else {
+                // Run vanished
+                break;
+            }
 
             // 2. Determine Next Agent(s)
             // We get the full topological sort, then find the first node that is NOT complete and NOT running.

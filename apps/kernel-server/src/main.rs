@@ -76,7 +76,14 @@ async fn main() {
                                 }
                             }
                             crate::registry::PatternAction::RequestApproval { reason } => {
-                                tracing::warn!("Approval requested: {} (Not yet implemented)", reason);
+                                tracing::warn!("✋ Safety Pattern Triggered: Approval Required - {}", reason);
+
+                                // CALL THE NEW PAUSE METHOD
+                                if let Some(agent) = &event.agent_id {
+                                    runtime_ref.request_approval(&event.run_id, Some(agent), &reason).await;
+                                } else {
+                                    runtime_ref.request_approval(&event.run_id, None, &reason).await;
+                                }
                             }
                             crate::registry::PatternAction::SpawnAgent { .. } => {
                                 tracing::warn!("SpawnAgent action not yet implemented in Cortex");
@@ -102,6 +109,8 @@ async fn main() {
         .route("/runtime/:run_id/agent/:agent_id/invoke", post(handlers::invoke_agent))
         .route("/runtime/signatures", get(handlers::get_signatures))
         .route("/runtime/:run_id/artifact/:agent_id", get(handlers::get_artifact))
+        .route("/runtime/:run_id/resume", post(handlers::resume_run))
+        .route("/runtime/:run_id/stop", post(handlers::stop_run))
         .route("/ws/runtime/:run_id", axum::routing::get(handlers::ws_runtime_stream))
         .layer(cors)
         .with_state(runtime);

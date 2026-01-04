@@ -53,7 +53,7 @@ pub async fn start_workflow(
 }
 
 pub async fn resume_run(
-    State(runtime): State<Arc<RARORuntime>>, 
+    State(runtime): State<Arc<RARORuntime>>,
     Path(run_id): Path<String>
 ) -> StatusCode {
     // 1. Verify currently paused
@@ -61,10 +61,31 @@ pub async fn resume_run(
         .map(|s| s.status == RuntimeStatus::AwaitingApproval)
         .unwrap_or(false);
 
-    if !is_paused { return StatusCode::BAD_REQUEST; }
+    if !is_paused {
+        tracing::warn!("Resume called on non-paused run: {}", run_id);
+        return StatusCode::BAD_REQUEST;
+    }
 
     // 2. Flip to Running
     runtime.set_run_status(&run_id, RuntimeStatus::Running);
+
+    // 3. RESPAWN THE EXECUTION LOOP
+    // This is the critical piece. We fire the engine again.
+    let rt_clone = runtime.clone();
+    let rid_clone = run_id.clone();
+    tokio::spawn(async move {
+        rt_clone.execute_dynamic_dag(rid_clone).await;
+    });
+
+    // 4. Emit event for UI to update logs
+    runtime.emit_event(crate::events::RuntimeEvent::new(
+        &run_id,
+        crate::events::EventType::SystemIntervention,
+        None,
+        serde_json::json!({ "action": "resume", "reason": "User approved execution" })
+    ));
+
+    tracing::info!("Run {} resumed by user", run_id);
     StatusCode::OK
 }
 
