@@ -1,20 +1,10 @@
 // [[RARO]]/apps/kernel-server/src/models.rs
-// Purpose: Core data models. Updated to support Dynamic Delegation and Graph Mutation.
+// Purpose: Core data models. Updated with attached_files support for RFS.
 // Architecture: Shared Data Layer
 // Dependencies: Serde
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-
-// #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-// pub enum ModelVariant {
-//     #[serde(rename = "gemini-2.5-flash")]
-//     GeminiFlash,
-//     #[serde(rename = "gemini-2.5-flash-lite")]
-//     GeminiPro,
-//     #[serde(rename = "gemini-3.0-flash")]
-//     GeminiDeepThink,
-// }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "lowercase")] // Serializes to "fast", "reasoning", etc.
@@ -80,6 +70,11 @@ pub struct WorkflowConfig {
     pub agents: Vec<AgentNodeConfig>,
     pub max_token_budget: usize,
     pub timeout_ms: u64,
+    
+    // === RFS Integration ===
+    // List of filenames from the Library to attach to this run's context
+    #[serde(default)]
+    pub attached_files: Vec<String>, 
 }
 
 // === NEW: DYNAMIC GRAPH STRUCTURES ===

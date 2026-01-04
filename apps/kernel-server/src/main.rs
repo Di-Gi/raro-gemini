@@ -10,6 +10,7 @@ mod runtime;
 mod observability;
 mod events;
 mod registry;
+mod fs_manager; // Register new module
 
 use axum::{
     Router,
@@ -111,6 +112,7 @@ async fn main() {
         .route("/runtime/:run_id/artifact/:agent_id", get(handlers::get_artifact))
         .route("/runtime/:run_id/resume", post(handlers::resume_run))
         .route("/runtime/:run_id/stop", post(handlers::stop_run))
+        .route("/runtime/library", get(handlers::list_library_files))
         .route("/ws/runtime/:run_id", axum::routing::get(handlers::ws_runtime_stream))
         .layer(cors)
         .with_state(runtime);

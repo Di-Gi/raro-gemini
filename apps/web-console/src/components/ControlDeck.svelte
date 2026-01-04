@@ -7,7 +7,8 @@
   import { selectedNode, agentNodes, pipelineEdges, addLog, updateNodeStatus,
     deselectNode, telemetry, connectRuntimeWebSocket, runtimeStore,
     planningMode,           // Import new store
-    loadWorkflowManifest    // Import new action
+    loadWorkflowManifest,    // Import new action
+    attachedFiles
   } from '$lib/stores'
   import { 
     startRun, 
@@ -131,8 +132,10 @@
             name: 'RARO_Session',
             agents: agents,
             max_token_budget: 100000,
-            timeout_ms: 60000
+            timeout_ms: 60000,
+            attached_files: get(attachedFiles) // <--- Send linked files
         };
+
 
         addLog('KERNEL', 'Compiling DAG manifest...', 'SYS');
 

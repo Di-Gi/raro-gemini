@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::env;
 use redis::AsyncCommands;
 use tokio::sync::broadcast;
-
+use crate::fs_manager;
 /// Payload for invoking an agent with signature routing and caching
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InvocationPayload {
@@ -248,6 +248,13 @@ impl RARORuntime {
 
         let workflow_id = config.id.clone();
         let run_id = Uuid::new_v4().to_string();
+
+        // === RFS INITIALIZATION ===
+        // Create the session folder and copy files
+        if let Err(e) = fs_manager::WorkspaceInitializer::init_run_session(&run_id, config.attached_files.clone()) {
+             tracing::error!("Failed to initialize workspace for {}: {}", run_id, e);
+             return Err(format!("FileSystem Initialization Error: {}", e));
+        }
 
         // Store workflow and DAG
         self.workflows.insert(workflow_id.clone(), config.clone());

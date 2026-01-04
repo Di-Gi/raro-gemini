@@ -66,6 +66,24 @@ export function toggleTheme() {
     themeStore.update(current => current === 'ARCHIVAL' ? 'PHOSPHOR' : 'ARCHIVAL');
 }
 
+// === RFS STORES ===
+// The list of all files available in /storage/library
+export const libraryFiles = writable<string[]>([]);
+
+// The subset of files currently linked to the active directive
+export const attachedFiles = writable<string[]>([]);
+
+// Helper to toggle attachment status
+export function toggleAttachment(fileName: string) {
+    attachedFiles.update(files => {
+        if (files.includes(fileName)) {
+            return files.filter(f => f !== fileName);
+        } else {
+            return [...files, fileName];
+        }
+    });
+}
+
 // Initial Nodes State
 const initialNodes: AgentNode[] = [
   { id: 'n1', label: 'ORCHESTRATOR', x: 20, y: 50, model: 'reasoning', prompt: 'Analyze the user request and determine optimal sub-tasks.', status: 'idle', role: 'orchestrator' },

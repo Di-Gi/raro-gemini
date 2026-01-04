@@ -1,5 +1,6 @@
 // [[RARO]]/apps/web-console/src/lib/api.ts
-import { mockStartRun, mockGetArtifact } from './mock-api';
+import { mockStartRun, mockGetArtifact, mockResumeRun, mockStopRun, mockGetLibraryFiles } from './mock-api';
+
 
 const KERNEL_API = import.meta.env.VITE_KERNEL_URL || '/api';
 const AGENT_API = import.meta.env.VITE_AGENT_URL || '/agent-api';
@@ -13,7 +14,10 @@ export interface WorkflowConfig {
   agents: AgentConfig[];
   max_token_budget: number;
   timeout_ms: number;
+  // === RFS Integration ===
+  attached_files?: string[];
 }
+
 
 export interface AgentConfig {
   id: string;
@@ -163,4 +167,30 @@ export async function generateWorkflowPlan(userQuery: string): Promise<WorkflowC
         console.error('Plan generation failed:', e);
         throw e;
     }
+}
+
+// === RFS API ===
+
+export async function getLibraryFiles(): Promise<string[]> {
+    if (USE_MOCK) {
+        return mockGetLibraryFiles();
+    }
+
+    try {
+        const res = await fetch(`${KERNEL_API}/runtime/library`);
+        if (!res.ok) throw new Error('Failed to fetch library');
+        const data = await res.json();
+        return data.files || [];
+    } catch (e) {
+        console.error('Library fetch failed:', e);
+        return [];
+    }
+}
+
+// Placeholder for future upload capability
+export async function uploadFile(file: File): Promise<string> {
+    // For MVP, we assume manual placement. 
+    // This is a stub for future implementation.
+    console.warn("Upload API not implemented in MVP Kernel. Use manual placement.");
+    return file.name;
 }

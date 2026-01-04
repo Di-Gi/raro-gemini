@@ -19,7 +19,8 @@ try:
 except ImportError:
     logger.warning("intelligence.tools not found, tool execution will be disabled")
     get_tool_declarations = lambda x: []
-    execute_tool_call = lambda x, y: {"error": "Tool execution unavailable"}
+    # FIX: Robust fallback signature that accepts keyword arguments
+    execute_tool_call = lambda tool_name, args, run_id="default": {"error": "Tool execution unavailable"}
 
 # ============================================================================
 # Multimodal File Loading
@@ -162,7 +163,8 @@ async def call_gemini_with_context(
     parent_signature: Optional[str] = None,
     thinking_level: Optional[int] = None,
     tools: Optional[List[str]] = None,
-    agent_id: Optional[str] = None
+    agent_id: Optional[str] = None,
+    run_id: str = "default_run"
 ) -> Dict[str, Any]:
     """
     Execute Gemini interaction with full features: Multimodal, Context, and Tools.
@@ -176,12 +178,12 @@ async def call_gemini_with_context(
     try:
         # Prepare initial request
         params = await _prepare_gemini_request(
-            concrete_model, prompt, input_data, file_paths, # <--- Pass concrete_model here
+            concrete_model, prompt, input_data, file_paths, 
             parent_signature, thinking_level, tools
         )
 
         current_contents = params["contents"]
-        max_turns = 5
+        max_turns = 10
         turn_count = 0
         final_response = None
         response = None
@@ -214,7 +216,7 @@ async def call_gemini_with_context(
                 break
 
             # Handle Function Calls
-            logger.info(f"Agent {agent_id} triggered {len(function_calls)} tool calls")
+            logger.info(f"Agent {agent_id} triggered {len(function_calls)} tool calls (Turn {turn_count})")
             
             # Append model's thought/call to history
             if response.candidates and response.candidates[0].content:
@@ -227,7 +229,9 @@ async def call_gemini_with_context(
                 tool_args = call.args
                 
                 logger.debug(f"Executing tool: {tool_name} with args: {tool_args}")
-                result_dict = execute_tool_call(tool_name, tool_args)
+                
+                # PASS THE RUN_ID HERE
+                result_dict = execute_tool_call(tool_name, tool_args, run_id=run_id)
                 
                 function_responses.append(types.Part.from_function_response(
                     name=tool_name,
@@ -301,19 +305,16 @@ async def stream_gemini_response(
     concrete_model = resolve_model(model)
     # Reuse helper to setup context
     params = await _prepare_gemini_request(
-        concrete_model, prompt, input_data, file_paths, # <--- Pass concrete_model here
+        concrete_model, prompt, input_data, file_paths, 
         tools=tools, **kwargs
     )
     
     current_contents = params["contents"]
     
     # We use the Async client for streaming to avoid blocking the loop
-    # Config defines `gemini_client` as Sync client, but `google.genai` 
-    # clients usually expose `.aio` for async operations.
     async_models = gemini_client.aio.models
 
     # Initial Stream Call
-    # Note: 'tools' is inside 'config' in params['config'] now
     stream = await async_models.generate_content_stream(
         model=params["model"],
         contents=current_contents,
@@ -325,7 +326,6 @@ async def stream_gemini_response(
     
     async for chunk in stream:
         # Check if chunk contains a function call (usually start of stream)
-        # Note: Streaming tools is complex; logic here simplifies to buffering call
         if (chunk.candidates and 
             chunk.candidates[0].content and 
             chunk.candidates[0].content.parts):
@@ -341,12 +341,6 @@ async def stream_gemini_response(
         # If it's text, yield it
         if chunk.text:
             yield chunk.text
-
-    # Logic to handle tool execution if it occurred during stream
-    # Note: To fully support streaming tools, we would need to inspect `full_response_content`
-    # verify function calls, execute them, and recursively call stream_gemini_response.
-    # For Phase 3 MVP, we yield text. Complex tool-in-stream logic is omitted 
-    # to keep implementation robust.
 
 # ============================================================================
 # Batch Processing Helper

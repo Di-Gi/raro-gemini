@@ -1,4 +1,7 @@
 # [[RARO]]/apps/agent-service/src/main.py
+# Purpose: Main entry point for the Agent Service
+# Architecture: Application Layer
+# Dependencies: FastAPI, Core Logic
 
 import json
 import time
@@ -129,13 +132,6 @@ async def list_agents():
                 "model": settings.MODEL_FAST,
                 "description": "Multimodal content extraction from PDFs and videos",
                 "tools": ["extract_pdf", "parse_video", "extract_images"]
-            },
-            {
-                "id": "researcher",
-                "role": "worker",
-                "model": settings.MODEL_FAST,
-                "description": "Deep research and fact-finding",
-                "tools": ["search_papers", "extract_citations", "build_knowledge_graph"]
             },
             {
                 "id": "analyst",
@@ -287,7 +283,8 @@ async def _execute_agent_logic(request: AgentRequest) -> AgentResponse:
             parent_signature=request.parent_signature,
             thinking_level=request.thinking_level,
             tools=request.tools,
-            agent_id=request.agent_id
+            agent_id=request.agent_id,
+            run_id=request.run_id # <--- PASS THE RUN ID HERE
         )
 
         response_text = result["text"]
@@ -381,7 +378,7 @@ async def root():
     return {
         "service": "RARO Agent Service",
         "version": "0.3.0",
-        "features": ["multimodal", "dynamic-dag", "safety-compiler"],
+        "features": ["multimodal", "dynamic-dag", "safety-compiler", "rfs-workspace"],
         "parsing_strategy": "explicit-tag (json:delegation)"
     }
 

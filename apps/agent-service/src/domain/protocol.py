@@ -7,6 +7,7 @@ from enum import Enum
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Any, Literal
 from core.config import settings
+
 # ============================================================================
 # Enums (Expanded for robust error handling and Pydantic mapping)
 # ============================================================================
@@ -85,11 +86,15 @@ class PatternDefinition(BaseModel):
 
 class AgentRequest(BaseModel):
     """Request from the Kernel to execute a specific agent node."""
-    run_id: str
     agent_id: str
     model: str
     prompt: str
     input_data: Dict[str, Any]
+    
+    # === NEW FIELD ===
+    # Required for RFS WorkspaceManager to locate the session folder
+    run_id: str 
+    
     tools: List[str] = []
     thought_signature: Optional[str] = None
     parent_signature: Optional[str] = None
@@ -112,4 +117,4 @@ class AgentResponse(BaseModel):
     delegation: Optional[DelegationRequest] = None
 
 # Integration: Central source of truth for all Pydantic validation across the service.
-# Notes: Role and Strategy are now Enums, providing better error messages during parsing.
+# Notes: Added run_id to AgentRequest to support RFS integration.

@@ -10,6 +10,7 @@
   import ControlDeck from '$components/ControlDeck.svelte'
   import Hero from '$components/Hero.svelte'
   import SettingsRail from '$components/SettingsRail.svelte'
+  import EnvironmentRail from '$components/EnvironmentRail.svelte'
   import { addLog, themeStore } from '$lib/stores'
 
   let expanded = $state(false)
@@ -42,6 +43,10 @@
       -->
       <div class="workspace" in:fade={{ duration: 800, delay: 200 }}>
         
+
+        <!-- LEFT: Environment -->
+        <EnvironmentRail />
+
         <div 
           id="chassis" 
           class={expanded ? 'expanded' : ''}

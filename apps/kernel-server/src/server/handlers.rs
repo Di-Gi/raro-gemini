@@ -17,6 +17,8 @@ use redis::AsyncCommands;
 use crate::models::*;
 use crate::runtime::{RARORuntime, InvocationPayload};
 
+use tokio::fs; // For listing library files
+
 #[derive(serde::Deserialize)]
 pub struct RunQuery {
     run_id: Option<String>,
@@ -34,6 +36,41 @@ pub async fn health() -> Json<HealthResponse> {
         message: "RARO Kernel Server is running".to_string(),
     })
 }
+
+// === NEW HANDLER: LIST LIBRARY FILES ===
+// GET /runtime/library
+pub async fn list_library_files() -> Result<Json<serde_json::Value>, StatusCode> {
+    // Hardcoded path to the library volume
+    let path = "/app/storage/library";
+    
+    // Read dir
+    let mut entries = fs::read_dir(path).await.map_err(|e| {
+        tracing::error!("Failed to read library dir: {}", e);
+        // If dir doesn't exist, try to create it silently or return empty
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let mut files = Vec::new();
+
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        if let Ok(file_type) = entry.file_type().await {
+            if file_type.is_file() {
+                if let Ok(name) = entry.file_name().into_string() {
+                    // Filter out hidden files like .keep
+                    if !name.starts_with('.') {
+                        files.push(name);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "files": files
+    })))
+}
+
+
 
 pub async fn start_workflow(
     State(runtime): State<Arc<RARORuntime>>,
