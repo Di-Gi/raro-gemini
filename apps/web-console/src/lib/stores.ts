@@ -65,10 +65,10 @@ export function toggleTheme() {
 
 // Initial Nodes State
 const initialNodes: AgentNode[] = [
-  { id: 'n1', label: 'ORCHESTRATOR', x: 20, y: 50, model: 'GEMINI-3-PRO', prompt: 'Analyze the user request and determine optimal sub-tasks.', status: 'idle', role: 'orchestrator' },
-  { id: 'n2', label: 'RETRIEVAL', x: 50, y: 30, model: 'gemini-2.5-flash', prompt: 'Search knowledge base for relevant context.', status: 'idle', role: 'worker' },
-  { id: 'n3', label: 'CODE_INTERP', x: 50, y: 70, model: 'gemini-2.5-flash', prompt: 'Execute Python analysis on provided data.', status: 'idle', role: 'worker' },
-  { id: 'n4', label: 'SYNTHESIS', x: 80, y: 50, model: 'GEMINI-3-DEEP-THINK', prompt: 'Synthesize all findings into a final report.', status: 'idle', role: 'worker' }
+  { id: 'n1', label: 'ORCHESTRATOR', x: 20, y: 50, model: 'reasoning', prompt: 'Analyze the user request and determine optimal sub-tasks.', status: 'idle', role: 'orchestrator' },
+  { id: 'n2', label: 'RETRIEVAL', x: 50, y: 30, model: 'fast', prompt: 'Search knowledge base for relevant context.', status: 'idle', role: 'worker' },
+  { id: 'n3', label: 'CODE_INTERP', x: 50, y: 70, model: 'fast', prompt: 'Execute Python analysis on provided data.', status: 'idle', role: 'worker' },
+  { id: 'n4', label: 'SYNTHESIS', x: 80, y: 50, model: 'thinking', prompt: 'Synthesize all findings into a final report.', status: 'idle', role: 'worker' }
 ];
 
 export const agentNodes = writable<AgentNode[]>(initialNodes);
@@ -109,18 +109,15 @@ export const planningMode = writable<boolean>(false);
 export function loadWorkflowManifest(manifest: WorkflowConfig) {
   // 1. Transform Manifest Agents -> UI Nodes
   const newNodes: AgentNode[] = manifest.agents.map((agent, index) => {
-    // Normalize model names
-    let modelName = 'GEMINI-3-PRO';
-    if (agent.model.includes('flash') && !agent.model.includes('lite')) modelName = 'GEMINI-3-FLASH';
-    if (agent.model.includes('deep')) modelName = 'GEMINI-3-DEEP-THINK';
-
+    // Use semantic alias directly (fast, reasoning, thinking)
+    // No normalization needed - backend already sends the correct alias
     return {
       id: agent.id,
       label: agent.id.replace(/^(agent_|node_)/i, '').toUpperCase().substring(0, 12),
       // Use provided position or fallback calculation
       x: agent.position?.x || (20 + (index * 15)),
       y: agent.position?.y || (30 + (index * 10)),
-      model: modelName,
+      model: agent.model,
       prompt: agent.prompt,
       status: 'idle',
       role: agent.role
@@ -156,17 +153,14 @@ export function loadWorkflowManifest(manifest: WorkflowConfig) {
 export function overwriteGraphFromManifest(manifest: WorkflowConfig) {
   // 1. Transform Manifest Agents -> UI Nodes
   const newNodes: AgentNode[] = manifest.agents.map((agent, index) => {
-    // Normalize model names from backend variant to UI dropdown values
-    let modelName = 'GEMINI-3-PRO'; // Default
-    if (agent.model.includes('flash') && !agent.model.includes('lite')) modelName = 'GEMINI-3-FLASH';
-    if (agent.model.includes('deep')) modelName = 'GEMINI-3-DEEP-THINK';
-
+    // Use semantic alias directly (fast, reasoning, thinking)
+    // No normalization needed - backend already sends the correct alias
     return {
       id: agent.id,
       label: agent.id.replace(/^(agent_|node_)/i, '').toUpperCase(), // Clean ID for display
       x: agent.position?.x || (20 + index * 15), // Fallback layout logic
       y: agent.position?.y || (30 + index * 10),
-      model: modelName,
+      model: agent.model,
       prompt: agent.prompt,
       status: 'idle',
       role: agent.role
@@ -260,7 +254,7 @@ function syncTopology(topology: TopologySnapshot) {
                 label: nodeId.toUpperCase().substring(0, 12),
                 x: 0,
                 y: 0,
-                model: 'DYNAMIC', // Visual indicator
+                model: 'fast', // Default to fast for dynamically spawned agents
                 prompt: 'Dynamic Agent',
                 status: 'running', // Usually spawned active
                 role: 'worker'
@@ -372,7 +366,7 @@ export function connectRuntimeWebSocket(runId: string) {
     }
   };
 
-  ws.onclose = (e) => {
+  ws.onclose = (e: CloseEvent) => {
     console.log('[WS] Connection closed:', e.code, e.reason);
     addLog('KERNEL', 'Connection closed.', 'NET_END');
     

@@ -6,16 +6,32 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub enum ModelVariant {
-    #[serde(rename = "gemini-2.5-flash")]
-    GeminiFlash,
-    #[serde(rename = "gemini-2.5-flash-lite")]
-    GeminiPro,
-    #[serde(rename = "gemini-3.0-flash")]
-    GeminiDeepThink,
-}
+// #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+// pub enum ModelVariant {
+//     #[serde(rename = "gemini-2.5-flash")]
+//     GeminiFlash,
+//     #[serde(rename = "gemini-2.5-flash-lite")]
+//     GeminiPro,
+//     #[serde(rename = "gemini-3.0-flash")]
+//     GeminiDeepThink,
+// }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")] // Serializes to "fast", "reasoning", etc.
+pub enum ModelVariant {
+    Fast,       // Cheap, quick
+    Reasoning,  // Standard "Pro" level
+    Thinking,   // Deep think / o1-style
+    
+    // Allow an escape hatch for specific IDs if absolutely needed
+    #[serde(untagged)] 
+    Custom(String), 
+}
+impl Default for ModelVariant {
+    fn default() -> Self {
+        ModelVariant::Fast
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum AgentRole {
     #[serde(rename = "orchestrator")]

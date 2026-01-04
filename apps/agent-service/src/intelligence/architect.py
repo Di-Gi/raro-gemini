@@ -13,7 +13,7 @@ from google.genai import types
 from pydantic import ValidationError
 from domain.protocol import WorkflowManifest, PatternDefinition, AgentRole
 from intelligence.prompts import render_architect_prompt, render_safety_compiler_prompt
-from core.config import logger
+from core.config import logger, settings
 
 class ArchitectEngine:
     """
@@ -22,14 +22,12 @@ class ArchitectEngine:
     """
     def __init__(self, client: genai.Client):
         self.client = client
-        self.model = "gemini-2.0-flash-lite"
+        self.model = settings.MODEL_REASONING
         
-        # FIX: Use the specific config class to satisfy the type checker
         self.generation_config = types.GenerateContentConfig(
             temperature=0.1,
             response_mime_type="application/json"
         )
-
     async def generate_plan(self, user_query: str) -> WorkflowManifest:
         """
         Translates a natural language user query into a WorkflowManifest (DAG).

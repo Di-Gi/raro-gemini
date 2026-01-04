@@ -112,42 +112,49 @@ async def list_agents():
             {
                 "id": "orchestrator",
                 "role": "orchestrator",
-                "model": "gemini-2.5-flash-lite",
+                "model": settings.MODEL_REASONING, 
                 "description": "Main coordinator - breaks down tasks and routes to specialists",
                 "tools": ["plan_task", "route_agents", "synthesize_results"]
             },
             {
+                "id": "researcher",
+                "role": "worker",
+                "model": settings.MODEL_FAST,
+                "description": "Deep research and fact-finding",
+                "tools": ["search_papers", "extract_citations"]
+            },
+            {
                 "id": "extractor",
                 "role": "worker",
-                "model": "gemini-2.5-flash",
+                "model": settings.MODEL_FAST,
                 "description": "Multimodal content extraction from PDFs and videos",
                 "tools": ["extract_pdf", "parse_video", "extract_images"]
             },
             {
                 "id": "researcher",
                 "role": "worker",
-                "model": "gemini-2.5-flash",
+                "model": settings.MODEL_FAST,
                 "description": "Deep research and fact-finding",
                 "tools": ["search_papers", "extract_citations", "build_knowledge_graph"]
             },
             {
                 "id": "analyst",
                 "role": "worker",
-                "model": "gemini-2.5-flash-lite",
+                "model": settings.MODEL_FAST,
                 "description": "Critical analysis and reasoning",
                 "tools": ["analyze_data", "compare_sources", "validate_claims"]
             },
             {
                 "id": "synthesizer",
                 "role": "worker",
-                "model": "gemini-2.5-flash-lite",
+                "model": settings.MODEL_FAST,
                 "description": "Combines results from multiple agents into coherent output",
                 "tools": ["combine_results", "summarize", "format_report"]
             },
             {
                 "id": "code_interpreter",
                 "role": "worker",
-                "model": "gemini-2.5-flash",
+                "model": settings.MODEL_FAST,
                 "description": "Executes Python code for data analysis",
                 "tools": ["execute_python", "plot_data", "run_analysis"]
             }
@@ -156,35 +163,52 @@ async def list_agents():
 
 @app.get("/models/available")
 async def available_models():
-    return {
-        "models": [
-            {
-                "id": "gemini-2.5-flash",
-                "name": "Gemini 3 Flash",
-                "description": "Fast, 69% cheaper, PhD-level reasoning",
-                "speed": "3x faster than Pro",
-                "use_cases": ["quick analysis", "extraction", "classification"],
-                "cost_per_1m_tokens": 0.075
-            },
-            {
-                "id": "gemini-2.5-flash-lite",
-                "name": "Gemini 3 Pro",
-                "description": "Maximum reasoning depth for complex tasks",
-                "capabilities": ["long-horizon planning", "multimodal reasoning", "deep analysis"],
-                "use_cases": ["research synthesis", "complex planning", "critical analysis"],
-                "cost_per_1m_tokens": 0.30
-            },
-            {
-                "id": "gemini-2.5-flash-deep-think",
-                "name": "Gemini 3 Deep Think",
-                "description": "Configurable thinking levels for research-intensive tasks",
-                "capabilities": ["hypothesis generation", "cross-paper reasoning", "extended thinking"],
-                "thinking_levels": "1-10 (maps to 1k-10k token budget)",
-                "use_cases": ["PhD-level research", "hypothesis testing", "complex synthesis"],
-                "cost_per_1m_tokens": 0.30
-            }
-        ]
-    }
+    """
+    Dynamically lists available Gemini models based on configuration.
+    """
+    # Start with the authoritative models from settings
+    models = [
+        {
+            "id": settings.MODEL_FAST,
+            "name": "Gemini 3 Flash",
+            "description": "Fast, 69% cheaper, PhD-level reasoning",
+            "speed": "3x faster than Pro",
+            "use_cases": ["quick analysis", "extraction", "classification"],
+            "cost_per_1m_tokens": 0.075
+        },
+        {
+            "id": settings.MODEL_REASONING,
+            "name": "Gemini 3 Pro",
+            "description": "Maximum reasoning depth for complex tasks",
+            "capabilities": ["long-horizon planning", "multimodal reasoning", "deep analysis"],
+            "use_cases": ["research synthesis", "complex planning", "critical analysis"],
+            "cost_per_1m_tokens": 0.30
+        },
+        {
+            "id": settings.MODEL_THINKING,
+            "name": "Gemini 3 Deep Think",
+            "description": "Configurable thinking levels for research-intensive tasks",
+            "capabilities": ["hypothesis generation", "cross-paper reasoning", "extended thinking"],
+            "thinking_levels": "1-10 (maps to 1k-10k token budget)",
+            "use_cases": ["PhD-level research", "hypothesis testing", "complex synthesis"],
+            "cost_per_1m_tokens": 0.30
+        }
+    ]
+
+    # Add the custom model if it's defined in the settings (from environment variables)
+    if settings.MODEL_CUSTOM:
+        models.append({
+            "id": settings.MODEL_CUSTOM,
+            "name": "Custom Model", # Generic name, as we don't know specifics
+            "description": "User-defined model from configuration (MODEL_CUSTOM environment variable)",
+            "use_cases": ["custom model integration"],
+            "cost_per_1m_tokens": None # Cost is unknown for custom models
+        })
+
+    return {"models": models}
+
+
+
 
 # ============================================================================
 # WebSocket Endpoint (Streaming/Real-time)

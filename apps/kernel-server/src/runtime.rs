@@ -166,7 +166,7 @@ impl RARORuntime {
                                         state.invocations.push(AgentInvocation {
                                              id: Uuid::new_v4().to_string(),
                                              agent_id: "KERNEL".to_string(),
-                                             model_variant: ModelVariant::GeminiPro,
+                                             model_variant: ModelVariant::Fast,
                                              thought_signature: None,
                                              tools_used: vec![],
                                              tokens_used: 0,
@@ -425,8 +425,8 @@ impl RARORuntime {
                             id: Uuid::new_v4().to_string(),
                             agent_id: agent_id.clone(),
                             model_variant: match payload.model.as_str() {
-                                "gemini-2.5-flash" => ModelVariant::GeminiFlash,
-                                _ => ModelVariant::GeminiPro,
+                                "gemini-2.5-flash" => ModelVariant::Fast,
+                                _ => ModelVariant::Reasoning,
                             },
                             thought_signature: None,
                             tools_used: payload.tools.clone(),
@@ -560,7 +560,7 @@ impl RARORuntime {
             state.invocations.push(AgentInvocation {
                 id: Uuid::new_v4().to_string(),
                 agent_id: agent_id.to_string(),
-                model_variant: ModelVariant::GeminiPro, // Fallback
+                model_variant: ModelVariant::Fast, // Fallback
                 thought_signature: None,
                 tools_used: vec![],
                 tokens_used: 0,
@@ -798,23 +798,38 @@ impl RARORuntime {
         let cached_content_id = self.cache_resources.get(run_id).map(|c| (*c).clone());
 
         // Determine model variant
-        let model = match agent_config.model {
-            ModelVariant::GeminiFlash => "gemini-2.5-flash",
-            ModelVariant::GeminiPro => "gemini-2.5-flash-lite",
-            ModelVariant::GeminiDeepThink => "gemini-2.5-flash",
-        }
-        .to_string();
+        // let model = match agent_config.model {
+        //     ModelVariant::GeminiFlash => "gemini-2.5-flash",
+        //     ModelVariant::GeminiPro => "gemini-2.5-flash-lite",
+        //     ModelVariant::GeminiDeepThink => "gemini-2.5-flash",
+        // }
+        // .to_string();
 
-        let thinking_level = if matches!(agent_config.model, ModelVariant::GeminiDeepThink) {
-            Some(5)
+        // let thinking_level = if matches!(agent_config.model, ModelVariant::GeminiDeepThink) {
+        //     Some(5)
+        // } else {
+        //     None
+        // };
+        let model_string = match &agent_config.model {
+            ModelVariant::Fast => "fast".to_string(),
+            ModelVariant::Reasoning => "reasoning".to_string(),
+            ModelVariant::Thinking => "thinking".to_string(),
+            ModelVariant::Custom(s) => s.clone(),
+        };
+
+        // 2. Logic is now based on Semantic Type, not string matching!
+        let thinking_level = if matches!(agent_config.model, ModelVariant::Thinking) {
+            Some(5) // Default budget for Thinking tier
         } else {
             None
         };
 
+
+
         Ok(InvocationPayload {
             run_id: run_id.to_string(),
             agent_id: agent_id.to_string(),
-            model,
+            model: model_string,
             prompt: final_prompt, // Updated with context
             input_data: serde_json::Value::Object(input_data_map), // Updated with structured data
             parent_signature,

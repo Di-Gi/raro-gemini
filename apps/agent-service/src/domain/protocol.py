@@ -6,7 +6,7 @@
 from enum import Enum
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional, Any, Literal
-
+from core.config import settings
 # ============================================================================
 # Enums (Expanded for robust error handling and Pydantic mapping)
 # ============================================================================
@@ -39,7 +39,10 @@ class AgentNodeConfig(BaseModel):
     id: str = Field(..., description="Unique ID for the agent node")
     role: AgentRole = Field(AgentRole.WORKER, description="Structural role in the graph")
     specialty: str = Field("generalist", description="Functional description, e.g., 'Analyst'")
-    model: str = Field("gemini-2.0-flash", description="Gemini model identifier")
+    
+    # UPDATED: Default value now comes from config.py
+    model: str = Field(settings.MODEL_FAST, description="Gemini model identifier")
+    
     prompt: str = Field(..., description="The system instruction for this specific node")
     tools: List[str] = Field(default_factory=list, description="Capabilities enabled for this agent")
     depends_on: List[str] = Field(default_factory=list, description="IDs of nodes this agent waits for")

@@ -100,7 +100,7 @@ export async function generateWorkflowPlan(userQuery: string): Promise<WorkflowC
                 {
                     id: 'mock_researcher',
                     role: 'worker',
-                    model: 'gemini-2.5-flash',
+                    model: 'fast',
                     tools: ['web_search'],
                     input_schema: {},
                     output_schema: {},
@@ -112,7 +112,7 @@ export async function generateWorkflowPlan(userQuery: string): Promise<WorkflowC
                 {
                     id: 'mock_synthesizer',
                     role: 'worker',
-                    model: 'gemini-2.5-flash-lite',
+                    model: 'reasoning',
                     tools: [],
                     input_schema: {},
                     output_schema: {},

@@ -22,7 +22,7 @@
 
   let cmdInput = $state('')
   let activePane = $state('input') // 'input' | 'overview' | 'sim' | 'stats' | 'node-config'
-  let currentModel = $state('gemini-2.5-flash-lite')
+  let currentModel = $state('fast')
   let currentPrompt = $state('')
   let thinkingBudget = $state(5)
   let isSubmitting = $state(false)
@@ -38,7 +38,7 @@
       // Load node specific data
       const node = $agentNodes.find((n) => n.id === $selectedNode)
       if (node) {
-        currentModel = node.model.toLowerCase()
+        currentModel = node.model
         currentPrompt = node.prompt
       }
 
@@ -106,17 +106,12 @@
             const dependsOn = edges
                 .filter(e => e.to === n.id)
                 .map(e => e.from);
-            
-            // Determine Model variant enum string
-            let modelVariant = 'gemini-2.5-flash-lite';
-            if (n.model.toUpperCase().includes('FLASH')) modelVariant = 'gemini-2.5-flash';
-            if (n.model.toUpperCase().includes('DEEP')) modelVariant = 'gemini-2.5-flash';
 
             return {
                 id: n.id,
                 role: n.role,
-                model: modelVariant,
-                tools: [], 
+                model: n.model, // Use semantic alias directly (fast, reasoning, thinking)
+                tools: [],
                 input_schema: {},
                 output_schema: {},
                 cache_policy: 'ephemeral',
@@ -188,7 +183,7 @@
       if (!$selectedNode) return;
       agentNodes.update(nodes => nodes.map(n => {
           if (n.id === $selectedNode) {
-              return { ...n, model: currentModel.toUpperCase(), prompt: currentPrompt }
+              return { ...n, model: currentModel, prompt: currentPrompt }
           }
           return n;
       }));
@@ -330,9 +325,9 @@
           <div class="form-group">
             <label>Model Runtime</label>
             <select class="input-std" bind:value={currentModel} onchange={saveNodeConfig}>
-              <option value="gemini-2.5-flash-lite">GEMINI-3-PRO</option>
-              <option value="gemini-2.5-flash">GEMINI-3-FLASH</option>
-              <option value="gemini-2.5-flash">GEMINI-3-DEEP-THINK</option>
+              <option value="fast">FAST</option>
+              <option value="reasoning">REASONING</option>
+              <option value="thinking">THINKING</option>
             </select>
           </div>
         </div>
@@ -346,7 +341,7 @@
           ></textarea>
         </div>
 
-        {#if currentModel === 'gemini-2.5-flash'}
+        {#if currentModel === 'thinking'}
           <div class="form-group deep-think-config">
             <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
                 <label>Thinking Budget (Depth)</label>

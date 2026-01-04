@@ -5,7 +5,7 @@
 
 import os
 import logging
-from typing import Optional
+from typing import Optional, Dict
 from pydantic_settings import BaseSettings
 from google import genai
 import redis
@@ -19,15 +19,23 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379"
     LOG_LEVEL: str = "INFO"
     
-    # Model defaults for different reasoning profiles
-    MODEL_FAST: str = "gemini-2.0-flash"
-    MODEL_REASONING: str = "gemini-2.0-flash-lite"
-    MODEL_THINKING: str = "gemini-2.0-flash-thinking-exp"
+    # === MODEL AUTHORITY ===
+    # Change specific versions here to propagate across the entire system.
+    MODEL_FAST: str = "gemini-flash-latest"
+    MODEL_REASONING: str = "gemini-flash-latest"
+    MODEL_THINKING: str = "gemini-flash-latest"
+    # THE MAPPING LAYER
+    # The system sends keys (left), we use values (right).
+    MODEL_ALIASES: Dict[str, str] = {
+        "fast": MODEL_FAST,
+        "reasoning": MODEL_REASONING,
+        "thinking": MODEL_THINKING,
+    }
+    MODEL_CUSTOM: Optional[str] = None
 
     class Config:
         env_file = ".env"
         case_sensitive = True
-
 # Initialize Settings
 settings = Settings()
 
@@ -37,6 +45,21 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("raro.agent")
+
+
+def resolve_model(alias: str) -> str:
+    """
+    Resolves a semantic alias (e.g., 'fast') to a concrete model ID.
+    If no alias is found, assumes the string is already a concrete ID (passthrough).
+    """
+    # Normalize input
+    key = alias.lower().strip()
+    
+    if key in settings.MODEL_ALIASES:
+        return settings.MODEL_ALIASES[key]
+    
+    # Allow custom passthrough (e.g. if user specifically requests 'gemini-1.5-pro')
+    return alias
 
 def get_gemini_client() -> Optional[genai.Client]:
     """
