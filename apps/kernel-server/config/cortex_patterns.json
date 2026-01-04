@@ -1,0 +1,35 @@
+[
+  {
+    "id": "guard_fs_delete",
+    "name": "Prevent File Deletion",
+    "trigger_event": "ToolCall",
+    "condition": "fs_delete",
+    "action": {
+      "Interrupt": {
+        "reason": "Safety Violation: File deletion is prohibited by system policy."
+      }
+    }
+  },
+  {
+    "id": "guard_max_failures",
+    "name": "Max Failure Guard",
+    "trigger_event": "AgentFailed",
+    "condition": "*",
+    "action": {
+      "RequestApproval": {
+        "reason": "Agent failed. Requesting human intervention before retry."
+      }
+    }
+  },
+  {
+    "id": "guard_sudo_access",
+    "name": "Prevent Root Access",
+    "trigger_event": "ToolCall",
+    "condition": "sudo",
+    "action": {
+      "Interrupt": {
+        "reason": "Root access attempts are strictly forbidden."
+      }
+    }
+  }
+]

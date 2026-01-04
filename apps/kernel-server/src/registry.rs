@@ -5,26 +5,23 @@
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
+use std::fs; // Import FS
 use crate::models::AgentNodeConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pattern {
     pub id: String,
     pub name: String,
-    /// The event type that wakes this pattern up (matched against EventType debug string)
     pub trigger_event: String, 
-    /// JSONPath-like filter string (e.g., "$.payload.tool == 'fs_delete'")
     pub condition: String,
     pub action: PatternAction,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PatternAction {
-    /// Stop the agent immediately
+    // Serde will automatically handle the JSON structure {"Interrupt": {"reason": "..."}}
     Interrupt { reason: String },
-    /// Pause and ask for human approval
     RequestApproval { reason: String },
-    /// Spawn a "fixer" agent to handle the error (Flow C / Self-Healing)
     SpawnAgent { config: AgentNodeConfig },
 }
 
@@ -38,48 +35,59 @@ impl PatternRegistry {
             patterns: DashMap::new(),
         };
         
-        // Initialize Default Safety Patterns (Proof of Concept)
-        registry.register_default_patterns();
+        // CHANGED: Load from file instead of hardcoded function
+        registry.load_patterns_from_disk("config/cortex_patterns.json");
         
         registry
     }
 
     pub fn register(&self, pattern: Pattern) {
+        tracing::info!("Registering Safety Pattern: [{}] {}", pattern.id, pattern.name);
         self.patterns.insert(pattern.id.clone(), pattern);
     }
 
-    /// Retrieve all patterns listening for a specific event type
     pub fn get_patterns_for_trigger(&self, event_type: &str) -> Vec<Pattern> {
         self.patterns
             .iter()
-            .filter(|p| p.trigger_event == event_type)
+            .filter(|p| {
+                // Loose string matching against EventType enum output (e.g., "ToolCall")
+                p.trigger_event == event_type || 
+                // Handle Rust enum debug formatting which might be "ToolCall" or "EventType::ToolCall"
+                event_type.contains(&p.trigger_event) 
+            })
             .map(|p| p.value().clone())
             .collect()
     }
 
-    fn register_default_patterns(&self) {
-        // 1. Safety Guard: Prevent file deletion
-        // This corresponds to Atlas 'prevent_destructive_shell'
+    /// NEW: Hydration Logic
+    fn load_patterns_from_disk(&self, path: &str) {
+        match fs::read_to_string(path) {
+            Ok(data) => {
+                match serde_json::from_str::<Vec<Pattern>>(&data) {
+                    Ok(patterns) => {
+                        for p in patterns {
+                            self.register(p);
+                        }
+                    },
+                    Err(e) => tracing::error!("Failed to parse patterns file: {}", e),
+                }
+            },
+            Err(_) => {
+                tracing::warn!("Pattern file not found at '{}'. Loading fallback defaults.", path);
+                self.register_fallback_patterns();
+            }
+        }
+    }
+
+    /// Keep fallbacks just in case file is missing
+    fn register_fallback_patterns(&self) {
         self.register(Pattern {
             id: "guard_fs_delete".to_string(),
-            name: "Prevent File Deletion".to_string(),
+            name: "Prevent File Deletion (Fallback)".to_string(),
             trigger_event: "ToolCall".to_string(),
-            condition: "fs_delete".to_string(), // Simplified matching for Phase 3 MVP
+            condition: "fs_delete".to_string(), 
             action: PatternAction::Interrupt { 
-                reason: "Safety Violation: File deletion is prohibited by system policy.".to_string() 
-            },
-        });
-
-        // 2. Infinite Loop Detector (Heuristic)
-        // If an agent fails 3 times, stop the run.
-        // Note: Real implementation requires stateful counting, this is a stateless example.
-        self.register(Pattern {
-            id: "guard_max_failures".to_string(),
-            name: "Max Failure Guard".to_string(),
-            trigger_event: "AgentFailed".to_string(),
-            condition: "*".to_string(), 
-            action: PatternAction::RequestApproval { 
-                reason: "Agent failed. Requesting human intervention before retry.".to_string() 
+                reason: "Safety Violation: File deletion is prohibited.".to_string() 
             },
         });
     }
