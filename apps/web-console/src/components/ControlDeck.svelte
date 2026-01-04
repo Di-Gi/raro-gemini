@@ -197,19 +197,6 @@
           handleCommand(); // Route through the mode selector
       }
   }
-
-  // HITL Handlers
-  // async function handleApprove() {
-  //     if (!$runtimeStore.runId) return;
-  //     addLog('OPERATOR', 'APPROVAL GRANTED. Resuming execution.', 'HITL');
-  //     await resumeRun($runtimeStore.runId);
-  // }
-
-  // async function handleDeny() {
-  //     if (!$runtimeStore.runId) return;
-  //     addLog('OPERATOR', 'APPROVAL DENIED. Terminating run.', 'HITL');
-  //     await stopRun($runtimeStore.runId);
-  // }
 </script>
 
 <div id="control-deck" class:architect-mode={expanded}>
@@ -230,31 +217,26 @@
 
   <div class="pane-container">
 
-    <!-- === INTERVENTION OVERLAY === -->
-    <!-- {#if isAwaitingApproval}
-        <div class="intervention-overlay" transition:fade={{ duration: 200 }}>
-            <div class="intervention-card">
-                <div class="int-header">
-                    <span class="blink-dot"></span>
-                    SYSTEM INTERVENTION REQUIRED
-                </div>
-                <div class="int-body">
-                    A Safety Pattern or Delegation Request has paused execution.
-                    Please review the logs and authorize the next step.
-                </div>
-                <div class="int-actions">
-                    <button class="btn-deny" onclick={handleDeny}>ABORT RUN</button>
-                    <button class="btn-approve" onclick={handleApprove}>AUTHORIZE & RESUME</button>
-                </div>
-            </div>
-        </div>
-    {/if} -->
-
     <!-- Normal Panes -->
     {#if !expanded || activePane === 'input'}
       <!-- 1. INPUT CONSOLE -->
       <div id="pane-input" class="deck-pane">
         
+        <!-- === NEW: CONTEXT RACK (EXEC MODE ONLY) === -->
+        {#if !$planningMode && $attachedFiles.length > 0}
+            <div class="context-rack">
+                <div class="rack-label">LIB_LINK</div>
+                <div class="rack-files">
+                    {#each $attachedFiles as file}
+                        <div class="ctx-chip">
+                            <div class="ctx-dot"></div>
+                            {file}
+                        </div>
+                    {/each}
+                </div>
+            </div>
+        {/if}
+
         <!-- Input Wrapper: Changes visual state based on Planning Mode -->
         <div class="cmd-wrapper {isInputFocused ? 'focused' : ''} {$planningMode ? 'mode-plan' : ''}">
             <textarea
@@ -490,6 +472,55 @@
       justify-content: center;
       padding-bottom: 8px; /* Give space for the new footer */
   }
+
+  /* === CONTEXT RACK (FILES) === */
+  .context-rack {
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      animation: slideDown 0.2s ease-out;
+  }
+  .rack-label {
+      font-family: var(--font-code);
+      font-size: 9px;
+      color: var(--paper-line);
+      font-weight: 700;
+      letter-spacing: 1px;
+      flex-shrink: 0;
+  }
+  .rack-files {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      overflow: hidden;
+  }
+  .ctx-chip {
+      font-family: var(--font-code);
+      font-size: 9px;
+      color: var(--paper-ink);
+      background: var(--paper-surface);
+      border: 1px solid var(--paper-line);
+      padding: 2px 6px;
+      border-radius: 2px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+      cursor: default;
+  }
+  .ctx-dot {
+      width: 4px; height: 4px;
+      background: var(--alert-amber);
+      border-radius: 50%;
+      box-shadow: 0 0 4px var(--alert-amber);
+  }
+  
+  @keyframes slideDown {
+      from { opacity: 0; transform: translateY(5px); }
+      to { opacity: 1; transform: translateY(0); }
+  }
+
 
   /* The floating "Device" wrapper for input */
   .cmd-wrapper {
@@ -777,94 +808,4 @@
   }
 
   @keyframes rotation { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-
-  /* === INTERVENTION STYLES === */
-  /* .intervention-overlay {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      background: rgba(0,0,0,0.6);
-      backdrop-filter: blur(4px);
-      z-index: 200;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-  }
-
-  .intervention-card {
-      background: var(--paper-bg);
-      border: 1px solid var(--alert-amber);
-      box-shadow: 0 10px 40px rgba(0,0,0,0.5);
-      width: 400px;
-      padding: 2px;
-  }
-
-  .int-header {
-      background: var(--alert-amber);
-      color: #000;
-      padding: 8px 12px;
-      font-weight: 700;
-      font-size: 11px;
-      letter-spacing: 1px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-  } */
-
-  /* .blink-dot {
-      width: 8px;
-      height: 8px;
-      background: #000;
-      border-radius: 50%;
-      animation: blink 0.5s infinite alternate;
-  }
-
-  .int-body {
-      padding: 20px;
-      font-size: 13px;
-      line-height: 1.5;
-      color: var(--paper-ink);
-      border-bottom: 1px solid var(--paper-line);
-  }
-
-  .int-actions {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-  }
-
-  .int-actions button {
-      border: none;
-      padding: 12px;
-      font-family: var(--font-code);
-      font-weight: 700;
-      font-size: 11px;
-      cursor: pointer;
-      transition: background 0.2s;
-  }
-
-  .btn-deny {
-      background: var(--paper-surface);
-      color: var(--paper-ink);
-  }
-
-  .btn-deny:hover {
-      background: #d32f2f;
-      color: white;
-  }
-
-  .btn-approve {
-      background: var(--paper-ink);
-      color: var(--paper-bg);
-  }
-
-  .btn-approve:hover {
-      opacity: 0.9;
-  } */
-
-  /* @keyframes blink {
-      from { opacity: 1; }
-      to { opacity: 0.3; }
-  } */
 </style>

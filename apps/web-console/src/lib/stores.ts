@@ -545,7 +545,7 @@ function syncState(state: any, signatures: Record<string, string> = {}, topology
                                 }
                                 updateLog(inv.id, {
                                     message: outputText,
-                                    metadata: `TOKENS: ${inv.tokens_used || 0} | LATENCY: ${inv.latency_ms || 0}ms`,
+                                    metadata: `TOKENS: ${inv.tokens_used || 0} | LATENCY: ${Math.round(inv.latency_ms || 0)}ms`, // Rounded latency
                                     isAnimated: true
                                 });
                             } else {

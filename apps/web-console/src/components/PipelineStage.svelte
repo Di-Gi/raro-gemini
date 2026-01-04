@@ -1,6 +1,6 @@
 <!-- // [[RARO]]/apps/web-console/src/components/PipelineStage.svelte
-// Purpose: Interactive DAG visualization with "Chip" aesthetic.
-// Architecture: Visual Component (D3-lite)
+// Purpose: Interactive DAG visualization with "Tactical Arctic" aesthetic.
+// Architecture: Visual Component (D3-lite) with DOM Diffing
 // Dependencies: Stores -->
 
 <script lang="ts">
@@ -9,7 +9,7 @@
     pipelineEdges, 
     selectedNode, 
     selectNode, 
-    deselectNode, // Added import
+    deselectNode, 
     runtimeStore, 
     planningMode,
     type PipelineEdge,
@@ -18,191 +18,212 @@
 
   let { expanded, ontoggle }: { expanded: boolean, ontoggle?: () => void } = $props();
 
-  // Reactive state for DOM element bindings
+  // DOM Bindings
   let svgElement = $state<SVGSVGElement | undefined>();
   let nodesLayer = $state<HTMLDivElement | undefined>();
   let pipelineStageElement = $state<HTMLDivElement | undefined>();
 
   let isRunComplete = $derived($runtimeStore.status === 'COMPLETED' || $runtimeStore.status === 'FAILED');
 
-  // CLEANUP HOOK: Clear selection when minimizing
+  // CLEANUP: Clear selection on minimize
   $effect(() => {
-    if (!expanded && $selectedNode) {
-        deselectNode();
-    }
+    if (!expanded && $selectedNode) deselectNode();
   });
 
+  // === REACTIVITY ENGINE ===
+  // We explicitly track store dependencies here to trigger the render loop.
   $effect(() => {
     if (!pipelineStageElement) return;
-    const resizeObserver = new ResizeObserver(() => {
-      renderGraph();
-    });
-    resizeObserver.observe(pipelineStageElement);
-    return () => {
-      resizeObserver.disconnect();
-    };
-  })
 
-  function renderGraph() {
-    if (!svgElement || !nodesLayer || !pipelineStageElement) return
-
-    const svg = svgElement
-    const w = pipelineStageElement.clientWidth
-    const h = pipelineStageElement.clientHeight
-
-    // === 1. CALCULATE MINIMIZED POSITIONS (CLUSTERING) ===
-    // We calculate this regardless of state to ensure smooth transitions
-    
-    // Group nodes by their approximate X coordinate (Rank)
-    const clusters = new Map<number, AgentNode[]>();
-    const sortedNodes = [...$agentNodes].sort((a, b) => {
-        if (Math.abs(a.x - b.x) > 2) return a.x - b.x;
-        return a.id.localeCompare(b.id);
-    });
-
-    sortedNodes.forEach(node => {
-        const rankKey = Math.round(node.x / 5) * 5; // Quantize X to nearest 5%
-        if (!clusters.has(rankKey)) clusters.set(rankKey, []);
-        clusters.get(rankKey)!.push(node);
-    });
-
-    const nodeOffsets = new Map<string, number>();
-    
-    clusters.forEach((clusterNodes) => {
-        const count = clusterNodes.length;
-        if (count === 1) {
-            nodeOffsets.set(clusterNodes[0].id, 0);
-            return;
-        }
-        
-        // Spread logic: Tighter spacing for the "Fuse" look
-        const SPACING = 24; 
-        const totalSpread = (count - 1) * SPACING;
-        const startOffset = -totalSpread / 2;
-
-        clusterNodes.forEach((node, index) => {
-            nodeOffsets.set(node.id, startOffset + (index * SPACING));
-        });
-    });
-
-    // === 2. COORDINATE FUNCTIONS ===
-    const getY = (n: AgentNode) => {
-        return expanded ? (n.y / 100) * h : h / 2;
-    }
-
-    const getX = (n: AgentNode) => {
-        const baseX = (n.x / 100) * w;
-        if (expanded) return baseX;
-        return baseX + (nodeOffsets.get(n.id) || 0);
-    }
-
-    // === 3. RENDER EDGES ===
-    svg.innerHTML = ''
-
-    $pipelineEdges.forEach((link: PipelineEdge) => {
-      const fromNode = $agentNodes.find((n) => n.id === link.from)
-      const toNode = $agentNodes.find((n) => n.id === link.to)
-
-      if (!fromNode || !toNode) return
-
-      const x1 = getX(fromNode)
-      const y1 = getY(fromNode)
-      const x2 = getX(toNode)
-      const y2 = getY(toNode)
-
-      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path')
-      
-      const curvature = expanded ? 60 : 20;
-      const d = `M ${x1} ${y1} C ${x1 + curvature} ${y1}, ${x2 - curvature} ${y2}, ${x2} ${y2}`
-
-      path.setAttribute('d', d)
-      
-      let classes = `cable`;
-      if (link.active) classes += ` active`;
-      if (link.pulseAnimation) classes += ` pulse`;
-      if (link.finalized) classes += ` finalized`;
-      
-      path.setAttribute('class', classes);
-      path.setAttribute('id', `link-${link.from}-${link.to}`)
-
-      if (link.signatureHash) {
-        path.setAttribute('data-signature', link.signatureHash)
-      }
-
-      svg.appendChild(path)
-    })
-
-    // === 4. RENDER NODES ===
-    if (nodesLayer) {
-      nodesLayer.innerHTML = ''
-      $agentNodes.forEach((node) => {
-        const el = document.createElement('div')
-        
-        el.className = `node ${$selectedNode === node.id ? 'selected' : ''} ${
-          node.status === 'running' ? 'running' : ''
-        } ${node.status === 'complete' ? 'complete' : ''}`
-
-        const role = node.role ? node.role.toUpperCase() : 'WORKER';
-
-        el.innerHTML = `
-            <!-- EXPANDED CONTENT -->
-            <div class="node-indicator"></div>
-            <div class="node-content">
-                <div class="node-role">${role}</div>
-                <div class="node-label">${node.label}</div>
-            </div>
-            <div class="node-decor"></div>
-            
-            <!-- MINIMIZED CONTENT (The Fuse) -->
-            <div class="fuse-cap top"></div>
-            <div class="fuse-filament"></div>
-            <div class="fuse-cap bottom"></div>
-        `
-        
-        el.id = `node-${node.id}`
-
-        const x = getX(node)
-        const y = getY(node)
-
-        el.style.left = `${x}px`
-        el.style.top = `${y}px`
-        
-        const zIndexBase = node.status === 'running' ? 100 : 10;
-        el.style.zIndex = `${zIndexBase}`;
-
-        el.onclick = (e) => {
-          if (!expanded) {
-            // If minimized, bubble up to container to trigger toggle
-            return; 
-          }
-          e.stopPropagation()
-          selectNode(node.id)
-        }
-
-        nodesLayer!.appendChild(el)
-      })
-    }
-  }
-
-  // React to changes
-  $effect(() => {
-    // Dependencies to trigger re-render
-    const _expanded = expanded;
-    const _nodeCount = $agentNodes.length; 
-    const _edgeCount = $pipelineEdges.length;
+    // Register Dependencies
     const _nodes = $agentNodes;
+    const _edges = $pipelineEdges;
     const _selected = $selectedNode;
     const _status = $runtimeStore.status;
+    const _expanded = expanded;
 
+    // Use RAF for smooth UI updates without blocking
     requestAnimationFrame(() => {
       renderGraph();
     });
+  });
+
+  // RESIZE OBSERVER (Handles window/container shifts)
+  $effect(() => {
+    if (!pipelineStageElement) return;
+    const observer = new ResizeObserver(() => renderGraph());
+    observer.observe(pipelineStageElement);
+    return () => observer.disconnect();
   })
 
-  function handleClick() {
-    if (!expanded) {
-      ontoggle?.()
+  function renderGraph() {
+      if (!svgElement || !nodesLayer || !pipelineStageElement) return
+
+      const svg = svgElement
+      const w = pipelineStageElement.clientWidth
+      const h = pipelineStageElement.clientHeight
+
+      // === 1. CLUSTERING FOR MINIMIZED VIEW ===
+      const clusters = new Map<number, AgentNode[]>();
+      const sortedNodes = [...$agentNodes].sort((a, b) => {
+          if (Math.abs(a.x - b.x) > 2) return a.x - b.x;
+          return a.id.localeCompare(b.id);
+      });
+
+      sortedNodes.forEach(node => {
+          const rankKey = Math.round(node.x / 5) * 5; 
+          if (!clusters.has(rankKey)) clusters.set(rankKey, []);
+          clusters.get(rankKey)!.push(node);
+      });
+
+      const nodeOffsets = new Map<string, number>();
+      clusters.forEach((clusterNodes) => {
+          const count = clusterNodes.length;
+          if (count === 1) { nodeOffsets.set(clusterNodes[0].id, 0); return; }
+          const SPACING = 24; 
+          const startOffset = -((count - 1) * SPACING) / 2;
+          clusterNodes.forEach((node, index) => {
+              nodeOffsets.set(node.id, startOffset + (index * SPACING));
+          });
+      });
+
+      // === 2. COORDINATE MAPPING ===
+      const getY = (n: AgentNode) => expanded ? (n.y / 100) * h : h / 2;
+      const getX = (n: AgentNode) => {
+          const baseX = (n.x / 100) * w;
+          return expanded ? baseX : baseX + (nodeOffsets.get(n.id) || 0);
+      }
+
+      // === 3. RENDER EDGES (Smart Diffing) ===
+      const nodeHalfWidth = expanded ? 80 : 6;
+      
+      // Mark all current edges as "seen" to handle removal
+      const activeEdgeIds = new Set<string>();
+
+      $pipelineEdges.forEach((link: PipelineEdge) => {
+        const edgeId = `link-${link.from}-${link.to}`;
+        activeEdgeIds.add(edgeId);
+
+        const fromNode = $agentNodes.find((n) => n.id === link.from)
+        const toNode = $agentNodes.find((n) => n.id === link.to)
+        if (!fromNode || !toNode) return
+
+        const centerX1 = getX(fromNode)
+        const centerY1 = getY(fromNode)
+        const centerX2 = getX(toNode)
+        const centerY2 = getY(toNode)
+
+        // Ports: Right of source, Left of target
+        const x1 = centerX1 + nodeHalfWidth; 
+        const y1 = centerY1;
+        const x2 = centerX2 - nodeHalfWidth;
+        const y2 = centerY2;
+
+        // Curve Logic
+        const dist = Math.abs(x2 - x1);
+        const curvature = Math.max(dist * 0.5, 20);
+        const d = `M ${x1} ${y1} C ${x1 + curvature} ${y1}, ${x2 - curvature} ${y2}, ${x2} ${y2}`;
+        
+        let classes = `cable`;
+        if (link.active) classes += ` active`;
+        if (link.pulseAnimation) classes += ` pulse`;
+        if (link.finalized) classes += ` finalized`;
+
+        // Update or Create
+        // FIX: Double Cast to satisfy TS (HTMLElement -> unknown -> SVGPathElement)
+        let path = document.getElementById(edgeId) as unknown as SVGPathElement | null;
+        
+        if (!path) {
+            path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            path.id = edgeId;
+            svg.appendChild(path);
+        }
+        
+        // Only touch DOM if changed
+        if (path.getAttribute('d') !== d) path.setAttribute('d', d);
+        if (path.getAttribute('class') !== classes) path.setAttribute('class', classes);
+      });
+
+      // Cleanup Removed Edges
+      Array.from(svg.children).forEach(child => {
+          if (!activeEdgeIds.has(child.id)) child.remove();
+      });
+
+
+      // === 4. RENDER NODES (Smart Diffing) ===
+      const activeNodeIds = new Set<string>();
+      
+      $agentNodes.forEach((node) => {
+        const domId = `node-${node.id}`;
+        activeNodeIds.add(domId);
+
+        let el = document.getElementById(domId) as HTMLDivElement;
+        const isSel = $selectedNode === node.id;
+        const className = `tactical-unit ${isSel ? 'selected' : ''} ${node.status}`;
+
+        // CREATE if missing
+        if (!el) {
+            el = document.createElement('div');
+            el.id = domId;
+            // Inner HTML: Military/Arctic Aesthetic
+            el.innerHTML = `
+              <div class="reticle tl"></div>
+              <div class="reticle tr"></div>
+              <div class="reticle bl"></div>
+              <div class="reticle br"></div>
+              <div class="io-port input"></div>
+              <div class="io-port output"></div>
+              <div class="unit-body">
+                  <div class="unit-header">
+                      <span class="unit-id">:: ${node.id.toUpperCase().slice(0,6)}</span>
+                      <div class="unit-status"></div>
+                  </div>
+                  <div class="unit-main">
+                      <div class="unit-role">${node.role.toUpperCase()}</div>
+                      <div class="unit-label">${node.label}</div>
+                  </div>
+                  <div class="unit-footer">
+                      <span class="coord-text"></span>
+                  </div>
+              </div>
+              <div class="isotope-core"></div>
+            `;
+            
+            el.onclick = (e) => {
+              if (!expanded) return;
+              e.stopPropagation();
+              selectNode(node.id);
+            }
+            nodesLayer!.appendChild(el);
+        }
+
+        // UPDATE Attributes
+        if (el.className !== className) el.className = className;
+        
+        const targetLeft = `${getX(node)}px`;
+        const targetTop = `${getY(node)}px`;
+        
+        if (el.style.left !== targetLeft) el.style.left = targetLeft;
+        if (el.style.top !== targetTop) el.style.top = targetTop;
+        el.style.zIndex = node.status === 'running' ? '100' : '10';
+
+        // Update Coordinates Text (Only if needed)
+        const coordEl = el.querySelector('.coord-text');
+        if (coordEl) {
+            coordEl.textContent = `X:${Math.round(node.x)} Y:${Math.round(node.y)}`;
+        }
+      });
+
+      // Cleanup Removed Nodes
+      if (nodesLayer) {
+          Array.from(nodesLayer.children).forEach(child => {
+              if (!activeNodeIds.has(child.id)) child.remove();
+          });
+      }
     }
+
+  function handleClick() {
+    if (!expanded) ontoggle?.()
   }
 </script>
 
@@ -215,347 +236,275 @@
   tabindex="0"
   bind:this={pipelineStageElement}
 >
+  <!-- 1. TACTICAL GRID -->
+  <div class="tactical-grid"></div>
+  <div class="polar-overlay"></div> <!-- Frost effect -->
+  
+  <!-- 2. HUD INTERFACE -->
   <div id="hud-banner">
-    <div class="hud-title">
-      {#if isRunComplete}
-         <div class="hud-status-dot complete"></div>
-         SESSION COMPLETE // DATA HARDENED
-      {:else if $runtimeStore.status === 'RUNNING'}
-         <div class="hud-status-dot active"></div>
-         PIPELINE ACTIVE // PROCESSING
-      {:else if $planningMode}
-         <div class="hud-status-dot blueprint"></div>
-         BLUEPRINT MODE // ARCHITECT ACTIVE
-      {:else}
-         <div class="hud-status-dot"></div>
-         READY // EXECUTION MODE
-      {/if}
+    <div class="hud-left">
+        <div class="status-indicator">
+            <div class="led"></div>
+            {#if isRunComplete}
+                <span>SYS_HALT</span>
+            {:else if $runtimeStore.status === 'RUNNING'}
+                <span>OPERATIONAL</span>
+            {:else if $planningMode}
+                <span>ARCHITECT</span>
+            {:else}
+                <span>STANDBY</span>
+            {/if}
+        </div>
+        <div class="separator">/</div>
+        <span class="hud-sub">SECURE_CHANNEL_01</span>
     </div>
-    <button
-      class="btn-minimize"
-      onclick={(e) => {
-        e.stopPropagation()
-        ontoggle?.()
-      }}
-    >
-      ▼ MINIMIZE
+    
+    <button class="btn-minimize" onclick={(e) => { e.stopPropagation(); ontoggle?.(); }}>
+        MINIMIZE_VIEW [-]
     </button>
   </div>
 
+  <!-- 3. VISUALIZATION LAYERS -->
   <svg id="graph-svg" bind:this={svgElement}></svg>
   <div id="nodes-layer" bind:this={nodesLayer}></div>
+  
 </div>
 
 <style>
+  /* === PALETTE: TACTICAL ARCTIC === */
+  :root {
+      --tac-bg: #050505;
+      --tac-panel: #0a0a0a;
+      --tac-border: #333;
+      --tac-cyan: #00F0FF;
+      --tac-white: #E0E0E0;
+      --tac-dim: #555;
+      --tac-amber: #FFB300;
+  }
+
+  /* === CHASSIS === */
   #pipeline-stage {
+    position: relative;
     height: 80px;
-    background: var(--digi-void);
+    background: var(--tac-bg);
     border-top: 1px solid var(--paper-line);
     border-bottom: 1px solid var(--paper-line);
-    position: relative;
     z-index: 100;
-    transition: height 0.5s var(--ease-snap), border-color 0.3s;
+    transition: height 0.5s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.3s;
     overflow: hidden;
     cursor: pointer;
-    background-image: 
-        linear-gradient(color-mix(in srgb, var(--digi-line), transparent 50%) 1px, transparent 1px),
-        linear-gradient(90deg, color-mix(in srgb, var(--digi-line), transparent 50%) 1px, transparent 1px);
-    background-size: 40px 40px;
   }
 
   #pipeline-stage.expanded {
     height: 65vh;
     cursor: default;
-    box-shadow: 0 20px 80px rgba(0, 0, 0, 0.4);
-    border-top: 1px solid var(--digi-line);
+    border-top: 1px solid var(--tac-cyan);
+    border-bottom: 1px solid var(--tac-cyan);
+    box-shadow: 0 0 50px rgba(0, 0, 0, 0.8);
   }
 
-  #pipeline-stage.expanded.run-complete {
-    border-top: 1px solid var(--arctic-cyan);
-    border-bottom: 1px solid var(--arctic-cyan);
-  }
-
-  #hud-banner {
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 32px;
-    background: var(--digi-void);
-    border-bottom: 1px solid var(--digi-line);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0 12px;
-    transform: translateY(-100%);
-    transition: transform 0.3s ease;
-    z-index: 200;
-  }
-
-  #pipeline-stage.expanded #hud-banner {
-    transform: translateY(0);
-  }
-
-  .hud-title {
-    color: var(--digi-text-dim);
-    font-family: var(--font-code);
-    font-size: 10px;
-    letter-spacing: 1px;
-    font-weight: 700;
-    display: flex;
-    align-items: center;
-    gap: 8px;
+  /* === BACKGROUNDS === */
+  .tactical-grid {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      background-image: 
+          linear-gradient(rgba(255,255,255,0.03) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255,255,255,0.03) 1px, transparent 1px);
+      background-size: 50px 50px;
+      pointer-events: none;
+      z-index: 0;
   }
   
-  .run-complete .hud-title { color: var(--arctic-cyan); }
-
-  .hud-status-dot {
-    width: 6px; height: 6px;
-    background: var(--digi-text-dim);
-    border-radius: 50%;
+  /* Adding "Crosshairs" at intersections */
+  .tactical-grid::after {
+      content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      background-image: radial-gradient(circle, rgba(255,255,255,0.1) 1px, transparent 1px);
+      background-size: 50px 50px;
+      background-position: -25px -25px; /* Offset to intersect */
   }
 
-  .hud-status-dot.active {
-    background: var(--alert-amber);
-    box-shadow: 0 0 8px var(--alert-amber);
-    animation: blink 1s infinite alternate;
+  .polar-overlay {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      background: radial-gradient(circle at 50% 0%, rgba(0, 240, 255, 0.03), transparent 70%);
+      pointer-events: none;
+      z-index: 1;
   }
 
-  .hud-status-dot.complete {
-    background: var(--arctic-cyan);
-    box-shadow: 0 0 8px var(--arctic-cyan);
+  /* === HUD === */
+  #hud-banner {
+    position: absolute; top: 0; left: 0; right: 0;
+    height: 32px;
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0 16px;
+    z-index: 50;
+    transform: translateY(-100%);
+    transition: transform 0.3s;
+    background: rgba(5, 5, 5, 0.9);
+    border-bottom: 1px solid var(--tac-border);
+    font-family: var(--font-code);
   }
+  #pipeline-stage.expanded #hud-banner { transform: translateY(0); }
 
-  .hud-status-dot.blueprint {
-    background: var(--arctic-cyan);
-    box-shadow: 0 0 8px var(--arctic-cyan);
-    animation: pulse 2s infinite;
+  .hud-left { display: flex; align-items: center; gap: 12px; }
+  
+  .status-indicator {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 10px; font-weight: 700; color: var(--tac-white);
+      letter-spacing: 1px;
   }
+  
+  .led {
+      width: 4px; height: 4px; background: var(--tac-dim);
+      box-shadow: 0 0 4px var(--tac-dim);
+  }
+  /* Active states via parent context would be cleaner, but simple logic here: */
+  #pipeline-stage:not(.run-complete) .led { background: var(--tac-cyan); box-shadow: 0 0 6px var(--tac-cyan); }
+  .run-complete .led { background: var(--tac-white); }
+  
+  .separator { color: var(--tac-dim); font-size: 10px; }
+  .hud-sub { font-size: 9px; color: var(--tac-dim); letter-spacing: 0.5px; }
 
   .btn-minimize {
-    background: transparent;
-    border: none;
-    color: var(--digi-text-dim);
-    font-size: 10px;
-    font-family: var(--font-code);
-    cursor: pointer;
-    transition: color 0.2s;
+      background: transparent; border: none;
+      font-family: var(--font-code); font-size: 9px; font-weight: 700; 
+      color: var(--tac-dim); cursor: pointer; transition: color 0.2s;
   }
-  .btn-minimize:hover { color: var(--arctic-cyan); }
+  .btn-minimize:hover { color: var(--tac-white); }
 
-  #graph-svg {
-    width: 100%; height: 100%;
-    position: absolute; top: 0; left: 0;
+  /* === LAYERS === */
+  #graph-svg { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 5; pointer-events: none; }
+  #nodes-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; }
+
+  /* === TACTICAL UNIT (NODE) === */
+  :global(.tactical-unit) {
+      position: absolute;
+      transform: translate(-50%, -50%);
+      background: var(--tac-bg);
+      border: 1px solid var(--tac-border);
+      color: var(--tac-white);
+      display: flex; flex-direction: column;
+      transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+      
+      /* Minimized State */
+      width: 12px; height: 32px;
+      border-radius: 0; /* Hard corners */
   }
 
-  #nodes-layer {
-    width: 100%; height: 100%;
-    position: absolute; top: 0; left: 0;
+  /* --- EXPANDED STATE --- */
+  #pipeline-stage.expanded :global(.tactical-unit) {
+      width: 160px; height: auto;
+      min-height: 50px;
+      background: rgba(10, 10, 10, 0.95);
+      border: 1px solid var(--tac-border);
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+      cursor: pointer;
   }
 
-  /* === NODE STYLING === */
+  /* Hide Minimized Element in Expanded */
+  :global(.isotope-core) {
+      width: 2px; height: 100%; background: var(--tac-dim); margin: 0 auto;
+      transition: background 0.2s;
+  }
+  #pipeline-stage.expanded :global(.isotope-core) { display: none; }
+
+  /* Hide Expanded Elements in Minimized */
+  :global(.reticle), :global(.io-port), :global(.unit-body) { display: none; }
+
+  /* --- EXPANDED DETAILS --- */
   
-  :global(.node) {
-    position: absolute;
-    transform: translate(-50%, -50%);
-    transition: all 0.5s var(--ease-snap);
-    user-select: none;
-    display: flex;
-    
-    /* DEFAULT: MINIMIZED FUSE AESTHETIC */
-    width: 14px;
-    height: 36px;
-    background: #000;
-    border: 1px solid var(--digi-line);
-    border-radius: 2px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.5);
-    flex-direction: column;
-    align-items: center;
-    justify-content: space-between;
-    padding: 2px 0;
-    overflow: visible; /* Allow glow to spill */
-    pointer-events: none;
+  /* Target Reticles (Corner Brackets) */
+  #pipeline-stage.expanded :global(.reticle) {
+      display: block; position: absolute; width: 6px; height: 6px;
+      border-color: var(--tac-dim); opacity: 0.5; transition: all 0.2s;
+  }
+  #pipeline-stage.expanded :global(.reticle.tl) { top: -1px; left: -1px; border-top: 1px solid; border-left: 1px solid; }
+  #pipeline-stage.expanded :global(.reticle.tr) { top: -1px; right: -1px; border-top: 1px solid; border-right: 1px solid; }
+  #pipeline-stage.expanded :global(.reticle.bl) { bottom: -1px; left: -1px; border-bottom: 1px solid; border-left: 1px solid; }
+  #pipeline-stage.expanded :global(.reticle.br) { bottom: -1px; right: -1px; border-bottom: 1px solid; border-right: 1px solid; }
+  
+  /* Active Hover State on Reticles */
+  #pipeline-stage.expanded :global(.tactical-unit:hover .reticle) {
+      width: 8px; height: 8px; border-color: var(--tac-cyan); opacity: 1;
   }
 
-  /* --- FUSE ELEMENTS (MINIMIZED ONLY) --- */
-  :global(.fuse-cap) {
-    width: 8px;
-    height: 2px;
-    background: var(--digi-text-dim);
-    opacity: 0.5;
+  /* IO Ports - ALIGNED WITH CABLE OFFSETS */
+  #pipeline-stage.expanded :global(.io-port) {
+      display: block; position: absolute; top: 50%; width: 4px; height: 8px;
+      background: var(--tac-bg); border: 1px solid var(--tac-dim);
+      transform: translateY(-50%);
+      z-index: 20;
+  }
+  #pipeline-stage.expanded :global(.io-port.input) { left: -3px; border-right: none; }
+  #pipeline-stage.expanded :global(.io-port.output) { right: -3px; border-left: none; }
+
+  /* Unit Content */
+  #pipeline-stage.expanded :global(.unit-body) {
+      display: flex; flex-direction: column; width: 100%;
+  }
+
+  :global(.unit-header) {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 4px 8px; border-bottom: 1px solid var(--tac-border);
+      background: rgba(255,255,255,0.02);
+  }
+  :global(.unit-id) { font-family: var(--font-code); font-size: 8px; color: var(--tac-dim); letter-spacing: 1px; }
+  :global(.unit-status) { width: 4px; height: 4px; background: #222; }
+
+  :global(.unit-main) { padding: 8px; display: flex; flex-direction: column; gap: 2px; }
+  :global(.unit-role) { font-family: var(--font-code); font-size: 7px; color: var(--tac-dim); text-transform: uppercase; }
+  :global(.unit-label) { 
+      font-family: var(--font-code); font-size: 10px; font-weight: 700; 
+      color: var(--tac-white); text-transform: uppercase; letter-spacing: 0.5px;
   }
   
-  :global(.fuse-filament) {
-    width: 2px;
-    flex: 1;
-    background: var(--digi-line);
-    margin: 2px 0;
-    transition: background 0.3s, box-shadow 0.3s;
+  :global(.unit-footer) {
+      padding: 2px 8px; display: flex; gap: 8px; border-top: 1px solid var(--tac-border);
+      background: #020202;
   }
+  :global(.coord-text) { font-family: var(--font-code); font-size: 7px; color: #333; }
 
-  /* Hover effect for Minimized Nodes */
-  #pipeline-stage:not(.expanded) :global(.node):hover {
-    transform: translate(-50%, -55%) scale(1.1);
-    border-color: var(--arctic-cyan);
-    z-index: 200 !important;
-  }
+  /* --- STATES --- */
 
-  /* --- EXPANDED CARD OVERRIDES --- */
+  /* Running */
+  :global(.tactical-unit.running) { border-color: var(--tac-amber); }
+  :global(.tactical-unit.running .isotope-core) { background: var(--tac-amber); box-shadow: 0 0 6px var(--tac-amber); }
+  :global(.tactical-unit.running .unit-status) { background: var(--tac-amber); box-shadow: 0 0 4px var(--tac-amber); animation: blink 0.2s infinite; }
+  :global(.tactical-unit.running .unit-label) { color: var(--tac-amber); }
   
-  #pipeline-stage.expanded :global(.node) {
-    width: auto;
-    min-width: 140px;
-    height: auto;
-    background: var(--digi-panel);
-    border-radius: 0;
-    padding: 0;
-    align-items: stretch;
-    justify-content: flex-start;
-    flex-direction: row;
-    box-shadow: 0 4px 10px rgba(0,0,0,0.3);
-    overflow: hidden;
-    pointer-events: auto;
-    cursor: pointer;
-  }
-
-  /* Hide Fuse elements in expanded */
-  #pipeline-stage.expanded :global(.node) :global(.fuse-cap),
-  #pipeline-stage.expanded :global(.node) :global(.fuse-filament) {
-    display: none;
-  }
-
-  /* --- CARD ELEMENTS (EXPANDED ONLY) --- */
+  /* Complete */
+  :global(.tactical-unit.complete) { border-color: var(--tac-cyan); }
+  :global(.tactical-unit.complete .isotope-core) { background: var(--tac-cyan); }
+  :global(.tactical-unit.complete .unit-status) { background: var(--tac-cyan); box-shadow: 0 0 4px var(--tac-cyan); }
   
-  :global(.node-indicator), 
-  :global(.node-content), 
-  :global(.node-decor) {
-    display: none; /* Hidden by default (minimized) */
+  /* Selected */
+  :global(.tactical-unit.selected) { 
+      background: #000; border-color: var(--tac-white); z-index: 200 !important; 
+      box-shadow: 0 0 0 1px var(--tac-white);
   }
 
-  #pipeline-stage.expanded :global(.node) :global(.node-indicator) { 
-    display: block; 
-    width: 4px;
-    background: var(--digi-line);
-    transition: background 0.3s;
+  /* Hover (Minimized) */
+  #pipeline-stage:not(.expanded) :global(.tactical-unit:hover) {
+      transform: translate(-50%, -60%) scale(1.1);
+      border-color: var(--tac-cyan);
   }
 
-  #pipeline-stage.expanded :global(.node) :global(.node-content) { 
-    display: flex;
-    flex: 1;
-    padding: 8px 12px;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  #pipeline-stage.expanded :global(.node) :global(.node-decor) { 
-    display: block;
-    width: 12px;
-    background: repeating-linear-gradient(0deg, transparent, transparent 2px, var(--digi-line) 2px, var(--digi-line) 3px);
-    opacity: 0.3;
-    border-left: 1px solid var(--digi-line);
-  }
-
-  :global(.node-role) {
-    font-size: 8px;
-    text-transform: uppercase;
-    color: var(--digi-text-dim);
-    opacity: 0.7;
-    letter-spacing: 0.5px;
-  }
-
-  :global(.node-label) {
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--digi-text);
-  }
-
-  /* --- STATE STYLING (Shared Mapping) --- */
-
-  /* RUNNING */
-  :global(.node.running) {
-    border-color: var(--alert-amber);
-  }
-  /* Card */
-  :global(.node.running .node-indicator) { 
-    background: var(--alert-amber);
-    box-shadow: 0 0 8px var(--alert-amber);
-  }
-  :global(.node.running .node-label) { color: var(--alert-amber); }
-  /* Fuse */
-  :global(.node.running .fuse-filament) {
-    background: var(--alert-amber);
-    box-shadow: 0 0 8px var(--alert-amber), 0 0 4px #fff;
-    width: 4px; /* Thicker when running */
-    animation: flickerglow 0.1s infinite alternate;
-  }
-
-  /* COMPLETE */
-  :global(.node.complete) {
-    border-color: var(--signal-success);
-  }
-  /* Card */
-  :global(.node.complete .node-indicator) { background: var(--signal-success); }
-  :global(.node.complete .node-label) { color: var(--signal-success); }
-  /* Fuse */
-  :global(.node.complete .fuse-filament) {
-    background: var(--signal-success);
-    box-shadow: 0 0 4px var(--signal-success);
-  }
-
-  /* SELECTED (Expanded Only) */
-  :global(.node.selected) {
-    border-color: var(--arctic-cyan);
-    background: var(--arctic-dim);
-  }
-  :global(.node.selected .node-indicator) { background: var(--arctic-cyan); }
-  :global(.node.selected .node-label) { color: var(--arctic-cyan); }
-
-  /* --- HOVER (Expanded Only) --- */
-  #pipeline-stage.expanded :global(.node:hover) {
-    border-color: var(--arctic-cyan);
-    transform: translate(-50%, -52%);
-    box-shadow: 0 8px 20px rgba(0,0,0,0.5);
-  }
-  #pipeline-stage.expanded :global(.node:hover .node-label) { color: white; }
-
-  /* --- CABLES --- */
+  /* === CABLES === */
   :global(.cable) {
-    fill: none;
-    stroke: var(--digi-line);
-    stroke-width: 1.5px;
-    transition: stroke 0.3s;
+      fill: none;
+      stroke: var(--tac-border);
+      stroke-width: 1px;
+      transition: stroke 0.3s;
   }
-
   :global(.cable.active) {
-    stroke: var(--arctic-cyan);
-    stroke-dasharray: 8 4;
-    animation: flow 0.6s linear infinite;
-    opacity: 0.9;
+      stroke: var(--tac-amber);
+      stroke-width: 1.5px;
+      stroke-dasharray: 2 4;
+      animation: dataflow 0.2s linear infinite;
   }
-
-  :global(.cable.active.pulse) {
-    stroke-width: 2.5px;
-    filter: drop-shadow(0 0 6px var(--arctic-cyan));
-  }
-
   :global(.cable.finalized) {
-    stroke: var(--arctic-cyan);
-    stroke-width: 1.5px;
-    opacity: 0.6;
+      stroke: var(--tac-cyan);
+      opacity: 0.6;
   }
 
-  @keyframes flow {
-    to { stroke-dashoffset: -12; }
-  }
-  @keyframes blink {
-    from { opacity: 0.4; }
-    to { opacity: 1; }
-  }
-  @keyframes pulse {
-    0% { opacity: 1; }
-    50% { opacity: 0.5; }
-    100% { opacity: 1; }
-  }
-  @keyframes flickerglow {
-      0% { opacity: 0.8; }
-      100% { opacity: 1; box-shadow: 0 0 12px var(--alert-amber); }
-  }
+  @keyframes dataflow { to { stroke-dashoffset: -6; } }
+  @keyframes blink { 50% { opacity: 0; } }
 </style>
