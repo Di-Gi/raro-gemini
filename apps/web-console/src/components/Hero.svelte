@@ -1,11 +1,12 @@
-<!-- // [[RARO]]/apps/web-console/src/components/Hero.svelte
-// Purpose: The "Monolith" Boot Interface. High-fidelity entry point.
-// Architecture: UX/UI Component
-// Dependencies: Svelte Transition, Local Assets -->
+<!-- // [[RARO]]/apps/web-console/src/components/Hero.svelte -->
+<!-- Purpose: The "Monolith" Boot Interface. High-fidelity entry point. -->
+<!-- Architecture: UX/UI Component -->
+<!-- Dependencies: Svelte Transition, Local Assets -->
 
 <script lang="ts">
   import { fade, fly } from 'svelte/transition';
   import { onMount } from 'svelte';
+  import { USE_MOCK } from '$lib/api'; // <--- IMPORT MOCK FLAG
 
   let { onenter }: { onenter: () => void } = $props();
 
@@ -28,6 +29,13 @@
     
     // Add some initial "noise" to the system
     setTimeout(() => logs.push("KERNEL_DAEMON_OK"), 200);
+    
+    // === MOCK DETECTION LOG ===
+    if (USE_MOCK) {
+      setTimeout(() => logs.push(">> VIRTUAL_ENVIRONMENT_DETECTED"), 400);
+      setTimeout(() => logs.push(">> BYPASSING_HARDWARE_LINKS..."), 500);
+    }
+
     setTimeout(() => logs.push("MEMORY_INTEGRITY_CHECK..."), 600);
     
     return () => clearInterval(cursorInterval);
@@ -91,8 +99,16 @@
       { t: 200, msg: ">> ELEVATING_PRIVILEGES..." },
       { t: 600, msg: ">> MOUNTING_AGENT_SWARM [RW]" },
       { t: 1000, msg: ">> CONNECTING_TO_ORCHESTRATOR..." },
-      { t: 1400, msg: ">> RARO_RUNTIME_ENGAGED" }
     ];
+
+    // Add specific mock confirmation in boot sequence
+    if (USE_MOCK) {
+        seq.push({ t: 1200, msg: ">> !! MOCK_ADAPTER_ENGAGED !!" });
+    } else {
+        seq.push({ t: 1200, msg: ">> LIVE_SOCKET_ESTABLISHED" });
+    }
+
+    seq.push({ t: 1400, msg: ">> RARO_RUNTIME_ENGAGED" });
 
     seq.forEach(step => {
       setTimeout(() => {
@@ -128,7 +144,10 @@
       <div class="machine-header">
         <div class="brand-zone">
           <div class="logo-type">RARO <span class="dim">//</span> KERNEL</div>
-          <div class="build-tag">BUILD_2026.01.02</div>
+          <div class="build-tag">
+              BUILD_2026.01.02
+              {#if USE_MOCK}<span class="tag-mock">::SIM</span>{/if}
+          </div>
         </div>
         
         <!-- Status Array -->
@@ -165,6 +184,12 @@
             <div class="scanlines"></div>
             <div class="terminal-header">
               <span>SYS_OUT</span>
+              
+              <!-- MOCK INDICATOR -->
+              {#if USE_MOCK}
+                <span class="mock-warning">MOCK_ENV</span>
+              {/if}
+
               <span>TTY_1</span>
             </div>
             
@@ -277,6 +302,7 @@
   .logo-type { font-family: var(--font-code); font-weight: 700; font-size: 12px; letter-spacing: 1px; color: var(--paper-ink); }
   .dim { color: #ccc; }
   .build-tag { font-family: var(--font-code); font-size: 9px; color: #888; margin-top: 2px; }
+  .tag-mock { color: var(--alert-amber); font-weight: 700; margin-left: 4px; }
 
   .status-zone { display: flex; align-items: center; gap: 8px; }
   .status-label { font-family: var(--font-code); font-size: 9px; font-weight: 700; letter-spacing: 1px; color: var(--paper-ink); }
@@ -351,6 +377,12 @@
     display: flex; justify-content: space-between; align-items: center;
     padding: 0 8px;
     font-family: var(--font-code); font-size: 8px; color: #666;
+  }
+  
+  .mock-warning {
+    color: var(--alert-amber);
+    font-weight: 700;
+    animation: blink 1s infinite;
   }
 
   .terminal-content {
