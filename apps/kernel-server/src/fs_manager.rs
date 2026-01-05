@@ -6,6 +6,7 @@
 use std::fs;
 use std::path::Path;
 use std::io;
+use std::io::Write; 
 
 // Hard anchor to prevent escaping the storage volume
 const STORAGE_ROOT: &str = "/app/storage";
@@ -47,6 +48,30 @@ impl WorkspaceInitializer {
         Ok(())
     }
     
+    /// Securely saves a byte buffer to the Library folder.
+    pub async fn save_to_library(filename: &str, data: &[u8]) -> io::Result<()> {
+        // 1. Sanitize Filename (Basic)
+        let safe_name = Path::new(filename).file_name()
+            .ok_or(io::Error::new(io::ErrorKind::InvalidInput, "Invalid filename"))?
+            .to_string_lossy();
+
+        if safe_name.contains("..") || safe_name.starts_with("/") {
+             return Err(io::Error::new(io::ErrorKind::PermissionDenied, "Invalid path"));
+        }
+
+        // 2. Ensure Library Dir Exists
+        let lib_path = format!("{}/library", STORAGE_ROOT);
+        fs::create_dir_all(&lib_path)?;
+
+        // 3. Write File
+        let target_path = format!("{}/{}", lib_path, safe_name);
+        let mut file = fs::File::create(&target_path)?;
+        file.write_all(data)?;
+        
+        tracing::info!("Uploaded file to library: {}", target_path);
+        Ok(())
+    }
+
     /// Optional: Cleanup routine for old sessions
     pub fn cleanup_run(run_id: &str) -> io::Result<()> {
         let path = format!("{}/sessions/{}", STORAGE_ROOT, run_id);

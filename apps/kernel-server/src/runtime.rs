@@ -517,40 +517,66 @@ impl RARORuntime {
 
     /// Handles the "Graph Surgery" when an agent requests delegation
     async fn handle_delegation(&self, run_id: &str, parent_id: &str, req: DelegationRequest) -> Result<(), String> {
-        // 1. Get lock on Workflow Config (to register new agents)
-        // 2. Get lock on DAG (to rewire edges)
-
+        // 1. Get State to identify Workflow ID
         let state = self.runtime_states.get(run_id).ok_or("Run not found")?;
         let workflow_id = state.workflow_id.clone();
         drop(state); // Drop read lock
 
-        // Mutate Workflow Config
-        // We need to add the new agent configs so `prepare_invocation_payload` can find them later
+        // 2. PRE-FETCH DEPENDENTS
+        // We need to know who currently depends on the parent to update their config.
+        // We do this before locking the workflow to avoid complex lock interleaving.
+        let existing_dependents: Vec<String> = if let Some(dag) = self.dag_store.get(run_id) {
+            dag.get_children(parent_id)
+        } else {
+            return Err("DAG not found for pre-fetch".to_string());
+        };
+
+        // 3. MUTATE WORKFLOW CONFIG (CRITICAL STEP FOR CONTEXT)
+        // We must add new nodes AND update existing nodes' dependencies so they look for the right context.
         if let Some(mut workflow) = self.workflows.get_mut(&workflow_id) {
+            // A. Register new agents
             for node in &req.new_nodes {
-                // Ensure unique IDs if not provided? Assuming agent provides unique IDs or we should prefix them.
-                // For safety, let's prefix if they don't look unique, but trust agent for now.
+                // In production, ensure unique IDs here
                 workflow.agents.push(node.clone());
+            }
+
+            // B. Rewire Configuration Dependencies (The Fix)
+            // If we insert nodes as "Children", the original dependents must now depend on the new nodes,
+            // not the original parent. This ensures prepare_invocation_payload loads the new nodes' output.
+            if req.strategy == DelegationStrategy::Child {
+                for dep_id in &existing_dependents {
+                    // Find the config entry for the dependent agent (e.g., 'research_planner')
+                    if let Some(dep_agent) = workflow.agents.iter_mut().find(|a| a.id == *dep_id) {
+                        
+                        // 1. Remove the old parent (e.g., 'image_analyzer') from depends_on
+                        dep_agent.depends_on.retain(|p| p != parent_id);
+
+                        // 2. Add the new nodes (e.g., 'vision_analyst') as dependencies
+                        for new_node in &req.new_nodes {
+                            if !dep_agent.depends_on.contains(&new_node.id) {
+                                dep_agent.depends_on.push(new_node.id.clone());
+                            }
+                        }
+                        tracing::info!("Rewired Config: Agent {} now depends on {:?}", dep_id, dep_agent.depends_on);
+                    }
+                }
             }
         } else {
             return Err("Workflow config not found".to_string());
         }
 
-        // Mutate DAG
+        // 4. MUTATE DAG TOPOLOGY (EXECUTION ORDER)
         if let Some(mut dag) = self.dag_store.get_mut(run_id) {
-            // A. Get existing children of the Parent (Dependents)
-            // e.g. Parent -> Child1. We want Parent -> [NewNodes] -> Child1
-            let existing_dependents = dag.get_children(parent_id);
-
-            // B. Add New Nodes & Edges from Parent
+            
+            // A. Add New Nodes & Edges from Parent
             for node in &req.new_nodes {
                 dag.add_node(node.id.clone()).map_err(|e| e.to_string())?;
 
                 // Parent -> New Node (so New Node can see Parent's context)
                 dag.add_edge(parent_id.to_string(), node.id.clone()).map_err(|e| e.to_string())?;
 
-                // C. Rewire Dependents
-                // If strategy is Child (default), new nodes block the original dependents.
+                // B. Connect New Nodes -> Existing Dependents
+                // If strategy is Child, new nodes block the original dependents.
                 if req.strategy == DelegationStrategy::Child {
                     for dep in &existing_dependents {
                         // Add edge New Node -> Dependent
@@ -559,8 +585,8 @@ impl RARORuntime {
                 }
             }
 
-            // D. Remove Old Edges (Parent -> Dependents)
-            // Only if we successfully inserted the intermediaries.
+            // C. Remove Old Edges (Parent -> Dependents)
+            // Only required for Child strategy to force linear flow (Parent -> New -> Dependent)
             if req.strategy == DelegationStrategy::Child {
                 for dep in &existing_dependents {
                     // It's okay if this fails (edge might not exist), but logic says it should.
@@ -569,11 +595,10 @@ impl RARORuntime {
             }
 
             // Validate Cycle (Rollback is hard, so we just check and error if bad)
-            if dag.topological_sort().is_err() {
+            if let Err(e) = dag.topological_sort() {
                 // If we broke the graph, we are in trouble.
-                // In production, we'd clone DAG, test mutation, then apply.
-                // For prototype, we fail the run.
-                return Err("Delegation created a cycle".to_string());
+                tracing::error!("Delegation created a cycle: {:?}", e);
+                return Err("Delegation created a cycle in DAG".to_string());
             }
         } else {
             return Err("DAG not found".to_string());
@@ -862,7 +887,9 @@ impl RARORuntime {
             None
         };
 
-
+        let full_file_paths: Vec<String> = workflow.attached_files.iter()
+            .map(|f| format!("/app/storage/sessions/{}/input/{}", run_id, f))
+            .collect();
 
         Ok(InvocationPayload {
             run_id: run_id.to_string(),
@@ -873,7 +900,7 @@ impl RARORuntime {
             parent_signature,
             cached_content_id,
             thinking_level,
-            file_paths: Vec::new(),
+            file_paths: full_file_paths,
             tools: agent_config.tools.clone(),
         })
     }

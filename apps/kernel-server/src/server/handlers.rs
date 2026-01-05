@@ -4,7 +4,7 @@
 // Dependencies: Axum, Runtime
 
 use axum::{
-    extract::{Path, State, Json, Query, ws::{WebSocket, WebSocketUpgrade}},
+    extract::{Path, State, Json, Query, Multipart, ws::{WebSocket, WebSocketUpgrade}},
     http::StatusCode,
     response::IntoResponse,
 };
@@ -16,6 +16,7 @@ use redis::AsyncCommands;
 
 use crate::models::*;
 use crate::runtime::{RARORuntime, InvocationPayload};
+use crate::fs_manager::WorkspaceInitializer; // Import the manager
 
 use tokio::fs; // For listing library files
 
@@ -42,7 +43,14 @@ pub async fn health() -> Json<HealthResponse> {
 pub async fn list_library_files() -> Result<Json<serde_json::Value>, StatusCode> {
     // Hardcoded path to the library volume
     let path = "/app/storage/library";
-    
+    // Check if directory exists, if not, create it
+    if !std::path::Path::new(path).exists() {
+        tracing::info!("Library directory missing. Creating: {}", path);
+        fs::create_dir_all(path).await.map_err(|e| {
+            tracing::error!("Failed to create library dir: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    }
     // Read dir
     let mut entries = fs::read_dir(path).await.map_err(|e| {
         tracing::error!("Failed to read library dir: {}", e);
@@ -70,7 +78,32 @@ pub async fn list_library_files() -> Result<Json<serde_json::Value>, StatusCode>
     })))
 }
 
+// === NEW HANDLER: UPLOAD FILE ===
+// POST /runtime/library/upload
+pub async fn upload_library_file(
+    mut multipart: Multipart
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    while let Some(field) = multipart.next_field().await.map_err(|_| StatusCode::BAD_REQUEST)? {
+        let name = field.file_name().unwrap_or("unknown_file").to_string();
+        
+        // Read the bytes
+        let data = field.bytes().await.map_err(|e| {
+            tracing::error!("Failed to read upload bytes: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
+        // Save using fs_manager
+        if let Err(e) = WorkspaceInitializer::save_to_library(&name, &data).await {
+            tracing::error!("Failed to write file to disk: {}", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": "Upload complete"
+    })))
+}
 
 pub async fn start_workflow(
     State(runtime): State<Arc<RARORuntime>>,

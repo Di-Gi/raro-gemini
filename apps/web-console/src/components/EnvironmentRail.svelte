@@ -6,11 +6,16 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { libraryFiles, attachedFiles, toggleAttachment, addLog } from '$lib/stores';
-  import { getLibraryFiles } from '$lib/api';
+  import { getLibraryFiles, uploadFile } from '$lib/api'; 
   import Spinner from './sub/Spinner.svelte';
 
   let hovered = $state(false);
   let isRefreshing = $state(false);
+  
+  // === UPLOAD STATE ===
+  let isUploading = $state(false);
+  // Initialize as undefined state to prevent "used before assigned" TS errors
+  let fileInput = $state<HTMLInputElement>(); 
 
   // Initial Load
   onMount(async () => {
@@ -29,10 +34,35 @@
       }
   }
 
-  // MVP: Manual refresh as upload is physical placement for now
   function handleRefresh() {
       refreshLibrary();
       addLog('SYSTEM', 'Library index updated.', 'IO_OK');
+  }
+
+  // === HANDLE UPLOAD ===
+  async function handleFileUpload(e: Event) {
+      const target = e.target as HTMLInputElement;
+      if (!target.files || target.files.length === 0) return;
+
+      const file = target.files[0];
+      isUploading = true;
+      addLog('SYSTEM', `Uploading ${file.name} to RFS...`, 'IO_UP');
+
+      try {
+          await uploadFile(file);
+          addLog('SYSTEM', 'Upload complete.', 'IO_OK');
+          await refreshLibrary(); // Auto-refresh list
+      } catch (err) {
+          addLog('SYSTEM', `Upload failed: ${err}`, 'IO_ERR');
+      } finally {
+          isUploading = false;
+          target.value = ''; // Reset input so same file can be selected again if needed
+      }
+  }
+  
+  function triggerUpload() {
+      // Safe optional chaining in case binding hasn't occurred yet
+      fileInput?.click();
   }
 </script>
 
@@ -58,7 +88,7 @@
       <!-- COLLAPSED STATE -->
       <div class="compact-view" style="opacity: {hovered ? 0 : 1}">
         <div class="disk-indicator {$attachedFiles.length > 0 ? 'active' : ''}">
-            {#if isRefreshing}<Spinner />{/if}
+            {#if isRefreshing || isUploading}<Spinner />{/if}
         </div>
         {#if $attachedFiles.length > 0}
             <div class="count-badge">{$attachedFiles.length}</div>
@@ -95,10 +125,31 @@
         </div>
 
         <div class="actions">
-            <div class="hint-text">DROP FILES IN STORAGE/LIBRARY</div>
-            <button class="btn-refresh" onclick={handleRefresh} disabled={isRefreshing}>
-                {#if isRefreshing}SCANNING...{:else}↻ REFRESH{/if}
-            </button>
+            <!-- Hidden Input for File Upload -->
+            <input 
+                type="file" 
+                bind:this={fileInput} 
+                onchange={handleFileUpload} 
+                style="display:none" 
+            />
+
+            <div class="hint-text">STORAGE/LIBRARY</div>
+            
+            <div class="btn-group">
+                <!-- UPLOAD BUTTON -->
+                <button class="btn-action upload" onclick={triggerUpload} disabled={isRefreshing || isUploading}>
+                    {#if isUploading}
+                        UPLOADING...
+                    {:else}
+                        ↑ UPLOAD
+                    {/if}
+                </button>
+
+                <!-- REFRESH BUTTON -->
+                <button class="btn-action refresh" onclick={handleRefresh} disabled={isRefreshing || isUploading}>
+                    {#if isRefreshing}SCANNING...{:else}↻{/if}
+                </button>
+            </div>
         </div>
       </div>
 
@@ -124,7 +175,7 @@
   }
 
   .env-rail.expanded {
-    width: 200px; /* Wider than settings rail to accommodate filenames */
+    width: 200px; 
     background: var(--paper-surface);
     box-shadow: 15px 0 50px rgba(0,0,0,0.1);
   }
@@ -218,17 +269,27 @@
 
   .actions {
     padding-top: 12px; border-top: 1px solid var(--paper-line);
+    display: flex; flex-direction: column; gap: 8px;
   }
 
   .hint-text {
       font-size: 8px; color: var(--paper-line); text-align: center; margin-bottom: 8px; opacity: 0.7;
   }
 
-  .btn-refresh {
-    width: 100%; background: var(--paper-ink); color: var(--paper-bg);
+  .btn-group {
+      display: flex; gap: 4px;
+  }
+
+  .btn-action {
+    background: var(--paper-ink); color: var(--paper-bg);
     border: none; padding: 8px; font-family: var(--font-code);
     font-size: 10px; font-weight: 700; cursor: pointer; letter-spacing: 1px;
+    height: 32px; display: flex; align-items: center; justify-content: center;
   }
-  .btn-refresh:hover { opacity: 0.9; }
-  .btn-refresh:disabled { opacity: 0.5; cursor: wait; }
+  
+  .btn-action:hover { opacity: 0.9; }
+  .btn-action:disabled { opacity: 0.5; cursor: wait; }
+
+  .btn-action.upload { flex: 2; }
+  .btn-action.refresh { flex: 1; }
 </style>

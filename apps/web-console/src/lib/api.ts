@@ -187,10 +187,28 @@ export async function getLibraryFiles(): Promise<string[]> {
     }
 }
 
-// Placeholder for future upload capability
 export async function uploadFile(file: File): Promise<string> {
-    // For MVP, we assume manual placement. 
-    // This is a stub for future implementation.
-    console.warn("Upload API not implemented in MVP Kernel. Use manual placement.");
-    return file.name;
+    if (USE_MOCK) {
+        console.warn("[MOCK] Upload simulated.");
+        return new Promise(resolve => setTimeout(() => resolve("success"), 1000));
+    }
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    try {
+        const res = await fetch(`${KERNEL_API}/runtime/library/upload`, {
+            method: 'POST',
+            body: formData, // Fetch automatically sets Content-Type to multipart/form-data
+        });
+
+        if (!res.ok) {
+            throw new Error(`Upload failed: ${res.statusText}`);
+        }
+        
+        return "success";
+    } catch (e) {
+        console.error('Upload API Error:', e);
+        throw e;
+    }
 }
