@@ -10,10 +10,14 @@
   import ControlDeck from '$components/ControlDeck.svelte'
   import Hero from '$components/Hero.svelte'
   import SettingsRail from '$components/SettingsRail.svelte'
+  import EnvironmentRail from '$components/EnvironmentRail.svelte'
   import { addLog, themeStore } from '$lib/stores'
 
   let expanded = $state(false)
   let appState = $state<'HERO' | 'CONSOLE'>('HERO')
+  
+  // DEBUG STATE: Toggle with Alt + S
+  let slowMotion = $state(false); 
 
   function togglePipeline() {
     expanded = !expanded
@@ -26,9 +30,22 @@
         setTimeout(() => addLog('SYSTEM', 'Connection established. Status: IDLE.', 'NET_OK'), 300)
     }, 500)
   }
+
+  // GLOBAL SHORTCUTS
+  function handleGlobalKey(e: KeyboardEvent) {
+    // Alt + S: Toggle Slow Motion for animation debugging
+    if (e.altKey && e.code === 'KeyS') {
+        slowMotion = !slowMotion;
+        if (slowMotion) addLog('DEBUG', 'Time dilation enabled (Slow Motion).', 'SYS');
+        else addLog('DEBUG', 'Time dilation disabled.', 'SYS');
+    }
+  }
 </script>
 
-<main class="mode-{$themeStore.toLowerCase()}">
+<svelte:window onkeydown={handleGlobalKey} />
+
+<!-- Apply .slow-motion class based on state -->
+<main class="mode-{$themeStore.toLowerCase()} {slowMotion ? 'slow-motion' : ''}">
     
     <!-- Global Texture Overlay -->
     <div class="noise-overlay"></div>
@@ -42,6 +59,10 @@
       -->
       <div class="workspace" in:fade={{ duration: 800, delay: 200 }}>
         
+
+        <!-- LEFT: Environment -->
+        <EnvironmentRail />
+
         <div 
           id="chassis" 
           class={expanded ? 'expanded' : ''}
@@ -78,6 +99,22 @@
     /* Semantic Signals */
     --alert-amber: #FFB300;
     --signal-success: #2ea043; /* Added: Standard Terminal Green */
+  }
+
+  /* === DEBUG: SLOW MOTION OVERRIDE === */
+  /* This forces all transitions and animations to take 3 seconds */
+  :global(.slow-motion) :global(*),
+  :global(.slow-motion) :global(*::before),
+  :global(.slow-motion) :global(*::after) {
+      transition-duration: 3s !important;
+      animation-duration: 3s !important;
+  }
+  
+  /* Exclude things that look broken when slow (like typing cursors) */
+  :global(.slow-motion) :global(.cursor),
+  :global(.slow-motion) :global(.blink),
+  :global(.slow-motion) :global(.led) {
+      animation-duration: 0.5s !important;
   }
 
   /* === REALITY 1: ARCHIVAL (Day / Physical) === */

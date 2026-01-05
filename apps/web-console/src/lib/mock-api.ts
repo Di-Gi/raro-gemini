@@ -119,6 +119,17 @@ export async function mockStopRun(runId: string): Promise<void> {
     }
 }
 
+// === NEW MOCK RFS ===
+export async function mockGetLibraryFiles(): Promise<string[]> {
+    return [
+        'financials_Q3_2024.pdf',
+        'system_architecture_v2.md',
+        'raw_telemetry_dump.csv',
+        'cortex_safety_policy.json'
+    ];
+}
+
+
 // --- Mock WebSocket Class ---
 
 export class MockWebSocket {

@@ -4,7 +4,7 @@
 // Dependencies: Axum, Runtime
 
 use axum::{
-    extract::{Path, State, Json, Query, ws::{WebSocket, WebSocketUpgrade}},
+    extract::{Path, State, Json, Query, Multipart, ws::{WebSocket, WebSocketUpgrade}},
     http::StatusCode,
     response::IntoResponse,
 };
@@ -16,6 +16,9 @@ use redis::AsyncCommands;
 
 use crate::models::*;
 use crate::runtime::{RARORuntime, InvocationPayload};
+use crate::fs_manager::WorkspaceInitializer; // Import the manager
+
+use tokio::fs; // For listing library files
 
 #[derive(serde::Deserialize)]
 pub struct RunQuery {
@@ -33,6 +36,73 @@ pub async fn health() -> Json<HealthResponse> {
         status: "ok".to_string(),
         message: "RARO Kernel Server is running".to_string(),
     })
+}
+
+// === NEW HANDLER: LIST LIBRARY FILES ===
+// GET /runtime/library
+pub async fn list_library_files() -> Result<Json<serde_json::Value>, StatusCode> {
+    // Hardcoded path to the library volume
+    let path = "/app/storage/library";
+    // Check if directory exists, if not, create it
+    if !std::path::Path::new(path).exists() {
+        tracing::info!("Library directory missing. Creating: {}", path);
+        fs::create_dir_all(path).await.map_err(|e| {
+            tracing::error!("Failed to create library dir: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    }
+    // Read dir
+    let mut entries = fs::read_dir(path).await.map_err(|e| {
+        tracing::error!("Failed to read library dir: {}", e);
+        // If dir doesn't exist, try to create it silently or return empty
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let mut files = Vec::new();
+
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        if let Ok(file_type) = entry.file_type().await {
+            if file_type.is_file() {
+                if let Ok(name) = entry.file_name().into_string() {
+                    // Filter out hidden files like .keep
+                    if !name.starts_with('.') {
+                        files.push(name);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "files": files
+    })))
+}
+
+// === NEW HANDLER: UPLOAD FILE ===
+// POST /runtime/library/upload
+pub async fn upload_library_file(
+    mut multipart: Multipart
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    while let Some(field) = multipart.next_field().await.map_err(|_| StatusCode::BAD_REQUEST)? {
+        let name = field.file_name().unwrap_or("unknown_file").to_string();
+        
+        // Read the bytes
+        let data = field.bytes().await.map_err(|e| {
+            tracing::error!("Failed to read upload bytes: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+        // Save using fs_manager
+        if let Err(e) = WorkspaceInitializer::save_to_library(&name, &data).await {
+            tracing::error!("Failed to write file to disk: {}", e);
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "success": true,
+        "message": "Upload complete"
+    })))
 }
 
 pub async fn start_workflow(

@@ -66,3 +66,13 @@ Thumbs.db
 # Docker
 docker-compose.override.yml
 .env.docker
+
+# === RARO File System (RFS) ===
+# We must ignore the contents of the storage, but keep the folder structure
+storage/library/*
+!storage/library/.keep
+storage/sessions/*
+!storage/sessions/.keep
+
+# Logs
+*.log

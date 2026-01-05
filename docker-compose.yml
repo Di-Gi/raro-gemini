@@ -1,3 +1,8 @@
+# docker-compose.yml
+# Purpose: Define services and shared volumes for the RARO system.
+# Architecture: Infrastructure Layer.
+# Dependencies: Docker.
+
 services:
   # 1. THE BRAIN: Rust Kernel Server
   # Orchestrates the DAG and manages state.
@@ -15,6 +20,8 @@ services:
       - AGENT_HOST=agents
       - AGENT_PORT=8000
       - REDIS_URL=redis://redis:6379
+    volumes:
+      - ./storage:/app/storage # <--- SHARED MOUNT FOR RFS
     networks:
       - raro-net
     healthcheck:
@@ -42,6 +49,8 @@ services:
       # API Key must be set in your local .env file
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - REDIS_URL=redis://redis:6379
+    volumes:
+      - ./storage:/app/storage # <--- SHARED MOUNT FOR RFS
     networks:
       - raro-net
     healthcheck:
