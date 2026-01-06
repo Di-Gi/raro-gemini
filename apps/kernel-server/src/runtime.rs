@@ -23,6 +23,7 @@ pub struct InvocationPayload {
     pub agent_id: String,
     pub model: String,
     pub prompt: String,
+    pub user_directive: String,  // Runtime task from operator
     pub input_data: serde_json::Value,
     pub parent_signature: Option<String>,
     pub cached_content_id: Option<String>,
@@ -90,7 +91,11 @@ impl RARORuntime {
             thought_signatures: DashMap::new(),
             dag_store: DashMap::new(),
             cache_resources: DashMap::new(),
-            http_client: reqwest::Client::new(),
+            // http_client: reqwest::Client::new(),
+            http_client: reqwest::Client::builder()
+                .pool_max_idle_per_host(0) // Disable pooling
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             redis_client,
             event_bus: tx,
             pattern_registry: Arc::new(PatternRegistry::new()),
@@ -915,7 +920,7 @@ impl RARORuntime {
 
         // Baseline tools that ALL agents should have access to
         // These prevent UNEXPECTED_TOOL_CALL when agents need to inspect their workspace
-        let baseline_tools = vec!["read_file", "list_files"];
+        let baseline_tools = vec!["read_file", "list_files", "write_file"];
         for baseline in baseline_tools {
             if !tools.contains(&baseline.to_string()) {
                 tools.push(baseline.to_string());
@@ -947,6 +952,7 @@ impl RARORuntime {
             agent_id: agent_id.to_string(),
             model: model_string,
             prompt: final_prompt,
+            user_directive: agent_config.user_directive.clone(),  // Pass operator directive
             input_data: serde_json::Value::Object(input_data_map),
             parent_signature,
             cached_content_id,

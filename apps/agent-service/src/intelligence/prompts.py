@@ -3,6 +3,10 @@
 import json
 from typing import Optional, List
 from domain.protocol import WorkflowManifest, DelegationRequest, PatternDefinition
+try:
+    from intelligence.tools import get_tool_definitions_for_prompt
+except ImportError:
+    get_tool_definitions_for_prompt = lambda x: "[]"
 
 def get_schema_instruction(model_class) -> str:
     """
@@ -140,72 +144,68 @@ Output PURE JSON matching this schema:
 def render_runtime_system_instruction(agent_id: str, tools: Optional[List[str]]) -> str:
     """
     Generates the high-priority System Instruction for the Runtime Loop (Flow B).
-    This establishes the agent's identity as a headless execution node, NOT a chatbot.
+    Uses MANUAL PARSING MODE with json:function blocks.
     """
     # 1. Base Identity
     instruction = f"""
 SYSTEM IDENTITY:
 You are Agent '{agent_id}', an autonomous execution node within the RARO Kernel.
 You are running in a headless environment. You do NOT interact with a human user.
-Your outputs are consumed programmatically by the Kernel and other agents.
+Your outputs are consumed programmatically.
 
 OPERATIONAL CONSTRAINTS:
-1. NO CHAT: Do not output conversational filler like "Here is the code", "I will now", or "Sure!".
-2. DIRECT ACTION: If the user request implies an action (calculating, scraping, plotting), you MUST use a tool immediately.
-3. FAIL FAST: If you cannot complete the task with available tools, return a clear error description.
-4. TOOL USAGE: When you need to use a tool, call it immediately. Do not describe what you plan to do.
+1. NO CHAT: Do not output conversational filler.
+2. DIRECT ACTION: If the user request implies an action, use a tool immediately.
+3. FAIL FAST: If you cannot complete the task, return a clear error.
 """
 
-    # 2. Tool-Specific Protocols
+    # 2. Tool Protocols (MANUAL PARSING MODE)
     if tools:
-        instruction += "\nAVAILABLE TOOLS:\n"
-        instruction += f"You have access to the following tools: {', '.join(tools)}\n"
-        instruction += "\nTOOL PROTOCOLS:\n"
+        tool_schemas = get_tool_definitions_for_prompt(tools)
 
-        # Specific strictness for Python execution to prevent "Lazy Markdown"
+        instruction += f"""
+[SYSTEM CAPABILITY: TOOL USE]
+You have access to the following tools.
+To use a tool, you MUST output a JSON object wrapped in a specific code block tag.
+
+AVAILABLE TOOLS (JSON Schema):
+{tool_schemas}
+
+TOOL CALLING PROTOCOL:
+You do not have a native tool interface. You must parse the tool call yourself using Markdown.
+To invoke a tool, output a block exactly like this:
+
+```json:function
+{{
+  "name": "tool_name_here",
+  "args": {{
+    "arg_name": "value"
+  }}
+}}
+```
+
+CRITICAL RULES:
+1. The tag MUST be `json:function`.
+2. The content MUST be valid JSON.
+3. Do NOT wrap python code in `python` blocks if you want to execute it. Use the `execute_python` tool structure.
+"""
+
+        # Specific guidance for Python
         if "execute_python" in tools:
             instruction += """
-[TOOL: execute_python]
-- CRITICAL: You have access to a secure Python sandbox with filesystem access.
-- FORBIDDEN: Do NOT output Python code in Markdown blocks (```python ... ```). The system CANNOT execute text.
-- MANDATORY: You MUST call the `execute_python` tool function to run code.
-- DATA HANDLING: If generating artifacts (images, PDFs, plots), save them to the current working directory.
-  The system will automatically detect and mount generated files for downstream agents.
-- LIBRARIES: Common libraries are pre-installed (numpy, pandas, matplotlib, etc.).
-- OUTPUT: Your final answer should reference the *result* of the execution, not the code itself.
-- ERROR HANDLING: If execution fails, the error will be returned to you. Analyze it and retry with fixes.
-"""
-
-        if "web_search" in tools:
-            instruction += """
-[TOOL: web_search]
-- Use this for factual verification, current events, or retrieving real-time data.
-- The search returns AI-optimized context snippets.
-- Synthesize search results into a concise, accurate summary.
-- Always cite when presenting facts from search results.
-"""
-
-        if "read_file" in tools:
-            instruction += """
-[TOOL: read_file]
-- Read files from the session workspace (input directory or output from previous agents).
-- Files are automatically truncated if too large to prevent token overflow.
-- Binary files will return an error; only text files can be read.
-"""
-
-        if "write_file" in tools:
-            instruction += """
-[TOOL: write_file]
-- Write text content to files in the session workspace.
-- Files written here are available to downstream agents in the workflow.
-- For programmatic file generation (images, plots), use `execute_python` instead.
-"""
-
-        if "list_files" in tools:
-            instruction += """
-[TOOL: list_files]
-- List all files available in your workspace (both input and output directories).
-- Use this to discover what files are available before reading or processing.
+[TOOL SPECIFIC: execute_python]
+- You have a secure Python sandbox.
+- To run code, you MUST use the `execute_python` tool.
+- Do NOT output ```python ... ``` text blocks. The system ignores them.
+- Example:
+```json:function
+{
+  "name": "execute_python",
+  "args": {
+    "code": "print('Hello World')"
+  }
+}
+```
 """
     else:
         instruction += "\nNOTE: You have NO tools available. Provide analysis based solely on the provided context.\n"

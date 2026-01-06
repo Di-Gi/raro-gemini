@@ -27,6 +27,7 @@ export interface AgentNode {
   prompt: string;
   status: 'idle' | 'running' | 'complete' | 'failed';
   role: 'orchestrator' | 'worker' | 'observer';
+  acceptsDirective: boolean;  // Can this node receive operator directives?
 }
 
 export interface PipelineEdge {
@@ -86,10 +87,10 @@ export function toggleAttachment(fileName: string) {
 
 // Initial Nodes State
 const initialNodes: AgentNode[] = [
-  { id: 'n1', label: 'ORCHESTRATOR', x: 20, y: 50, model: 'reasoning', prompt: 'Analyze the user request and determine optimal sub-tasks.', status: 'idle', role: 'orchestrator' },
-  { id: 'n2', label: 'RETRIEVAL', x: 50, y: 30, model: 'fast', prompt: 'Search knowledge base for relevant context.', status: 'idle', role: 'worker' },
-  { id: 'n3', label: 'CODE_INTERP', x: 50, y: 70, model: 'fast', prompt: 'Execute Python analysis on provided data.', status: 'idle', role: 'worker' },
-  { id: 'n4', label: 'SYNTHESIS', x: 80, y: 50, model: 'thinking', prompt: 'Synthesize all findings into a final report.', status: 'idle', role: 'worker' }
+  { id: 'n1', label: 'ORCHESTRATOR', x: 20, y: 50, model: 'reasoning', prompt: 'Analyze the user request and determine optimal sub-tasks.', status: 'idle', role: 'orchestrator', acceptsDirective: true },
+  { id: 'n2', label: 'RETRIEVAL', x: 50, y: 30, model: 'fast', prompt: 'Search knowledge base for relevant context.', status: 'idle', role: 'worker', acceptsDirective: false },
+  { id: 'n3', label: 'CODE_INTERP', x: 50, y: 70, model: 'fast', prompt: 'Execute Python analysis on provided data.', status: 'idle', role: 'worker', acceptsDirective: false },
+  { id: 'n4', label: 'SYNTHESIS', x: 80, y: 50, model: 'thinking', prompt: 'Synthesize all findings into a final report.', status: 'idle', role: 'worker', acceptsDirective: false }
 ];
 
 export const agentNodes = writable<AgentNode[]>(initialNodes);
@@ -121,6 +122,66 @@ export const planningMode = writable<boolean>(false);
 
 
 // === ACTIONS ===
+// === GRAPH MUTATION ACTIONS ===
+
+export function updateNodePosition(id: string, x: number, y: number) {
+    agentNodes.update(nodes => 
+        nodes.map(n => n.id === id ? { ...n, x, y } : n)
+    );
+}
+
+export function addConnection(from: string, to: string) {
+    pipelineEdges.update(edges => {
+        // Prevent duplicates
+        if (edges.find(e => e.from === from && e.to === to)) return edges;
+        // Prevent self-loops
+        if (from === to) return edges;
+        
+        return [...edges, {
+            from,
+            to,
+            active: false,
+            finalized: false,
+            pulseAnimation: false
+        }];
+    });
+}
+
+export function removeConnection(from: string, to: string) {
+    pipelineEdges.update(edges => 
+        edges.filter(e => !(e.from === from && e.to === to))
+    );
+}
+
+export function createNode(x: number, y: number) {
+    agentNodes.update(nodes => {
+        const id = `node_${Date.now().toString().slice(-4)}`;
+        return [...nodes, {
+            id,
+            label: 'NEW_AGENT',
+            x,
+            y,
+            model: 'fast',
+            prompt: 'Describe task...',
+            status: 'idle',
+            role: 'worker',
+            acceptsDirective: false  // Default to false for new nodes
+        }];
+    });
+}
+
+export function deleteNode(id: string) {
+    // 1. Remove Node
+    agentNodes.update(nodes => nodes.filter(n => n.id !== id));
+    
+    // 2. Remove associated edges
+    pipelineEdges.update(edges => edges.filter(e => e.from !== id && e.to !== id));
+    
+    // 3. Clear selection if needed
+    if (get(selectedNode) === id) {
+        selectedNode.set(null);
+    }
+}
 
 /**
  * PURE STATE MUTATION
@@ -141,7 +202,8 @@ export function loadWorkflowManifest(manifest: WorkflowConfig) {
       model: agent.model,
       prompt: agent.prompt,
       status: 'idle',
-      role: agent.role
+      role: agent.role,
+      acceptsDirective: agent.accepts_directive || agent.role === 'orchestrator'  // Use backend flag or default to true for orchestrators
     };
   });
 
@@ -184,7 +246,8 @@ export function overwriteGraphFromManifest(manifest: WorkflowConfig) {
       model: agent.model,
       prompt: agent.prompt,
       status: 'idle',
-      role: agent.role
+      role: agent.role,
+      acceptsDirective: agent.accepts_directive || agent.role === 'orchestrator'  // Use backend flag or default to true for orchestrators
     };
   });
 
@@ -302,7 +365,8 @@ function syncTopology(topology: TopologySnapshot) {
                 model: 'fast', // Default to fast for dynamically spawned agents
                 prompt: 'Dynamic Agent',
                 status: 'running', // Usually spawned active
-                role: 'worker'
+                role: 'worker',
+                acceptsDirective: false  // Dynamically spawned agents don't accept directives by default
             });
         }
     });
@@ -543,6 +607,17 @@ function syncState(state: any, signatures: Record<string, string> = {}, topology
                                     else if (artifact.text) outputText = artifact.text;
                                     else outputText = JSON.stringify(artifact, null, 2);
                                 }
+                                // This ensures OutputPane.svelte detects the image and renders <ArtifactCard />
+                                if (artifact.files_generated && Array.isArray(artifact.files_generated) && artifact.files_generated.length > 0) {
+                                    const filename = artifact.files_generated[0];
+                                    const systemTag = `[SYSTEM: Generated Image saved to '${filename}']`;
+
+                                    // Only append if the tag isn't already present in the LLM's text
+                                    if (!outputText.includes(systemTag)) {
+                                        outputText += `\n\n${systemTag}`;
+                                    }
+                                }
+
                                 updateLog(inv.id, {
                                     message: outputText,
                                     metadata: `TOKENS: ${inv.tokens_used || 0} | LATENCY: ${Math.round(inv.latency_ms || 0)}ms`, // Rounded latency

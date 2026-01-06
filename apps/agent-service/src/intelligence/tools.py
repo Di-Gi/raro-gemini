@@ -9,6 +9,7 @@ import logging
 from typing import List, Dict, Any, Optional, Union
 from google.genai import types
 from core.config import settings, logger
+import json
 
 # --- OPTIONAL DEPENDENCY LOADING ---
 # We handle imports safely so the service doesn't crash if packages are missing during build.
@@ -240,6 +241,82 @@ def _run_tavily_search(query: str) -> Dict[str, Any]:
         return {"success": False, "error": f"Search failed: {str(e)}"}
 
 # --- TOOL DEFINITIONS & DISPATCHER ---
+
+def get_tool_definitions_for_prompt(tool_names: List[str]) -> str:
+    """
+    Returns a formatted JSON string of tool definitions for injection into the System Prompt.
+    Used for manual parsing mode (json:function blocks).
+
+    Args:
+        tool_names: List of tool names to include
+
+    Returns:
+        JSON string containing tool schemas
+    """
+    # Define raw schemas (Independent of Google GenAI types)
+    registry = {
+        'web_search': {
+            "name": "web_search",
+            "description": "Search the web for real-time information, news, or facts.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "The search query"}
+                },
+                "required": ["query"]
+            }
+        },
+        'execute_python': {
+            "name": "execute_python",
+            "description": "EXECUTE Python code in a secure sandbox. REQUIRED for data analysis, math, and creating files (plots/images).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string", "description": "Python code to run."}
+                },
+                "required": ["code"]
+            }
+        },
+        'read_file': {
+            "name": "read_file",
+            "description": "Read text content from the local session workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {"type": "string", "description": "Name of the file (e.g. 'data.csv')"}
+                },
+                "required": ["filename"]
+            }
+        },
+        'write_file': {
+            "name": "write_file",
+            "description": "Save text content to a file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {"type": "string", "description": "Destination filename"},
+                    "content": {"type": "string", "description": "Text content"}
+                },
+                "required": ["filename", "content"]
+            }
+        },
+        'list_files': {
+            "name": "list_files",
+            "description": "List files in current workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    }
+
+    definitions = []
+    for name in tool_names:
+        if name in registry:
+            definitions.append(registry[name])
+
+    return json.dumps(definitions, indent=2)
+
 
 def get_tool_declarations(tool_names: List[str]) -> List[types.FunctionDeclaration]:
     """

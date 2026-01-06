@@ -16,12 +16,18 @@ from intelligence.prompts import render_runtime_system_instruction
 
 # Import Tooling Logic
 try:
-    from intelligence.tools import get_tool_declarations, execute_tool_call
+    from intelligence.tools import execute_tool_call
 except ImportError:
     logger.warning("intelligence.tools not found, tool execution will be disabled")
-    get_tool_declarations = lambda x: []
     # FIX: Robust fallback signature that accepts keyword arguments
     execute_tool_call = lambda tool_name, args, run_id="default": {"error": "Tool execution unavailable"}
+
+# Import Parser for Manual Tool Parsing
+try:
+    from core.parsers import parse_function_calls
+except ImportError:
+    logger.warning("core.parsers not found, manual function parsing will be disabled")
+    parse_function_calls = lambda x: []
 
 # ============================================================================
 # Multimodal File Loading
@@ -70,7 +76,8 @@ async def load_multimodal_file(file_path: str) -> Dict[str, Any]:
 async def _prepare_gemini_request(
     model: str,
     prompt: str,
-    agent_id: str, # <--- NEW ARGUMENT
+    agent_id: str,
+    user_directive: str = "",
     input_data: Optional[Dict[str, Any]] = None,
     file_paths: Optional[List[str]] = None,
     parent_signature: Optional[str] = None,
@@ -78,20 +85,30 @@ async def _prepare_gemini_request(
     tools: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
-    Internal helper to build contents, config, and tools for API calls.
-    Returns a dict of arguments ready to pass to generate_content.
+    Internal helper to build contents, config.
+    NOTE: In Manual Parsing Mode, we do NOT pass 'tools' object to the API.
+    We inject tool info into the system_instruction instead.
+
+    Prompt Architecture (3-Layer):
+        1. Base RARO Rules (from render_runtime_system_instruction)
+        2. Node Persona (the 'prompt' field - "You are a Python specialist...")
+        3. User Directive (the runtime task - "Analyze this CSV...")
     """
-    
-    # 1. Generate System Instruction (The Fix)
-    # We define the "Rules of Engagement" here, separate from the user prompt.
-    system_instruction = render_runtime_system_instruction(agent_id, tools)
+
+    # 1. Generate System Instruction (Base RARO Rules + Tool Protocols)
+    base_instruction = render_runtime_system_instruction(agent_id, tools)
+
+    # 2. Layer in the Node's Assigned Persona
+    system_instruction = f"{base_instruction}\n\n[YOUR SPECIALTY]\n{prompt}"
 
     # 2. Build Generation Config
     config_params: Dict[str, Any] = {
         "temperature": 1.0,
-        # REMOVED: "automatic_function_calling" - invalid for low-level generate_content API
-        # The tool loop is manually handled in call_gemini_with_context
-        "system_instruction": system_instruction
+        "system_instruction": system_instruction,
+        # --- FIX: Explicitly disable native tools to prevent UNEXPECTED_TOOL_CALL ---
+        # This forces the model to use the text-based ```json:function``` format
+        # defined in our system prompts instead of attempting native function calls
+        "tool_config": {"function_calling_config": {"mode": "NONE"}}
     }
 
     # Add Deep Think configuration
@@ -103,22 +120,8 @@ async def _prepare_gemini_request(
         )
         logger.debug(f"Deep Think enabled: budget={thinking_budget}")
 
-    # 3. Prepare Tools (Inject into config)
-    if tools:
-        declarations = get_tool_declarations(tools)
-        if declarations:
-            tool_obj = types.Tool(function_declarations=declarations)
-            config_params["tools"] = [tool_obj]
-
-            # FIX: Explicitly set tool_config to AUTO mode
-            # This tells the model it CAN call tools or generate text as needed
-            # Prevents UNEXPECTED_TOOL_CALL errors when model attempts tool use
-            config_params["tool_config"] = types.ToolConfig(
-                function_calling_config=types.FunctionCallingConfig(
-                    mode=types.FunctionCallingConfigMode.AUTO
-                )
-            )
-            logger.debug(f"Tools enabled with AUTO mode: {tools}")
+    # NOTE: We intentionally DO NOT set config_params["tools"] here.
+    # The agent is instructed to use ```json:function``` text blocks.
 
     # 4. Build Conversation Contents
     contents: List[Dict[str, Any]] = []
@@ -137,6 +140,12 @@ async def _prepare_gemini_request(
     # Build User Message
     user_parts: List[Dict[str, Any]] = []
 
+    # 3. User Directive (if provided) - This is the runtime task
+    if user_directive:
+        user_parts.append({
+            "text": f"[OPERATOR DIRECTIVE]\n{user_directive}\n\n"
+        })
+
     # Multimodal files
     if file_paths:
         for file_path in file_paths:
@@ -147,15 +156,12 @@ async def _prepare_gemini_request(
                 logger.error(f"Failed to load file {file_path}: {e}")
                 user_parts.append({"text": f"[ERROR: Failed to load {file_path}]"})
 
-    # Context Data
+    # Context Data (from parent nodes)
     if input_data:
         context_str = json.dumps(input_data, indent=2)
         user_parts.append({
             "text": f"[CONTEXT DATA]\n{context_str}\n\n"
         })
-
-    # Main Prompt
-    user_parts.append({"text": prompt})
 
     contents.append({
         "role": "user",
@@ -175,6 +181,7 @@ async def _prepare_gemini_request(
 async def call_gemini_with_context(
     model: str,
     prompt: str,
+    user_directive: str = "",
     input_data: Optional[Dict[str, Any]] = None,
     file_paths: Optional[List[str]] = None,
     parent_signature: Optional[str] = None,
@@ -194,33 +201,38 @@ async def call_gemini_with_context(
 
     safe_agent_id = agent_id or "unknown_agent"
 
-    # Log invocation details
     logger.info(
         f"\n{'#'*70}\n"
-        f"AGENT INVOCATION: {safe_agent_id}\n"
+        f"AGENT INVOCATION: {safe_agent_id} (Manual Tooling)\n"
         f"Model: {concrete_model} | Run ID: {run_id}\n"
-        f"Tools Available: {tools if tools else 'None'}\n"
-        f"File Context: {len(file_paths) if file_paths else 0} files\n"
+        f"Tools: {tools}\n"
+        f"User Directive: {'Yes' if user_directive else 'No'}\n"
         f"{'#'*70}"
     )
 
     try:
         params = await _prepare_gemini_request(
-            concrete_model, prompt, safe_agent_id, input_data, file_paths,
+            concrete_model, prompt, safe_agent_id, user_directive, input_data, file_paths,
             parent_signature, thinking_level, tools
         )
 
         current_contents = params["contents"]
         max_turns = 10
         turn_count = 0
-        final_response = None
-        response = None
+        final_response_text = ""
 
-        logger.debug(f"Agent {safe_agent_id}: Starting tool execution loop (max {max_turns} turns)")
+        # --- FIX START: Initialize variables before the loop ---
+        response = None
+        content_text = ""
+        all_files_generated = []  # Accumulator for files from all tool calls
+        # --- FIX END ---
+
+        logger.debug(f"Agent {safe_agent_id}: Starting manual tool loop")
 
         while turn_count < max_turns:
             turn_count += 1
-            
+
+            # 1. Call LLM
             response = await asyncio.to_thread(
                 gemini_client.models.generate_content,
                 model=params["model"],
@@ -228,143 +240,74 @@ async def call_gemini_with_context(
                 config=params["config"]
             )
 
+            logger.debug(f"Full Gemini Response: {response.model_dump_json(indent=2) if response else 'None'}")
+
             if not response.candidates:
                 logger.error(f"Agent {agent_id}: API returned no candidates.")
-                final_response = response
                 break
 
-            candidate = response.candidates[0]
+            # 2. Extract Text
+            content_text = response.text or ""
 
-            # === DEBUG: RAW CANDIDATE DUMP ===
-            logger.info(f"Agent {agent_id} [Turn {turn_count}] RAW CANDIDATE:\n{candidate}")
+            # Append model's response to history
+            current_contents.append({
+                "role": "model",
+                "parts": [{"text": content_text}]
+            })
 
-            content = candidate.content
+            # 3. Parse for Manual Function Calls
+            function_calls = parse_function_calls(content_text)
 
-            # === ROBUST EXTRACTION: Extract function calls FIRST ===
-            # This prevents confusion when content has no text but has function_call parts
-            function_calls = []
-
-            # 1. Extract function calls from content.parts if available
-            if content and content.parts:
-                for part in content.parts:
-                    if part.function_call:
-                        function_calls.append(part.function_call)
-
-            # 2. Check finish_reason for tool-related stops
-            finish_reason = candidate.finish_reason.name if candidate.finish_reason else "UNKNOWN"
-
-            # 3. Handle the case where no function calls were extracted
             if not function_calls:
-                # If finish_reason indicates tool call but we didn't extract any, log warning
-                if finish_reason == "UNEXPECTED_TOOL_CALL":
-                    logger.warning(
-                        f"Agent {agent_id}: UNEXPECTED_TOOL_CALL finish reason but no function calls extracted. "
-                        f"This may indicate a tool configuration mismatch."
-                    )
-
-                # No function calls means we're done with the tool loop
-                final_response = response
+                # No tools called, this is the final answer
+                final_response_text = content_text
                 break
 
-            logger.info(f"Agent {agent_id} triggered {len(function_calls)} tool calls (Turn {turn_count})")
-            
-            current_contents.append(candidate.content)
+            # 4. Process Tool Calls
+            tool_outputs_text = ""
 
-            function_responses = []
-            for call in function_calls:
-                tool_name = call.name
-                tool_args = call.args
+            for tool_name, tool_args in function_calls:
+                logger.info(
+                    f"[TOOL DETECTED] Agent: {agent_id} | Tool: {tool_name} | Args: {str(tool_args)[:100]}..."
+                )
 
-                # Log the tool call with appropriate detail level
-                if tool_name == "execute_python":
-                    code_preview = tool_args.get('code', '')
-                    code_lines = len(code_preview.split('\n'))
-                    logger.info(
-                        f"\n{'='*60}\n"
-                        f"[TOOL CALL: {tool_name}] Agent: {agent_id} | Turn: {turn_count}\n"
-                        f"Code Length: {len(code_preview)} chars, {code_lines} lines\n"
-                        f"{'='*60}\n"
-                        f"{code_preview}\n"
-                        f"{'='*60}"
-                    )
-                else:
-                    logger.info(
-                        f"[TOOL CALL: {tool_name}] Agent: {agent_id} | Turn: {turn_count} | "
-                        f"Args: {json.dumps(tool_args, default=str)}"
-                    )
-
-                # Execute the tool
+                # Execute
                 result_dict = execute_tool_call(tool_name, tool_args, run_id=run_id)
 
-                # Log the result with success/failure indication
-                success = result_dict.get('success', True)  # Default to True for backwards compat
-                if tool_name == "execute_python":
-                    files_generated = result_dict.get('files_generated', [])
-                    logger.info(
-                        f"\n{'='*60}\n"
-                        f"[TOOL RESULT: {tool_name}] Agent: {agent_id}\n"
-                        f"Status: {'SUCCESS' if success else 'FAILED'}\n"
-                        f"Files Generated: {len(files_generated)} - {files_generated}\n"
-                        f"{'='*60}"
-                    )
-                    if not success:
-                        logger.error(f"Execution Error: {result_dict.get('error', 'Unknown error')}")
-                else:
-                    status_icon = "✓" if success else "✗"
-                    logger.info(
-                        f"[TOOL RESULT: {tool_name}] Agent: {agent_id} | Status: {status_icon} "
-                        f"{'SUCCESS' if success else 'FAILED'}"
-                    )
-                    if not success:
-                        logger.warning(f"Tool Error: {result_dict.get('error', 'Unknown error')}")
+                # --- FIX START: Capture generated files ---
+                if isinstance(result_dict, dict) and "files_generated" in result_dict:
+                    files = result_dict["files_generated"]
+                    if isinstance(files, list):
+                        all_files_generated.extend(files)
+                        logger.debug(f"Captured {len(files)} file(s) from {tool_name}: {files}")
+                # --- FIX END ---
 
-                function_responses.append(types.Part.from_function_response(
-                    name=tool_name,
-                    response=result_dict
-                ))
+                # Log result
+                success = result_dict.get('success', True)
+                logger.info(
+                    f"[TOOL RESULT] Agent: {agent_id} | Status: {'✓' if success else '✗'}"
+                )
 
-            current_contents.append(types.Content(
-                role="function",
-                parts=function_responses
-            ))
+                # Format Output for the Model
+                tool_outputs_text += f"\n[SYSTEM: Tool '{tool_name}' Result]\n{json.dumps(result_dict, indent=2)}\n"
 
-        if not final_response:
-            logger.warning(f"Agent {agent_id} hit max tool turns ({max_turns}) or failed to converge")
-            final_response = response
+            # 5. Append Tool Outputs to History
+            current_contents.append({
+                "role": "user",
+                "parts": [{"text": tool_outputs_text}]
+            })
 
-        response_text = ""
-        if final_response and final_response.text:
-            response_text = final_response.text
-        
-        last_role = None
-        if current_contents:
-            last_item = current_contents[-1]
-            if isinstance(last_item, dict):
-                last_role = last_item.get("role")
-            else:
-                last_role = getattr(last_item, "role", None)
+            logger.debug(f"Agent {agent_id}: Turning over with tool results...")
 
-        if not response_text and last_role == "function":
-                try:
-                    last_part = current_contents[-1].parts[0]
-                    last_result = last_part.function_response.response
-                    
-                    if 'result' in last_result:
-                        response_text = f"[SYSTEM: Tool Output Used as Response] {last_result['result']}"
-                    else:
-                        response_text = f"[SYSTEM: Tool Output Used as Response] {str(last_result)}"
-                    
-                    logger.info(f"Agent {agent_id}: Model returned empty text. Promoted tool output to response.")
-                except Exception as e:
-                    logger.warning(f"Agent {agent_id}: Failed to promote tool output: {e}")
-                    response_text = "[SYSTEM: Task completed with silent tool execution]"
+        # --- Finalization ---
 
+        # Metadata extraction
         input_tokens = 0
         output_tokens = 0
         cache_hit = False
-        
-        if final_response and hasattr(final_response, "usage_metadata"):
-            usage = final_response.usage_metadata
+
+        if response and hasattr(response, "usage_metadata"):
+            usage = response.usage_metadata
             input_tokens = getattr(usage, "prompt_token_count", 0) or 0
             output_tokens = getattr(usage, "candidates_token_count", 0) or 0
             cached_tokens = getattr(usage, "cached_content_token_count", 0) or 0
@@ -373,24 +316,19 @@ async def call_gemini_with_context(
         signature_data = f"{agent_id or 'unknown'}_{datetime.now().isoformat()}"
         thought_signature = base64.b64encode(signature_data.encode()).decode("utf-8")
 
-        # Log completion summary
-        total_tokens = input_tokens + output_tokens
-        logger.info(
-            f"\n{'#'*70}\n"
-            f"AGENT COMPLETED: {safe_agent_id}\n"
-            f"Turns Used: {turn_count}/{max_turns}\n"
-            f"Tokens: {total_tokens} (Input: {input_tokens}, Output: {output_tokens})\n"
-            f"Cache Hit: {cache_hit}\n"
-            f"Response Length: {len(response_text)} chars\n"
-            f"{'#'*70}\n"
-        )
+        # Fallback if loop exhausted
+        if not final_response_text:
+            final_response_text = content_text
+
+        logger.info(f"Agent {safe_agent_id} Completed. Tokens: {input_tokens}/{output_tokens} | Files: {len(all_files_generated)}")
 
         return {
-            "text": response_text,
+            "text": final_response_text,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "thought_signature": thought_signature,
-            "cache_hit": cache_hit
+            "cache_hit": cache_hit,
+            "files_generated": all_files_generated  # Return captured files
         }
 
     except Exception as e:
@@ -410,6 +348,7 @@ async def call_gemini_with_context(
 async def stream_gemini_response(
     model: str,
     prompt: str,
+    user_directive: str = "",
     input_data: Optional[Dict[str, Any]] = None,
     file_paths: Optional[List[str]] = None,
     parent_signature: Optional[str] = None,
@@ -425,13 +364,13 @@ async def stream_gemini_response(
     if not gemini_client:
         raise ValueError("GEMINI_API_KEY not set")
     concrete_model = resolve_model(model)
-    
+
     # Establish identity for System Instruction generation
     safe_agent_id = agent_id or "unknown_stream_agent"
 
     # Prepare context with the new System Instruction injection logic
     params = await _prepare_gemini_request(
-        concrete_model, prompt, safe_agent_id, input_data, file_paths, 
+        concrete_model, prompt, safe_agent_id, user_directive, input_data, file_paths,
         parent_signature, thinking_level, tools
     )
     
