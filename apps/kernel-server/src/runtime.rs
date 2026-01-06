@@ -786,25 +786,26 @@ impl RARORuntime {
         run_id: &str,
         agent_id: &str,
     ) -> Result<InvocationPayload, String> {
-        // Get the workflow and agent config
+        // 1. Retrieve Runtime State
         let state = self
             .runtime_states
             .get(run_id)
             .ok_or_else(|| "Run not found".to_string())?;
 
+        // 2. Retrieve Workflow Configuration
         let workflow = self
             .workflows
             .get(&state.workflow_id)
             .ok_or_else(|| "Workflow not found".to_string())?;
 
-        // Find the agent config
+        // 3. Find Specific Agent Config
         let agent_config = workflow
             .agents
             .iter()
             .find(|a| a.id == agent_id)
             .ok_or_else(|| format!("Agent {} not found", agent_id))?;
 
-        // 1. Fetch Parent Signatures (Reasoning Continuity)
+        // 4. Fetch Parent Signatures (Chain of Thought Continuity)
         let parent_signature = if !agent_config.depends_on.is_empty() {
             agent_config
                 .depends_on
@@ -814,65 +815,70 @@ impl RARORuntime {
             None
         };
 
-        // 2. Fetch Parent Artifacts (Data Context)
+        // 5. Context & Artifact Retrieval (Redis)
         let mut context_prompt_appendix = String::new();
         let mut input_data_map = serde_json::Map::new();
+        let mut dynamic_file_mounts: Vec<String> = Vec::new();
 
         if !agent_config.depends_on.is_empty() {
             if let Some(client) = &self.redis_client {
-                // We use a separate connection for this fetch to avoid borrowing issues
+                // Use a separate async connection to avoid borrowing issues
                 match client.get_async_connection().await {
                     Ok(mut con) => {
                         for parent_id in &agent_config.depends_on {
                             let key = format!("run:{}:agent:{}:output", run_id, parent_id);
                             
-                            // Try to get artifact from Redis
+                            // Attempt to fetch artifact from Redis
                             let data: Option<String> = con.get(&key).await.unwrap_or(None);
 
                             if let Some(json_str) = data {
                                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
                                     
-                                    // Add to structured input data
+                                    // A. Structured Input Data
                                     input_data_map.insert(parent_id.clone(), val.clone());
 
-                                    // Extract text result for the prompt
+                                    // B. Text Context (The "Result" string)
                                     let content = val.get("result")
                                         .and_then(|v| v.as_str())
                                         .or_else(|| val.get("output").and_then(|v| v.as_str()))
                                         .unwrap_or("No text output");
 
                                     context_prompt_appendix.push_str(&format!("\n\n=== CONTEXT FROM AGENT {} ===\n{}\n", parent_id, content));
+
+                                    // C. Dynamic File Mounting (Manifest Pattern)
+                                    // We look for the 'files_generated' array created by the Python tool logic.
+                                    // If found, we explicitly mount these files from the session OUTPUT directory
+                                    // so the current agent can see/analyze them (Multimodal Vision).
+                                    if let Some(files_array) = val.get("files_generated").and_then(|v| v.as_array()) {
+                                        for file_val in files_array {
+                                            if let Some(filename) = file_val.as_str() {
+                                                // Construct absolute path to the RFS session output
+                                                let mount_path = format!("/app/storage/sessions/{}/output/{}", run_id, filename);
+                                                dynamic_file_mounts.push(mount_path);
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
                     },
                     Err(e) => tracing::warn!("Could not connect to Redis for context fetching: {}", e),
                 }
+            } else {
+                tracing::warn!("Redis client unavailable. Context fetching skipped.");
             }
         }
 
-        // 3. Construct Final Prompt
+        // 6. Construct Final Prompt
         let mut final_prompt = agent_config.prompt.clone();
         if !context_prompt_appendix.is_empty() {
             final_prompt.push_str(&context_prompt_appendix);
         }
 
-        // Get cached content if available
+        // 7. Get Cached Content ID (if applicable)
         let cached_content_id = self.cache_resources.get(run_id).map(|c| (*c).clone());
 
-        // Determine model variant
-        // let model = match agent_config.model {
-        //     ModelVariant::GeminiFlash => "gemini-2.5-flash",
-        //     ModelVariant::GeminiPro => "gemini-2.5-flash-lite",
-        //     ModelVariant::GeminiDeepThink => "gemini-2.5-flash",
-        // }
-        // .to_string();
-
-        // let thinking_level = if matches!(agent_config.model, ModelVariant::GeminiDeepThink) {
-        //     Some(5)
-        // } else {
-        //     None
-        // };
+        // 8. Determine Model Variant String
         let model_string = match &agent_config.model {
             ModelVariant::Fast => "fast".to_string(),
             ModelVariant::Reasoning => "reasoning".to_string(),
@@ -880,28 +886,73 @@ impl RARORuntime {
             ModelVariant::Custom(s) => s.clone(),
         };
 
-        // 2. Logic is now based on Semantic Type, not string matching!
+        // 9. Configure Thinking Budget
         let thinking_level = if matches!(agent_config.model, ModelVariant::Thinking) {
-            Some(5) // Default budget for Thinking tier
+            Some(5) // Default budget level for Thinking models
         } else {
             None
         };
 
-        let full_file_paths: Vec<String> = workflow.attached_files.iter()
+        // 10. Construct File Paths List
+        // Start with files explicitly attached to the workflow (Input Dir)
+        let mut full_file_paths: Vec<String> = workflow.attached_files.iter()
             .map(|f| format!("/app/storage/sessions/{}/input/{}", run_id, f))
             .collect();
 
+        // Track if we have dynamic artifacts (before moving the vector)
+        let has_dynamic_artifacts = !dynamic_file_mounts.is_empty();
+        let dynamic_artifact_count = dynamic_file_mounts.len();
+
+        // Append files generated by parent agents (Output Dir)
+        if has_dynamic_artifacts {
+            tracing::info!("Mounting {} dynamic artifacts for agent {}", dynamic_artifact_count, agent_id);
+            full_file_paths.extend(dynamic_file_mounts);
+        }
+
+        // 11. SMART TOOL ACCESS (Prevents UNEXPECTED_TOOL_CALL)
+        // Strategy: Start with Architect's assignments, then add baseline guarantees
+        let mut tools = agent_config.tools.clone();
+
+        // Baseline tools that ALL agents should have access to
+        // These prevent UNEXPECTED_TOOL_CALL when agents need to inspect their workspace
+        let baseline_tools = vec!["read_file", "list_files"];
+        for baseline in baseline_tools {
+            if !tools.contains(&baseline.to_string()) {
+                tools.push(baseline.to_string());
+                tracing::debug!("Agent {}: Added baseline tool '{}'", agent_id, baseline);
+            }
+        }
+
+        // Smart Enhancement: If agent receives files from parents, give it execution capability
+        // This prevents failures when an agent needs to analyze/process generated artifacts
+        if has_dynamic_artifacts && !tools.contains(&"execute_python".to_string()) {
+            tools.push("execute_python".to_string());
+            tracing::info!(
+                "Agent {}: Added 'execute_python' tool (has {} dynamic artifacts to process)",
+                agent_id,
+                dynamic_artifact_count
+            );
+        }
+
+        // Smart Enhancement: If agent has write_file, it likely needs execute_python too
+        // (Most file generation happens via Python execution)
+        if tools.contains(&"write_file".to_string()) && !tools.contains(&"execute_python".to_string()) {
+            tools.push("execute_python".to_string());
+            tracing::debug!("Agent {}: Added 'execute_python' (has write_file capability)", agent_id);
+        }
+
+        // 12. Return Payload
         Ok(InvocationPayload {
             run_id: run_id.to_string(),
             agent_id: agent_id.to_string(),
             model: model_string,
-            prompt: final_prompt, // Updated with context
-            input_data: serde_json::Value::Object(input_data_map), // Updated with structured data
+            prompt: final_prompt,
+            input_data: serde_json::Value::Object(input_data_map),
             parent_signature,
             cached_content_id,
             thinking_level,
             file_paths: full_file_paths,
-            tools: agent_config.tools.clone(),
+            tools, // Now contains Architect's choices + smart baseline guarantees
         })
     }
 

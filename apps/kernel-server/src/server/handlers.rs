@@ -12,6 +12,8 @@ use serde_json::json;
 use std::sync::Arc;
 use futures::{sink::SinkExt, stream::StreamExt};
 use axum::extract::ws::Message;
+use axum::body::Body;
+use tokio_util::io::ReaderStream; // You might need: cargo add tokio-util
 use redis::AsyncCommands;
 
 use crate::models::*;
@@ -36,6 +38,48 @@ pub async fn health() -> Json<HealthResponse> {
         status: "ok".to_string(),
         message: "RARO Kernel Server is running".to_string(),
     })
+}
+
+// GET /runtime/:run_id/files/:filename
+pub async fn serve_session_file(
+    Path((run_id, filename)): Path<(String, String)>,
+) -> Result<impl IntoResponse, StatusCode> {
+    // 1. Sanitize (Basic security)
+    if filename.contains("..") || filename.starts_with("/") {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // 2. Construct Path (Targeting the RFS Output directory)
+    let file_path = format!("/app/storage/sessions/{}/output/{}", run_id, filename);
+    let path = std::path::Path::new(&file_path);
+
+    // 3. Verify Existence
+    if !path.exists() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    // 4. Open and Stream
+    let file = match tokio::fs::File::open(path).await {
+        Ok(file) => file,
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+
+    let stream = ReaderStream::new(file);
+    let body = Body::from_stream(stream);
+
+    // 5. Determine Content Type (Simple guess)
+    let content_type = if filename.ends_with(".png") { "image/png" }
+    else if filename.ends_with(".jpg") { "image/jpeg" }
+    else if filename.ends_with(".csv") { "text/csv" }
+    else if filename.ends_with(".txt") { "text/plain" }
+    else { "application/octet-stream" };
+
+    let headers = [
+        ("Content-Type", content_type),
+        ("Cache-Control", "public, max-age=3600"),
+    ];
+
+    Ok((headers, body))
 }
 
 // === NEW HANDLER: LIST LIBRARY FILES ===

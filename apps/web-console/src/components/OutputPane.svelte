@@ -1,13 +1,10 @@
-<!-- // [[RARO]]/apps/web-console/src/components/OutputPane.svelte
-// Purpose: Log display with "Perforated Paper" styling and robust auto-scroll.
-// Architecture: UI View
-// Dependencies: Typewriter, Stores -->
-
+<!-- // [[RARO]]/apps/web-console/src/components/OutputPane.svelte -->
 <script lang="ts">
   import { logs, updateLog, runtimeStore } from '$lib/stores'
   import Typewriter from './sub/Typewriter.svelte'
   import SmartText from './sub/SmartText.svelte'
   import ApprovalCard from './sub/ApprovalCard.svelte'
+  import ArtifactCard from './sub/ArtifactCard.svelte' // NEW IMPORT
   import { tick } from 'svelte';
 
   // Refs
@@ -54,9 +51,34 @@
 
   // Callback for Typewriter completion
   function handleTypewriterComplete(id: string) {
-    // We update the store so this log entry is permanently marked as "done animating"
-    // This triggers the switch to SmartText
     updateLog(id, { isAnimated: false });
+  }
+
+  /**
+   * Detects if a log message contains a generated image reference.
+   * Supports:
+   * 1. Specific System Tag from tools.py: [SYSTEM: Generated Image saved to '...']
+   * 2. Standard Markdown: ![...](...)
+   */
+  function extractImageFilename(msg: string): string | null {
+      // Regex 1: System Tag
+      const sysMatch = msg.match(/\[SYSTEM: Generated Image saved to '([^']+)'\]/);
+      if (sysMatch) return sysMatch[1];
+
+      // Regex 2: Markdown
+      const mdMatch = msg.match(/!\[.*?\]\(([^)]+\.(?:png|jpg|jpeg|svg))\)/i);
+      if (mdMatch) return mdMatch[1];
+
+      return null;
+  }
+
+  /**
+   * Removes markdown image syntax from text to avoid duplicate rendering.
+   * The ArtifactCard will handle displaying the image properly.
+   */
+  function stripMarkdownImage(msg: string): string {
+      // Remove markdown image syntax: ![alt](filename.png)
+      return msg.replace(/!\[.*?\]\([^)]+\.(?:png|jpg|jpeg|svg)\)/gi, '').trim();
   }
 </script>
 
@@ -79,26 +101,32 @@
           
           <div class="log-content">
             {#if log.metadata === 'INTERVENTION'}
-              <!-- RENDER APPROVAL CARD -->
+              <!-- HITL: Approval Card -->
               <ApprovalCard
                 reason={log.message === 'SAFETY_PATTERN_TRIGGERED' ? "System Policy Violation or Manual Pause Triggered" : log.message}
                 runId={$runtimeStore.runId || ''}
               />
             {:else if log.isAnimated}
-              <!--
-                 Typewriter View:
-                 Pass the ID to handle completion.
-              -->
+              <!-- ANIMATING: Typewriter -->
               <Typewriter
                 text={log.message}
                 onComplete={() => handleTypewriterComplete(log.id)}
               />
             {:else}
-              <!--
-                 Static / Complete View:
-                 Uses SmartText to render code blocks beautifully.
-              -->
-              <SmartText text={log.message} />
+              <!-- STATIC: Smart Text + Artifact Detection -->
+
+              {@const imageFilename = extractImageFilename(log.message)}
+
+              <!-- 1. Render text content (strip markdown image if present) -->
+              <SmartText text={imageFilename ? stripMarkdownImage(log.message) : log.message} />
+
+              <!-- 2. If an image is detected, append the Artifact Card -->
+              {#if imageFilename}
+                 <ArtifactCard
+                    filename={imageFilename}
+                    runId={$runtimeStore.runId || ''}
+                 />
+              {/if}
             {/if}
           </div>
         </div>
@@ -110,9 +138,9 @@
 <style>
   /* Error Block Styling - Global for HTML injection */
   :global(.error-block) {
-    background: rgba(211, 47, 47, 0.05); /* Subtle red tint that works on light and dark */
-    border-left: 3px solid #d32f2f;      /* Semantic Red - kept constant */
-    color: var(--paper-ink);             /* Adaptive text color */
+    background: rgba(211, 47, 47, 0.05);
+    border-left: 3px solid #d32f2f;
+    color: var(--paper-ink);
     padding: 10px;
     margin-top: 8px;
     font-family: var(--font-code);
@@ -132,7 +160,6 @@
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-    /* Important: Remove CSS scroll-behavior to allow JS to control 'auto' vs 'smooth' explicitly */
     scrollbar-gutter: stable;
     will-change: scroll-position;
   }
@@ -144,7 +171,6 @@
   }
   
   .log-entry {
-    /* "Perforated" divider style */
     border-top: 1px dashed var(--paper-line);
     padding: 16px 0;
     display: grid;
@@ -165,15 +191,14 @@
   .meta-tag {
     font-family: var(--font-code);
     font-size: 9px;
-    color: var(--paper-line); /* Replaced #888 */
-    background: var(--paper-surface); /* Replaced #f5f5f5 */
+    color: var(--paper-line);
+    background: var(--paper-surface);
     padding: 2px 6px;
     border-radius: 2px;
     display: inline-block;
     border: 1px solid transparent;
   }
   
-  /* In dark mode, we might want a slight border to define the tag */
   :global(.mode-phosphor) .meta-tag {
       border-color: var(--paper-line);
   }
@@ -196,7 +221,7 @@
   .log-content {
     font-size: 13px;
     line-height: 1.6;
-    color: var(--paper-ink); /* Replaced #333 */
+    color: var(--paper-ink);
     opacity: 0.9;
   }
 </style>

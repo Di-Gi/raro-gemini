@@ -57,17 +57,29 @@ Delegating execution to ${newAgentId}...`;
 };
 
 const STATIC_ARTIFACTS: Record<string, any> = {
-    'n1': { 
+    'n1': {
         result: `## Orchestration Plan
 Analysis indicates a need for deep retrieval and verification.
 1. **Retrieval**: Gather architecture docs.
 2. **Analysis**: Profile latency metrics.
 3. **Synthesis**: Generate final report.`
     },
-    'n3': { 
-        result: "testing\n```python\n# Analyzing latency variance\nvar = data['p99'].var()\nprint(f'Variance: {var}')\n```\n**Output:** `Variance: 0.042`" 
+    'n3': {
+        success: true,
+        result: `Analysis complete. Generated visualization of latency metrics across all service endpoints.
+
+Key Findings:
+- P99 latency variance: 0.042ms
+- 3 outlier endpoints identified
+- Peak load correlation: 0.87
+
+The variance analysis chart has been saved to disk.
+
+![Latency Variance Analysis](latency_variance_analysis.png)`,
+        files_generated: ['latency_variance_analysis.png', 'metrics_summary.json'],
+        artifact_stored: true
     },
-    'n4': { 
+    'n4': {
         result: `# Final Report
 The analysis confirms that the latency regression is caused by "Cold Expert" switching in the MoE layer.
 **Recommendation**: Enable pre-warming on the Orchestrator.`
@@ -127,6 +139,63 @@ export async function mockGetLibraryFiles(): Promise<string[]> {
         'raw_telemetry_dump.csv',
         'cortex_safety_policy.json'
     ];
+}
+
+// === MOCK GENERATED FILE SERVER ===
+// Simple bar chart SVG for mock demonstration
+const MOCK_CHART_SVG = `
+<svg width="600" height="400" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .title { font: bold 16px monospace; fill: #333; }
+    .label { font: 11px monospace; fill: #666; }
+    .bar { fill: #4285f4; }
+    .grid { stroke: #e0e0e0; stroke-width: 1; }
+  </style>
+
+  <!-- Background -->
+  <rect width="600" height="400" fill="#fafafa"/>
+
+  <!-- Title -->
+  <text x="300" y="30" text-anchor="middle" class="title">P99 Latency Variance Analysis</text>
+
+  <!-- Grid Lines -->
+  <line x1="80" y1="100" x2="80" y2="350" class="grid"/>
+  <line x1="80" y1="350" x2="550" y2="350" class="grid"/>
+
+  <!-- Bars -->
+  <rect x="120" y="180" width="60" height="170" class="bar"/>
+  <rect x="220" y="120" width="60" height="230" class="bar"/>
+  <rect x="320" y="200" width="60" height="150" class="bar"/>
+  <rect x="420" y="90" width="60" height="260" class="bar"/>
+
+  <!-- Labels -->
+  <text x="150" y="370" text-anchor="middle" class="label">Auth</text>
+  <text x="250" y="370" text-anchor="middle" class="label">Search</text>
+  <text x="350" y="370" text-anchor="middle" class="label">Data</text>
+  <text x="450" y="370" text-anchor="middle" class="label">Upload</text>
+
+  <!-- Y-axis labels -->
+  <text x="70" y="355" text-anchor="end" class="label">0ms</text>
+  <text x="70" y="225" text-anchor="end" class="label">50ms</text>
+  <text x="70" y="105" text-anchor="end" class="label">100ms</text>
+
+  <!-- Variance annotation -->
+  <text x="300" y="385" text-anchor="middle" class="label">Variance: 0.042ms</text>
+</svg>`;
+
+// Mock generated charts - in a real system, these would be actual generated images
+const MOCK_GENERATED_FILES: Record<string, string> = {
+    'latency_variance_analysis.png': 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(MOCK_CHART_SVG),
+    'metrics_summary.json': 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify({
+        p99_variance: 0.042,
+        outliers: ['endpoint_auth', 'endpoint_search', 'endpoint_upload'],
+        peak_correlation: 0.87,
+        generated_at: new Date().toISOString()
+    }, null, 2))
+};
+
+export function getMockGeneratedFile(filename: string): string | null {
+    return MOCK_GENERATED_FILES[filename] || null;
 }
 
 
@@ -300,15 +369,23 @@ export class MockWebSocket {
             this.completedAgents.push(id);
             this.totalTokens += tokens;
             this.signatures[id] = `hash_${Math.floor(Math.random()*10000).toString(16)}`;
-            
-            this.invocations.push({
+
+            // Add tools_used for n3 to show Python execution
+            const invocation: any = {
                 id: `inv-${id}`,
                 agent_id: id,
                 status: 'success',
                 tokens_used: tokens,
                 latency_ms: duration,
                 artifact_id: `mock-art-${id}`
-            });
+            };
+
+            // n3 uses execute_python to generate artifacts
+            if (id === 'n3') {
+                invocation.tools_used = ['execute_python'];
+            }
+
+            this.invocations.push(invocation);
         });
     }
 

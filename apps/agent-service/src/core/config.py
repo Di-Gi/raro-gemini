@@ -16,14 +16,17 @@ class Settings(BaseSettings):
     Defaults are provided for local development.
     """
     GEMINI_API_KEY: Optional[str] = None 
+    E2B_API_KEY: Optional[str] = None
+    TAVILY_API_KEY: Optional[str] = None
+
     REDIS_URL: str = "redis://localhost:6379"
     LOG_LEVEL: str = "INFO"
     
     # === MODEL AUTHORITY ===
     # Change specific versions here to propagate across the entire system.
-    MODEL_FAST: str = "gemini-flash-latest"
-    MODEL_REASONING: str = "gemini-flash-latest"
-    MODEL_THINKING: str = "gemini-flash-latest"
+    MODEL_FAST: str = "gemini-2.5-flash-lite"
+    MODEL_REASONING: str = "gemini-2.5-flash-lite"
+    MODEL_THINKING: str = "gemini-2.5-flash-lite"
     # THE MAPPING LAYER
     # The system sends keys (left), we use values (right).
     MODEL_ALIASES: Dict[str, str] = {

@@ -114,6 +114,7 @@ async fn main() {
         .route("/runtime/:run_id/stop", post(handlers::stop_run))
         .route("/runtime/library", get(handlers::list_library_files))
         .route("/runtime/library/upload", post(handlers::upload_library_file)) 
+        .route("/runtime/:run_id/files/:filename", get(handlers::serve_session_file)) // <--- ADD THIS
         .route("/ws/runtime/:run_id", axum::routing::get(handlers::ws_runtime_stream))
         .layer(cors)
         .with_state(runtime);

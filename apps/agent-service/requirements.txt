@@ -10,3 +10,5 @@ grpcio-tools>=1.59.0
 protobuf>=4.25.1
 httpx>=0.25.1
 redis>=0.0.0
+e2b_code_interpreter>=2.4.1
+tavily_python>=0.7.17

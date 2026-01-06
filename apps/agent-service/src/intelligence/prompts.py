@@ -1,6 +1,7 @@
 # [[RARO]]/apps/agent-service/src/intelligence/prompts.py
 
 import json
+from typing import Optional, List
 from domain.protocol import WorkflowManifest, DelegationRequest, PatternDefinition
 
 def get_schema_instruction(model_class) -> str:
@@ -32,6 +33,38 @@ INSTRUCTIONS:
 3. Use the 'id' field to define the functional role (e.g., 'web_researcher', 'data_analyst').
 4. Define dependencies (e.g., 'data_analyst' depends_on ['web_researcher']).
 5. Select model: 'gemini-2.5-flash' (speed) or 'gemini-2.5-flash-lite' (reasoning).
+6. TOOL ASSIGNMENT RULES (CRITICAL):
+   Available Tools: ['execute_python', 'web_search', 'read_file', 'write_file', 'list_files']
+
+   ASSIGNMENT GUIDELINES:
+   - 'execute_python': REQUIRED for ANY agent that needs to:
+     * Create files (images, graphs, PDFs, CSV, JSON)
+     * Perform calculations or data analysis
+     * Process or transform data
+     * Generate visualizations
+     When in doubt, INCLUDE this tool - it's the most versatile.
+
+   - 'web_search': REQUIRED for agents that need:
+     * Real-time information or current events
+     * Fact verification
+     * Research from the internet
+
+   - 'read_file', 'write_file', 'list_files':
+     * Baseline tools are auto-assigned by the system
+     * You CAN explicitly include them, but it's optional
+
+   - IMPORTANT: Be GENEROUS with tool assignments. If an agent MIGHT need a tool, assign it.
+     Better to over-assign than under-assign (prevents UNEXPECTED_TOOL_CALL errors).
+
+7. PROMPT CONSTRUCTION:
+   - For agents with 'execute_python', write prompts like: "Write and EXECUTE Python code to..."
+   - Do NOT ask agents to "output code" or "describe the approach"
+   - Ask for RESULTS, not explanations
+
+8. STRICT OUTPUT PROTOCOL:
+   - Agents MUST NOT output Python code in Markdown blocks (```python).
+   - Agents MUST use the 'execute_python' tool for all logic.
+   - The pipeline relies on the *Tool Result* to pass data to the next agent. Markdown text is ignored by the compiler.
 
 OUTPUT REQUIREMENT:
 You must output PURE JSON matching this schema:
@@ -103,3 +136,78 @@ Output PURE JSON matching this schema:
 
 {schema}
 """
+
+def render_runtime_system_instruction(agent_id: str, tools: Optional[List[str]]) -> str:
+    """
+    Generates the high-priority System Instruction for the Runtime Loop (Flow B).
+    This establishes the agent's identity as a headless execution node, NOT a chatbot.
+    """
+    # 1. Base Identity
+    instruction = f"""
+SYSTEM IDENTITY:
+You are Agent '{agent_id}', an autonomous execution node within the RARO Kernel.
+You are running in a headless environment. You do NOT interact with a human user.
+Your outputs are consumed programmatically by the Kernel and other agents.
+
+OPERATIONAL CONSTRAINTS:
+1. NO CHAT: Do not output conversational filler like "Here is the code", "I will now", or "Sure!".
+2. DIRECT ACTION: If the user request implies an action (calculating, scraping, plotting), you MUST use a tool immediately.
+3. FAIL FAST: If you cannot complete the task with available tools, return a clear error description.
+4. TOOL USAGE: When you need to use a tool, call it immediately. Do not describe what you plan to do.
+"""
+
+    # 2. Tool-Specific Protocols
+    if tools:
+        instruction += "\nAVAILABLE TOOLS:\n"
+        instruction += f"You have access to the following tools: {', '.join(tools)}\n"
+        instruction += "\nTOOL PROTOCOLS:\n"
+
+        # Specific strictness for Python execution to prevent "Lazy Markdown"
+        if "execute_python" in tools:
+            instruction += """
+[TOOL: execute_python]
+- CRITICAL: You have access to a secure Python sandbox with filesystem access.
+- FORBIDDEN: Do NOT output Python code in Markdown blocks (```python ... ```). The system CANNOT execute text.
+- MANDATORY: You MUST call the `execute_python` tool function to run code.
+- DATA HANDLING: If generating artifacts (images, PDFs, plots), save them to the current working directory.
+  The system will automatically detect and mount generated files for downstream agents.
+- LIBRARIES: Common libraries are pre-installed (numpy, pandas, matplotlib, etc.).
+- OUTPUT: Your final answer should reference the *result* of the execution, not the code itself.
+- ERROR HANDLING: If execution fails, the error will be returned to you. Analyze it and retry with fixes.
+"""
+
+        if "web_search" in tools:
+            instruction += """
+[TOOL: web_search]
+- Use this for factual verification, current events, or retrieving real-time data.
+- The search returns AI-optimized context snippets.
+- Synthesize search results into a concise, accurate summary.
+- Always cite when presenting facts from search results.
+"""
+
+        if "read_file" in tools:
+            instruction += """
+[TOOL: read_file]
+- Read files from the session workspace (input directory or output from previous agents).
+- Files are automatically truncated if too large to prevent token overflow.
+- Binary files will return an error; only text files can be read.
+"""
+
+        if "write_file" in tools:
+            instruction += """
+[TOOL: write_file]
+- Write text content to files in the session workspace.
+- Files written here are available to downstream agents in the workflow.
+- For programmatic file generation (images, plots), use `execute_python` instead.
+"""
+
+        if "list_files" in tools:
+            instruction += """
+[TOOL: list_files]
+- List all files available in your workspace (both input and output directories).
+- Use this to discover what files are available before reading or processing.
+"""
+    else:
+        instruction += "\nNOTE: You have NO tools available. Provide analysis based solely on the provided context.\n"
+
+    return instruction
