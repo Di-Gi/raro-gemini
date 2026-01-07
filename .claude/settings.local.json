@@ -4,7 +4,11 @@
       "Bash(find:*)",
       "mcp__ide__getDiagnostics",
       "Bash(test:*)",
-      "Bash(python -m py_compile:*)"
+      "Bash(python -m py_compile:*)",
+      "Bash(docker exec:*)",
+      "Bash(curl:*)",
+      "Bash(docker-compose logs:*)",
+      "Bash(docker-compose up:*)"
     ]
   }
 }

@@ -322,7 +322,10 @@ async def _execute_agent_logic(request: AgentRequest) -> AgentResponse:
             try:
                 key = f"run:{request.run_id}:agent:{request.agent_id}:output"
                 artifact_data = {
-                    "result": response_text,
+                    # [[UPDATED]] Removed payload chunk to clean up frontend log stream.
+                    # This prevents the raw prompt/response text from being re-rendered by the ArtifactCard,
+                    # while preserving file metadata for downstream consumption.
+                    # "result": response_text, 
                     "status": "completed",
                     "thinking_depth": request.thinking_level or 0,
                     "model": request.model,

@@ -8,10 +8,11 @@ import base64
 import mimetypes
 import json
 import asyncio
+import httpx
 from pathlib import Path
 from datetime import datetime
 from google.genai import types
-from core.config import gemini_client, logger, resolve_model
+from core.config import gemini_client, logger, resolve_model, settings
 from intelligence.prompts import render_runtime_system_instruction
 
 # Import Tooling Logic
@@ -108,7 +109,7 @@ async def _prepare_gemini_request(
         # --- FIX: Explicitly disable native tools to prevent UNEXPECTED_TOOL_CALL ---
         # This forces the model to use the text-based ```json:function``` format
         # defined in our system prompts instead of attempting native function calls
-        "tool_config": {"function_calling_config": {"mode": "NONE"}}
+        # "tool_config": {"function_calling_config": {"mode": "NONE"}}
     }
 
     # Add Deep Think configuration
@@ -175,6 +176,67 @@ async def _prepare_gemini_request(
     }
 
 
+async def probe_sink(
+    params: Dict[str, Any],
+    run_id: str,
+    agent_id: str,
+    tools: Optional[List[str]],
+    model: str,
+    prompt: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Intercepts the Agent execution if DEBUG_PROBE_URL is set.
+    Sends payload to the probe and returns a dummy response dict to short-circuit the LLM.
+    Returns None if probing is disabled.
+    """
+    # 1. Check if Probing is active
+    if not settings.DEBUG_PROBE_URL:
+        return None
+
+    logger.warning(f"DEBUG PROBE ACTIVE. Intercepting Agent {agent_id}. No LLM call.")
+
+    # 2. Extract Data for Visualization
+    system_instruction = params["config"].get("system_instruction", "")
+    
+    # Extract user message parts safely
+    user_parts = params["contents"][-1]["parts"] if params["contents"] else []
+    formatted_user_msg = "\n".join([
+        p.get("text", "[Binary Data/File]") for p in user_parts
+        if "text" in p
+    ])
+
+    # 3. Fire-and-forget log payload to the Probe
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"{settings.DEBUG_PROBE_URL}/capture",
+                json={
+                    "id": run_id,
+                    "time": datetime.now().isoformat(),
+                    "agent_id": agent_id,
+                    "run_id": run_id,
+                    "tools": tools or [],
+                    # The EXACT text the model would have seen
+                    "final_system_prompt": system_instruction,
+                    "final_user_message": formatted_user_msg,
+                    "original_payload": {"model": model, "prompt": prompt}
+                },
+                timeout=1.0
+            )
+    except Exception as e:
+        logger.error(f"Failed to send debug capture: {e}")
+
+    # 4. Return Dummy Response to keep Kernel alive
+    return {
+        "text": f"[DEBUG MODE] Agent {agent_id} prompted successfully. LLM invoke skipped.",
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "thought_signature": "debug_signature",
+        "cache_hit": False,
+        "files_generated": []
+    }
+
+
 # ============================================================================
 # Unified Gemini API Caller (Sync/Batch)
 # ============================================================================
@@ -215,6 +277,24 @@ async def call_gemini_with_context(
             concrete_model, prompt, safe_agent_id, user_directive, input_data, file_paths,
             parent_signature, thinking_level, tools
         )
+
+        # =========================================================
+        # INTERCEPTION LAYER (Abstracted)
+        # =========================================================
+        probe_response = await probe_sink(
+            params=params,
+            run_id=run_id,
+            agent_id=safe_agent_id,
+            tools=tools,
+            model=model,
+            prompt=prompt
+        )
+        
+        # If probe_sink returns a dictionary, it means we are in debug mode
+        # and should return immediately, skipping the LLM call.
+        if probe_response:
+            return probe_response
+        # =========================================================
 
         current_contents = params["contents"]
         max_turns = 10

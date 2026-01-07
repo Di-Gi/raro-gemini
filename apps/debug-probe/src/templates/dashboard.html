@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Debug Probe</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg: #fafafa;
+            --surface: #ffffff;
+            --border: #e5e5e5;
+            --text: #171717;
+            --text-muted: #737373;
+            --accent: #0ea5e9;
+            --success: #22c55e;
+            --mono: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root {
+                --bg: #0a0a0a;
+                --surface: #171717;
+                --border: #262626;
+                --text: #fafafa;
+                --text-muted: #a3a3a3;
+            }
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            padding: 0;
+            margin: 0;
+        }
+
+        /* Header */
+        header {
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            padding: 1.5rem 2rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            backdrop-filter: blur(8px);
+        }
+
+        .header-left h1 {
+            font-size: 1.125rem;
+            font-weight: 600;
+            color: var(--text);
+            margin-bottom: 0.25rem;
+        }
+
+        .status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.8125rem;
+            color: var(--text-muted);
+            font-family: var(--mono);
+        }
+
+        .status-dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--text-muted);
+        }
+
+        .status-dot.live {
+            background: var(--success);
+            box-shadow: 0 0 8px var(--success);
+        }
+
+        button {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.875rem;
+            font-weight: 500;
+            transition: all 0.15s;
+        }
+
+        button:hover {
+            background: var(--bg);
+            border-color: var(--text-muted);
+        }
+
+        /* Main Content */
+        main {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+
+        /* Capture Card */
+        .capture {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            margin-bottom: 1.5rem;
+            overflow: hidden;
+            transition: border-color 0.2s;
+        }
+
+        .capture:hover {
+            border-color: var(--text-muted);
+        }
+
+        .capture-header {
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: var(--bg);
+        }
+
+        .capture-meta {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+            font-size: 0.8125rem;
+            font-family: var(--mono);
+        }
+
+        .meta-item {
+            display: flex;
+            align-items: center;
+            gap: 0.375rem;
+            color: var(--text-muted);
+        }
+
+        .meta-label {
+            color: var(--text-muted);
+            text-transform: uppercase;
+            font-size: 0.6875rem;
+            letter-spacing: 0.05em;
+        }
+
+        .meta-value {
+            color: var(--text);
+            font-weight: 500;
+        }
+
+        .agent-id {
+            color: var(--accent);
+            font-weight: 600;
+        }
+
+        .tools-badge {
+            display: flex;
+            gap: 0.375rem;
+            flex-wrap: wrap;
+        }
+
+        .tool {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            padding: 0.125rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.6875rem;
+            font-family: var(--mono);
+            color: var(--text-muted);
+        }
+
+        /* Capture Body */
+        .capture-body {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0;
+        }
+
+        .section {
+            padding: 1.5rem;
+        }
+
+        .section.left {
+            border-right: 1px solid var(--border);
+        }
+
+        .section-title {
+            font-size: 0.6875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            margin-bottom: 1rem;
+            font-weight: 600;
+        }
+
+        .content {
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 1rem;
+            overflow-x: auto;
+        }
+
+        pre {
+            font-family: var(--mono);
+            font-size: 0.8125rem;
+            line-height: 1.6;
+            color: var(--text);
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            margin: 0;
+        }
+
+        /* Empty State */
+        .empty {
+            text-align: center;
+            padding: 4rem 2rem;
+            color: var(--text-muted);
+        }
+
+        .empty-icon {
+            font-size: 2.5rem;
+            margin-bottom: 1rem;
+            opacity: 0.3;
+        }
+
+        .empty-text {
+            font-size: 0.875rem;
+        }
+
+        /* Responsive */
+        @media (max-width: 1024px) {
+            .capture-body {
+                grid-template-columns: 1fr;
+            }
+
+            .section.left {
+                border-right: none;
+                border-bottom: 1px solid var(--border);
+            }
+        }
+
+        @media (max-width: 640px) {
+            header {
+                padding: 1rem;
+            }
+
+            main {
+                padding: 1rem;
+            }
+
+            .capture-header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 0.75rem;
+            }
+
+            .capture-meta {
+                flex-wrap: wrap;
+                gap: 0.5rem;
+            }
+        }
+
+        /* Animations */
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-8px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .capture.new {
+            animation: slideIn 0.3s ease-out;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="header-left">
+            <h1>Debug Probe</h1>
+            <div class="status">
+                <span class="status-dot" id="status-dot"></span>
+                <span id="status-text">Connecting...</span>
+            </div>
+        </div>
+        <button onclick="clearLogs()">Clear</button>
+    </header>
+
+    <main>
+        {% if captures %}
+            {% for log in captures %}
+            <div class="capture">
+                <div class="capture-header">
+                    <div class="capture-meta">
+                        <div class="meta-item">
+                            <span class="meta-label">Agent</span>
+                            <span class="agent-id">{{ log.agent_id }}</span>
+                        </div>
+                        <div class="meta-item">
+                            <span class="meta-label">Run</span>
+                            <span class="meta-value">{{ log.run_id[:8] }}</span>
+                        </div>
+                        <div class="meta-item">
+                            <span class="meta-label">Time</span>
+                            <span class="meta-value">{{ log.time.split('T')[1].split('.')[0] if 'T' in log.time else log.time }}</span>
+                        </div>
+                    </div>
+                    {% if log.tools %}
+                    <div class="tools-badge">
+                        {% for tool in log.tools %}
+                        <span class="tool">{{ tool }}</span>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                </div>
+                <div class="capture-body">
+                    <div class="section left">
+                        <div class="section-title">System Instruction</div>
+                        <div class="content">
+                            <pre>{{ log.final_system_prompt }}</pre>
+                        </div>
+                    </div>
+                    <div class="section">
+                        <div class="section-title">User Message</div>
+                        <div class="content">
+                            <pre>{{ log.final_user_message }}</pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        {% else %}
+        <div class="empty">
+            <div class="empty-icon">⏳</div>
+            <div class="empty-text">Waiting for captures...</div>
+        </div>
+        {% endif %}
+    </main>
+
+    <script>
+        const eventSource = new EventSource('/events');
+        let connectionAttempts = 0;
+
+        eventSource.onopen = function() {
+            connectionAttempts = 0;
+            updateStatus(true, 'Live');
+        };
+
+        eventSource.onmessage = function(event) {
+            const capture = JSON.parse(event.data);
+            addCapture(capture);
+        };
+
+        eventSource.onerror = function() {
+            connectionAttempts++;
+            if (connectionAttempts > 1) {
+                updateStatus(false, 'Reconnecting...');
+            }
+        };
+
+        function updateStatus(isLive, text) {
+            const dot = document.getElementById('status-dot');
+            const statusText = document.getElementById('status-text');
+
+            if (isLive) {
+                dot.classList.add('live');
+            } else {
+                dot.classList.remove('live');
+            }
+
+            if (statusText) {
+                statusText.textContent = text;
+            }
+        }
+
+        function addCapture(data) {
+            const main = document.querySelector('main');
+
+            // Remove empty state
+            const empty = main.querySelector('.empty');
+            if (empty) empty.remove();
+
+            // Format time
+            const time = data.time.includes('T')
+                ? data.time.split('T')[1].split('.')[0]
+                : data.time;
+
+            // Create capture card
+            const capture = document.createElement('div');
+            capture.className = 'capture new';
+            capture.innerHTML = `
+                <div class="capture-header">
+                    <div class="capture-meta">
+                        <div class="meta-item">
+                            <span class="meta-label">Agent</span>
+                            <span class="agent-id">${escape(data.agent_id)}</span>
+                        </div>
+                        <div class="meta-item">
+                            <span class="meta-label">Run</span>
+                            <span class="meta-value">${escape(data.run_id.substring(0, 8))}</span>
+                        </div>
+                        <div class="meta-item">
+                            <span class="meta-label">Time</span>
+                            <span class="meta-value">${escape(time)}</span>
+                        </div>
+                    </div>
+                    ${data.tools && data.tools.length > 0 ? `
+                    <div class="tools-badge">
+                        ${data.tools.map(tool => `<span class="tool">${escape(tool)}</span>`).join('')}
+                    </div>
+                    ` : ''}
+                </div>
+                <div class="capture-body">
+                    <div class="section left">
+                        <div class="section-title">System Instruction</div>
+                        <div class="content">
+                            <pre>${escape(data.final_system_prompt)}</pre>
+                        </div>
+                    </div>
+                    <div class="section">
+                        <div class="section-title">User Message</div>
+                        <div class="content">
+                            <pre>${escape(data.final_user_message)}</pre>
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            main.insertBefore(capture, main.firstChild);
+        }
+
+        function escape(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        async function clearLogs() {
+            await fetch('/clear', { method: 'POST' });
+            location.reload();
+        }
+    </script>
+</body>
+</html>

@@ -15,12 +15,15 @@ class Settings(BaseSettings):
     Application settings loaded from environment variables.
     Defaults are provided for local development.
     """
-    GEMINI_API_KEY: Optional[str] = None 
+    GEMINI_API_KEY: Optional[str] = None
     E2B_API_KEY: Optional[str] = None
     TAVILY_API_KEY: Optional[str] = None
 
     REDIS_URL: str = "redis://localhost:6379"
     LOG_LEVEL: str = "INFO"
+
+    # NEW: If set, we skip Gemini calls and send prompt dumps here
+    DEBUG_PROBE_URL: Optional[str] = None
     
     # === MODEL AUTHORITY ===
     # Change specific versions here to propagate across the entire system.

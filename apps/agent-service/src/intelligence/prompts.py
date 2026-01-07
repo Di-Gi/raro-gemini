@@ -146,12 +146,10 @@ def render_runtime_system_instruction(agent_id: str, tools: Optional[List[str]])
     Generates the high-priority System Instruction for the Runtime Loop (Flow B).
     Uses MANUAL PARSING MODE with json:function blocks.
     """
-    # 1. Base Identity
     instruction = f"""
 SYSTEM IDENTITY:
 You are Agent '{agent_id}', an autonomous execution node within the RARO Kernel.
-You are running in a headless environment. You do NOT interact with a human user.
-Your outputs are consumed programmatically.
+You are running in a headless environment. Your outputs are consumed programmatically.
 
 OPERATIONAL CONSTRAINTS:
 1. NO CHAT: Do not output conversational filler.
@@ -159,53 +157,57 @@ OPERATIONAL CONSTRAINTS:
 3. FAIL FAST: If you cannot complete the task, return a clear error.
 """
 
-    # 2. Tool Protocols (MANUAL PARSING MODE)
     if tools:
         tool_schemas = get_tool_definitions_for_prompt(tools)
 
         instruction += f"""
 [SYSTEM CAPABILITY: TOOL USE]
-You have access to the following tools.
-To use a tool, you MUST output a JSON object wrapped in a specific code block tag.
+You have access to the following tools. 
+To use a tool, you MUST output a specific Markdown code block. 
+DO NOT use native function calling mechanisms.
 
-AVAILABLE TOOLS (JSON Schema):
+AVAILABLE TOOLS (Reference):
 {tool_schemas}
 
-TOOL CALLING PROTOCOL:
-You do not have a native tool interface. You must parse the tool call yourself using Markdown.
-To invoke a tool, output a block exactly like this:
+[CRITICAL PROTOCOL: MANUAL CALLING]
+The system does not support native function calling. 
+You must MANUALLY type the tool call using the `json:function` tag.
 
+CORRECT FORMAT:
 ```json:function
 {{
-  "name": "tool_name_here",
+  "name": "tool_name",
   "args": {{
-    "arg_name": "value"
+    "parameter_name": "value"
   }}
 }}
 ```
 
-CRITICAL RULES:
-1. The tag MUST be `json:function`.
-2. The content MUST be valid JSON.
-3. Do NOT wrap python code in `python` blocks if you want to execute it. Use the `execute_python` tool structure.
+[ONE-SHOT EXAMPLE]
+User: "Calculate 25 * 4 using python"
+Assistant:
+```json:function
+{{
+  "name": "execute_python",
+  "args": {{
+    "code": "print(25 * 4)"
+  }}
+}}
+```
+
+INCORRECT FORMATS (FORBIDDEN):
+- No standard ```json``` blocks.
+- No ```python``` blocks for code execution.
+- No native tool objects.
 """
 
         # Specific guidance for Python
         if "execute_python" in tools:
             instruction += """
-[TOOL SPECIFIC: execute_python]
-- You have a secure Python sandbox.
-- To run code, you MUST use the `execute_python` tool.
-- Do NOT output ```python ... ``` text blocks. The system ignores them.
-- Example:
-```json:function
-{
-  "name": "execute_python",
-  "args": {
-    "code": "print('Hello World')"
-  }
-}
-```
+[TOOL NOTE: execute_python]
+You have a secure Python sandbox.
+To run code, you MUST use the `execute_python` tool.
+Do NOT output ```python ... ``` text blocks; the system ignores them.
 """
     else:
         instruction += "\nNOTE: You have NO tools available. Provide analysis based solely on the provided context.\n"

@@ -16,9 +16,12 @@ services:
     environment:
       - RUST_LOG=raro_kernel=debug,tower_http=trace
       - KERNEL_PORT=3000
-      # CRITICAL: Points to the internal docker service name of the agent service
+      
+      # === ROUTING CONFIGURATION ===
+      # Point back to real agents (Probe intercepts at the Agent level now)
       - AGENT_HOST=agents
       - AGENT_PORT=8000
+      
       - REDIS_URL=redis://redis:6379
     volumes:
       - ./storage:/app/storage # <--- SHARED MOUNT FOR RFS
@@ -52,6 +55,8 @@ services:
       - TAVILY_API_KEY=${TAVILY_API_KEY}
       - REDIS_URL=redis://redis:6379
       - LOG_LEVEL=${LOG_LEVEL:-DEBUG}  # Default to DEBUG, override with env var
+      # ACTIVATE DEBUG INTERCEPTION
+      - DEBUG_PROBE_URL=http://debug-probe:8080
     volumes:
       - ./storage:/app/storage # <--- SHARED MOUNT FOR RFS
     networks:
@@ -62,10 +67,24 @@ services:
       timeout: 5s
       retries: 3
     depends_on:
+      debug-probe:
+        condition: service_started
       redis:
         condition: service_healthy
 
-  # 3. THE FACE: Svelte Web Console
+  # 3. THE INSPECTOR: Debug Probe
+  # Passive receiver that visualizes the exact prompts sent from Agent Service.
+  debug-probe:
+    build:
+      context: ./apps/debug-probe
+      dockerfile: Dockerfile
+    container_name: raro-debug-probe
+    ports:
+      - "8081:8080" # UI Dashboard accessible at localhost:8081
+    networks:
+      - raro-net
+
+  # 4. THE FACE: Svelte Web Console
   # Reactive UI for visualization and control.
   web:
     build:
@@ -89,7 +108,6 @@ services:
         condition: service_healthy
     networks:
       - raro-net
-
 
   # Redis for caching (Optional)
   redis:
