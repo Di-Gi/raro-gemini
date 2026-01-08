@@ -13,7 +13,8 @@
     addConnection,
     removeConnection,
     createNode,
-    deleteNode
+    deleteNode,
+    renameNode              // Import rename action
   } from '$lib/stores'
   import { 
     startRun, 
@@ -34,6 +35,7 @@
   let thinkingBudget = $state(5)
   let isSubmitting = $state(false)
   let isInputFocused = $state(false)
+  let tempId = $state('')  // Temporary ID for renaming
 
   // Pipeline control state
   let connectionFrom = $state('')
@@ -42,6 +44,14 @@
 
   // Reactive derivation for HITL state
   let isAwaitingApproval = $derived($runtimeStore.status === 'AWAITING_APPROVAL' || $runtimeStore.status === 'PAUSED')
+
+  // Sync tempId when the selection changes
+  $effect(() => {
+    if ($selectedNode) {
+      tempId = $selectedNode; // Initialize input with current ID
+    }
+  });
+
   // === STATE SYNCHRONIZATION ===
   $effect(() => {
     if ($selectedNode && expanded) {
@@ -206,6 +216,29 @@
       }
   }
 
+  function handleRename() {
+    if (!$selectedNode || !tempId) return;
+
+    // Clean the ID (remove spaces, etc if desired)
+    const cleanId = tempId.trim().replace(/\s+/g, '_').toLowerCase();
+
+    const success = renameNode($selectedNode, cleanId);
+
+    if (success) {
+      addLog('SYSTEM', `Node renamed: ${cleanId}`, 'OK');
+    } else {
+      // Revert if failed (duplicate or invalid)
+      tempId = $selectedNode;
+      addLog('SYSTEM', `Rename failed: ID exists or invalid`, 'WARN');
+    }
+  }
+
+  function handleIdKey(e: KeyboardEvent) {
+      if (e.key === 'Enter') {
+          (e.target as HTMLInputElement).blur(); // Trigger onblur
+      }
+  }
+
   // === PIPELINE CONTROL ACTIONS ===
   function handleAddConnection() {
     if (!connectionFrom || !connectionTo) {
@@ -355,7 +388,14 @@
         <div class="form-grid">
           <div class="form-group">
             <label>Agent ID</label>
-            <input class="input-std input-readonly" value={$selectedNode} readonly />
+            <input
+              class="input-std"
+              bind:value={tempId}
+              onblur={handleRename}
+              onkeydown={handleIdKey}
+              disabled={$runtimeStore.status === 'RUNNING'}
+              placeholder="Enter unique ID..."
+            />
           </div>
           <div class="form-group">
             <label>Model Runtime</label>

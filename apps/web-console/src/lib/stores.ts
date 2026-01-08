@@ -87,20 +87,20 @@ export function toggleAttachment(fileName: string) {
 
 // Initial Nodes State
 const initialNodes: AgentNode[] = [
-  { id: 'n1', label: 'ORCHESTRATOR', x: 20, y: 50, model: 'reasoning', prompt: 'Analyze the user request and determine optimal sub-tasks.', status: 'idle', role: 'orchestrator', acceptsDirective: true },
-  { id: 'n2', label: 'RETRIEVAL', x: 50, y: 30, model: 'fast', prompt: 'Search knowledge base for relevant context.', status: 'idle', role: 'worker', acceptsDirective: false },
-  { id: 'n3', label: 'CODE_INTERP', x: 50, y: 70, model: 'fast', prompt: 'Execute Python analysis on provided data.', status: 'idle', role: 'worker', acceptsDirective: false },
-  { id: 'n4', label: 'SYNTHESIS', x: 80, y: 50, model: 'thinking', prompt: 'Synthesize all findings into a final report.', status: 'idle', role: 'worker', acceptsDirective: false }
+  { id: 'orchestrator', label: 'ORCHESTRATOR', x: 20, y: 50, model: 'reasoning', prompt: 'Analyze the user request and determine optimal sub-tasks.', status: 'idle', role: 'orchestrator', acceptsDirective: true },
+  { id: 'retrieval', label: 'RETRIEVAL', x: 50, y: 30, model: 'fast', prompt: 'Search knowledge base for relevant context.', status: 'idle', role: 'worker', acceptsDirective: false },
+  { id: 'code_interpreter', label: 'CODE_INTERP', x: 50, y: 70, model: 'fast', prompt: 'Execute Python analysis on provided data.', status: 'idle', role: 'worker', acceptsDirective: false },
+  { id: 'synthesis', label: 'SYNTHESIS', x: 80, y: 50, model: 'thinking', prompt: 'Synthesize all findings into a final report.', status: 'idle', role: 'worker', acceptsDirective: false }
 ];
 
 export const agentNodes = writable<AgentNode[]>(initialNodes);
 
 // Initial Edges State
 const initialEdges: PipelineEdge[] = [
-  { from: 'n1', to: 'n2', active: false, finalized: false, pulseAnimation: false },
-  { from: 'n1', to: 'n3', active: false, finalized: false, pulseAnimation: false },
-  { from: 'n2', to: 'n4', active: false, finalized: false, pulseAnimation: false },
-  { from: 'n3', to: 'n4', active: false, finalized: false, pulseAnimation: false }
+  { from: 'orchestrator', to: 'retrieval', active: false, finalized: false, pulseAnimation: false },
+  { from: 'orchestrator', to: 'code_interpreter', active: false, finalized: false, pulseAnimation: false },
+  { from: 'retrieval', to: 'synthesis', active: false, finalized: false, pulseAnimation: false },
+  { from: 'code_interpreter', to: 'synthesis', active: false, finalized: false, pulseAnimation: false }
 ];
 
 export const pipelineEdges = writable<PipelineEdge[]>(initialEdges);
@@ -153,6 +153,8 @@ export function removeConnection(from: string, to: string) {
     );
 }
 
+
+
 export function createNode(x: number, y: number) {
     agentNodes.update(nodes => {
         const id = `node_${Date.now().toString().slice(-4)}`;
@@ -170,6 +172,8 @@ export function createNode(x: number, y: number) {
     });
 }
 
+
+
 export function deleteNode(id: string) {
     // 1. Remove Node
     agentNodes.update(nodes => nodes.filter(n => n.id !== id));
@@ -182,6 +186,39 @@ export function deleteNode(id: string) {
         selectedNode.set(null);
     }
 }
+
+export function renameNode(oldId: string, newId: string): boolean {
+  // 1. Validation: Ensure new ID is unique and valid
+  if (!newId || newId === oldId) return false;
+  
+  const currentNodes = get(agentNodes);
+  if (currentNodes.find(n => n.id === newId)) {
+    console.warn(`ID "${newId}" already exists.`);
+    return false;
+  }
+
+  // 2. Update the Node definition
+  agentNodes.update(nodes => 
+    nodes.map(n => n.id === oldId ? { ...n, id: newId } : n)
+  );
+
+  // 3. Update all Edges (Rewiring)
+  pipelineEdges.update(edges => 
+    edges.map(e => ({
+      ...e,
+      from: e.from === oldId ? newId : e.from,
+      to: e.to === oldId ? newId : e.to
+    }))
+  );
+
+  // 4. Update Selection State (Keep the panel open)
+  if (get(selectedNode) === oldId) {
+    selectedNode.set(newId);
+  }
+
+  return true;
+}
+
 
 /**
  * PURE STATE MUTATION
