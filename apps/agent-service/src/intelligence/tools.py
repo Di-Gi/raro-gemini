@@ -1,12 +1,24 @@
 # [[RARO]]/apps/agent-service/src/intelligence/tools.py
 # Purpose: Tool definitions and Secure Workspace Execution Logic
-# Architecture: Intelligence Layer providing bridge between LLM and system actions.
-# Dependencies: google-genai, os
+# Architecture: Intelligence Layer bridge to E2B and Tavily
+# Dependencies: google-genai, e2b-code-interpreter, tavily-python
 
 import os
-from typing import List, Dict, Any, Optional
+import base64
+import logging
+from typing import List, Dict, Any, Optional, Union
 from google.genai import types
-from core.config import logger
+from core.config import settings, logger
+import json
+
+# --- OPTIONAL DEPENDENCY LOADING ---
+try:
+    from e2b_code_interpreter import Sandbox
+    from tavily import TavilyClient
+except ImportError:
+    logger.warning("E2B or Tavily libraries not found. Advanced tools will be disabled.")
+    Sandbox = None
+    TavilyClient = None
 
 # Hard anchor to prevent agents from breaking out of the sandbox
 RFS_BASE = "/app/storage"
@@ -18,212 +30,272 @@ class WorkspaceManager:
     """
     def __init__(self, run_id: str):
         self.run_id = run_id
-        # Define the sandbox roots
         self.session_root = os.path.join(RFS_BASE, "sessions", run_id)
         self.input_dir = os.path.join(self.session_root, "input")
         self.output_dir = os.path.join(self.session_root, "output")
         
-        # Ensure directories exist (Agent side failsafe)
-        # In a perfect world, Kernel creates these. But concurrency is tricky.
         os.makedirs(self.input_dir, exist_ok=True)
         os.makedirs(self.output_dir, exist_ok=True)
 
     def _get_secure_path(self, filename: str) -> Optional[str]:
-        """
-        Security Enforcement:
-        1. Strips directory traversal (../)
-        2. Checks if file exists in Output (priority) or Input.
-        3. Returns absolute path.
-        """
-        # Discard 'folder/../' junk and force simple filename
         clean_name = os.path.basename(filename) 
-        
-        # Priority 1: Has the agent created this file?
         out_path = os.path.join(self.output_dir, clean_name)
-        if os.path.exists(out_path):
-            return out_path
-            
-        # Priority 2: Was it provided by the user (Input)?
+        if os.path.exists(out_path): return out_path
         in_path = os.path.join(self.input_dir, clean_name)
-        if os.path.exists(in_path):
-            return in_path
-            
+        if os.path.exists(in_path): return in_path
         return None
 
     def read(self, filename: str) -> str:
-        """Securely read a file from the workspace."""
         path = self._get_secure_path(filename)
-        if not path:
-            return f"Error: File '{filename}' not found in input or output directories."
-        
+        if not path: return f"Error: File '{filename}' not found."
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 content = f.read()
-                # Basic output truncation to save tokens if massive
-                if len(content) > 50000: 
-                    return content[:50000] + "\n...[TRUNCATED BY SYSTEM]..."
+                if len(content) > 50000: return content[:50000] + "\n...[TRUNCATED]..."
                 return content
-        except UnicodeDecodeError:
-            return "Error: File appears to be binary or non-UTF-8 text."
-        except Exception as e:
-            return f"Error reading file: {str(e)}"
+        except Exception as e: return f"Error reading file: {str(e)}"
 
-    def write(self, filename: str, content: str) -> str:
-        """Securely write a file to the workspace output directory."""
+    def write(self, filename: str, content: Union[str, bytes]) -> str:
         clean_name = os.path.basename(filename)
         path = os.path.join(self.output_dir, clean_name)
-        
         try:
-            with open(path, 'w', encoding='utf-8') as f:
-                f.write(content)
+            mode = 'wb' if isinstance(content, bytes) else 'w'
+            encoding = None if isinstance(content, bytes) else 'utf-8'
+            with open(path, mode, encoding=encoding) as f: f.write(content)
             return f"Successfully saved to {clean_name}"
-        except Exception as e:
-            return f"Error writing file: {str(e)}"
+        except Exception as e: return f"Error writing file: {str(e)}"
 
     def list_contents(self) -> str:
-        """List files available in the workspace."""
         try:
             inputs = os.listdir(self.input_dir)
             outputs = os.listdir(self.output_dir)
+            return f"FILES:\nInputs: {inputs}\nOutputs: {outputs}"
+        except Exception as e: return f"Error: {str(e)}"
+
+# --- EXECUTION LOGIC ---
+
+def _run_e2b_sandbox(code: str, ws: WorkspaceManager) -> Dict[str, Any]:
+    if Sandbox is None: return {"error": "E2B library missing."}
+    if not settings.E2B_API_KEY: return {"error": "E2B_API_KEY missing."}
+
+    logger.info(f"Initializing E2B Sandbox for run {ws.run_id}...")
+
+    try:
+        # 1. Create Sandbox
+        with Sandbox.create(api_key=settings.E2B_API_KEY) as sandbox:
             
-            # Format nicely for the LLM
-            return (
-                f"=== WORKSPACE MANIFEST ===\n"
-                f"READ-ONLY INPUTS: {inputs if inputs else 'None'}\n"
-                f"SESSION OUTPUTS: {outputs if outputs else 'None'}"
-            )
-        except Exception as e:
-            return f"Error accessing workspace directories: {str(e)}"
+            # 2. SYNC UP: Upload existing input files to Sandbox so Python can read them
+            # (Crucial for Data Aggregator if it wants to use Python on previous files)
+            if os.path.exists(ws.input_dir):
+                for filename in os.listdir(ws.input_dir):
+                    file_path = os.path.join(ws.input_dir, filename)
+                    if os.path.isfile(file_path):
+                        try:
+                            with open(file_path, "rb") as f:
+                                sandbox.files.write(filename, f.read())
+                                logger.debug(f"Uploaded {filename} to sandbox")
+                        except Exception as e:
+                            logger.warning(f"Failed to upload {filename}: {e}")
+
+            # Agents in the same run share the output directory. 
+            # If Agent A created a CSV, Agent B needs it uploaded to their sandbox to read it.
+            if os.path.exists(ws.output_dir):
+                for filename in os.listdir(ws.output_dir):
+                    file_path = os.path.join(ws.output_dir, filename)
+                    # Avoid re-uploading large files if not needed, or just upload everything for context
+                    if os.path.isfile(file_path):
+                        try:
+                            with open(file_path, "rb") as f:
+                                sandbox.files.write(filename, f.read())
+                                logger.debug(f"Uploaded artifact {filename} to sandbox")
+                        except Exception as e:
+                            logger.warning(f"Failed to upload artifact {filename}: {e}")
+
+            # 3. Execute
+            logger.info(f"E2B: Executing code ({len(code)} chars)")
+            execution = sandbox.run_code(code)
+
+            output_log = []
+            if execution.logs.stdout: output_log.append(f"STDOUT:\n{''.join(execution.logs.stdout)}")
+            if execution.logs.stderr: output_log.append(f"STDERR:\n{''.join(execution.logs.stderr)}")
+            
+            # 4. CAPTURE ARTIFACTS (The Fix)
+            artifacts_created = []
+            
+            # A. Plot/Image Results (Standard E2B behavior)
+            for result in execution.results:
+                if hasattr(result, 'png') and result.png:
+                    img_filename = f"plot_{ws.run_id}_{len(artifacts_created)}.png"
+                    ws.write(img_filename, base64.b64decode(result.png))
+                    artifacts_created.append(img_filename)
+                    output_log.append(f"\n[SYSTEM: Generated Image saved to '{img_filename}']")
+
+            # B. File System Artifacts (JSON/CSV generated by code)
+            # We explicitly check for files created in the workdir
+            try:
+                # List files in the sandbox's current directory
+                # We filter out system files to only get what the agent made
+                files_in_sandbox = sandbox.files.list(".")
+                
+                for remote_file in files_in_sandbox:
+                    # Ignore common system/hidden files
+                    if remote_file.name.startswith(".") or remote_file.name == "__pycache__":
+                        continue
+                        
+                    # Attempt to download
+                    try:
+                        # Read as bytes from E2B
+                        file_bytes = sandbox.files.read(remote_file.name, format="bytes")
+                        
+                        # Write to Local RFS (Output Dir)
+                        # WorkspaceManager.write handles the path security
+                        ws.write(remote_file.name, file_bytes)
+                        
+                        # Only add to list if it wasn't already captured via plot result
+                        if remote_file.name not in artifacts_created:
+                            artifacts_created.append(remote_file.name)
+                            logger.info(f"Synced artifact from Sandbox: {remote_file.name}")
+                            
+                    except Exception as download_err:
+                        logger.warning(f"Could not download {remote_file.name}: {download_err}")
+                        
+            except Exception as list_err:
+                logger.warning(f"Failed to list/download sandbox files: {list_err}")
+
+            # 5. Handle Errors
+            if execution.error:
+                error_msg = f"RUNTIME ERROR: {execution.error.name}: {execution.error.value}"
+                if execution.error.traceback: error_msg += f"\n{execution.error.traceback}"
+                return {"success": False, "error": error_msg, "logs": "\n".join(output_log)}
+
+            logs_text = "\n".join(output_log)
+            
+            # Append artifact info to the text result so the LLM knows it succeeded
+            if artifacts_created:
+                logs_text += f"\n[SYSTEM: The following files were generated and saved to your workspace: {artifacts_created}]"
+
+            return {
+                "success": True, 
+                "result": logs_text if logs_text else "Execution successful (No stdout).",
+                "files_generated": artifacts_created,
+                "artifact_stored": len(artifacts_created) > 0
+            }
+
+    except Exception as e:
+        logger.error(f"E2B failure: {e}", exc_info=True)
+        return {"success": False, "error": f"Sandbox failed: {str(e)}"}
+    
+def _run_tavily_search(query: str) -> Dict[str, Any]:
+    if TavilyClient is None or not settings.TAVILY_API_KEY:
+        return {"success": False, "error": "Search unavailable (Missing Lib or Key)."}
+    try:
+        tavily = TavilyClient(api_key=settings.TAVILY_API_KEY)
+        context = tavily.get_search_context(query=query, search_depth="advanced", max_tokens=2000)
+        return {"success": True, "result": context}
+    except Exception as e:
+        return {"success": False, "error": f"Search failed: {str(e)}"}
 
 # --- TOOL DEFINITIONS ---
 
-def get_tool_declarations(tool_names: List[str]) -> List[types.FunctionDeclaration]:
+def get_tool_definitions_for_prompt(tool_names: List[str]) -> str:
     """
-    Maps logical tool names to Google GenAI FunctionDeclaration objects.
+    Returns a RICH JSON string of tool definitions.
+    Explicitly formats schemas to guide the LLM's JSON generation.
     """
-    tool_registry = {
-        'web_search': types.FunctionDeclaration(
-            name='web_search',
-            description='Search the web for up-to-date information, news, or technical documentation.',
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    'query': types.Schema(
-                        type=types.Type.STRING,
-                        description='The search query string'
-                    ),
-                    'num_results': types.Schema(
-                        type=types.Type.INTEGER,
-                        description='Number of results to return (default 5)'
-                    )
+    registry = {
+        'web_search': {
+            "name": "web_search",
+            "description": "Perform a real-time web search. Use for current events, fact verification, or technical documentation.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string", 
+                        "description": "The search keywords or question."
+                    }
                 },
-                required=['query']
-            )
-        ),
-
-        'execute_python': types.FunctionDeclaration(
-            name='execute_python',
-            description='Execute Python code for data analysis, math, or visualization.',
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    'code': types.Schema(
-                        type=types.Type.STRING,
-                        description='Full Python code block to execute'
-                    ),
+                "required": ["query"]
+            }
+        },
+        'execute_python': {
+            "name": "execute_python",
+            "description": "Run Python code in a secure sandbox. REQUIRED for: calculations, data analysis (pandas), and generating files/plots (matplotlib).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {
+                        "type": "string", 
+                        "description": "The complete Python script to execute. Must be valid, self-contained code."
+                    }
                 },
-                required=['code']
-            )
-        ),
-
-        'read_file': types.FunctionDeclaration(
-            name='read_file',
-            description='Read text content from the local session workspace.',
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    'filename': types.Schema(
-                        type=types.Type.STRING,
-                        description='Name of the file to read (e.g., "data.csv")'
-                    ),
+                "required": ["code"]
+            }
+        },
+        'read_file': {
+            "name": "read_file",
+            "description": "Read text content from a file in your workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {
+                        "type": "string", 
+                        "description": "The exact name of the file (e.g. 'data.csv')."
+                    }
                 },
-                required=['filename']
-            )
-        ),
-
-        'write_file': types.FunctionDeclaration(
-            name='write_file',
-            description='Save text content to a file in the session workspace.',
-            parameters=types.Schema(
-                type=types.Type.OBJECT,
-                properties={
-                    'filename': types.Schema(
-                        type=types.Type.STRING,
-                        description='Name of the destination file'
-                    ),
-                    'content': types.Schema(
-                        type=types.Type.STRING,
-                        description='Text content to write'
-                    ),
+                "required": ["filename"]
+            }
+        },
+        'write_file': {
+            "name": "write_file",
+            "description": "Create or overwrite a text file in your workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {
+                        "type": "string", 
+                        "description": "The destination filename."
+                    },
+                    "content": {
+                        "type": "string", 
+                        "description": "The text content to write."
+                    }
                 },
-                required=['filename', 'content']
-            )
-        ),
-
-        'list_files': types.FunctionDeclaration(
-            name='list_files',
-            description='List all available files in the current session workspace.',
-            parameters=types.Schema(type=types.Type.OBJECT, properties={})
-        )
+                "required": ["filename", "content"]
+            }
+        },
+        'list_files': {
+            "name": "list_files",
+            "description": "List all files currently available in your workspace (inputs and outputs).",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
     }
 
-    return [tool_registry[name] for name in tool_names if name in tool_registry]
+    definitions = []
+    for name in tool_names:
+        if name in registry:
+            definitions.append(registry[name])
+
+    # Return clean JSON string
+    return json.dumps(definitions, indent=2)
 
 def execute_tool_call(tool_name: str, args: Dict[str, Any], run_id: str = "default_run") -> Dict[str, Any]:
-    """
-    Dispatcher for executing the logic associated with a function call.
-    Accepts run_id to target the specific session folder.
-    """
-    
-    # Initialize Workspace Manager with the specific run ID
+    """Dispatcher"""
     ws = WorkspaceManager(run_id)
-
     try:
-        # === RFS TOOLS ===
         if tool_name == 'read_file':
-            return {'result': ws.read(args.get('filename', ''))}
-            
+            return {'success': True, 'result': ws.read(args.get('filename', ''))}
         elif tool_name == 'write_file':
-            return {'result': ws.write(args.get('filename', ''), args.get('content', ''))}
-            
+            return {'success': True, 'result': ws.write(args.get('filename', ''), args.get('content', ''))}
         elif tool_name == 'list_files':
-            return {'result': ws.list_contents()}
-
-        # === STANDARD TOOLS ===
+            return {'success': True, 'result': ws.list_contents()}
         elif tool_name == 'web_search':
-            query = args.get('query', 'unspecified')
-            # Mock Implementation for Prototype
-            return {
-                'success': True,
-                'result': f"Found relevant information for '{query}': [Mocked content from search engine]."
-            }
-
+            return _run_tavily_search(args.get('query', ''))
         elif tool_name == 'execute_python':
-            # Mock Implementation for Prototype
-            return {
-                'success': True,
-                'result': "Code executed successfully. Output: [Calculated value or plot confirmation]."
-            }
-
-        return {
-            'success': False,
-            'error': f"Unknown tool: {tool_name}"
-        }
-
+            return _run_e2b_sandbox(args.get('code', ''), ws)
+        
+        return {'success': False, 'error': f"Unknown tool: {tool_name}"}
     except Exception as e:
-        return {
-            'success': False,
-            'error': f"Tool Execution Failure: {str(e)}"
-        }
-
-# Integration: Used by src/core/llm.py to handle the function call loop.
+        return {'success': False, 'error': f"Tool execution error: {str(e)}"}

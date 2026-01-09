@@ -27,6 +27,8 @@ type SimulationStep = {
     };
     signatures?: Record<string, string>;
     topology?: TopologySnapshot;
+    // New: Action to execute when this step triggers (for emitting logs)
+    action?: () => void;
 };
 
 // --- Mock Data Generators ---
@@ -57,17 +59,29 @@ Delegating execution to ${newAgentId}...`;
 };
 
 const STATIC_ARTIFACTS: Record<string, any> = {
-    'n1': { 
+    'n1': {
         result: `## Orchestration Plan
 Analysis indicates a need for deep retrieval and verification.
 1. **Retrieval**: Gather architecture docs.
 2. **Analysis**: Profile latency metrics.
 3. **Synthesis**: Generate final report.`
     },
-    'n3': { 
-        result: "testing\n```python\n# Analyzing latency variance\nvar = data['p99'].var()\nprint(f'Variance: {var}')\n```\n**Output:** `Variance: 0.042`" 
+    'n3': {
+        success: true,
+        result: `Analysis complete. Generated visualization of latency metrics across all service endpoints.
+
+Key Findings:
+- P99 latency variance: 0.042ms
+- 3 outlier endpoints identified
+- Peak load correlation: 0.87
+
+The variance analysis chart has been saved to disk.
+
+[SYSTEM: Generated Image saved to 'latency_variance_analysis.png']`,
+        files_generated: ['latency_variance_analysis.png', 'metrics_summary.json'],
+        artifact_stored: true
     },
-    'n4': { 
+    'n4': {
         result: `# Final Report
 The analysis confirms that the latency regression is caused by "Cold Expert" switching in the MoE layer.
 **Recommendation**: Enable pre-warming on the Orchestrator.`
@@ -129,6 +143,62 @@ export async function mockGetLibraryFiles(): Promise<string[]> {
     ];
 }
 
+// === MOCK GENERATED FILE SERVER ===
+// Simple bar chart SVG for mock demonstration
+const MOCK_CHART_SVG = `
+<svg width="600" height="400" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .title { font: bold 16px monospace; fill: #333; }
+    .label { font: 11px monospace; fill: #666; }
+    .bar { fill: #4285f4; }
+    .grid { stroke: #e0e0e0; stroke-width: 1; }
+  </style>
+
+  <!-- Background -->
+  <rect width="600" height="400" fill="#fafafa"/>
+
+  <!-- Title -->
+  <text x="300" y="30" text-anchor="middle" class="title">P99 Latency Variance Analysis</text>
+
+  <!-- Grid Lines -->
+  <line x1="80" y1="100" x2="80" y2="350" class="grid"/>
+  <line x1="80" y1="350" x2="550" y2="350" class="grid"/>
+
+  <!-- Bars -->
+  <rect x="120" y="180" width="60" height="170" class="bar"/>
+  <rect x="220" y="120" width="60" height="230" class="bar"/>
+  <rect x="320" y="200" width="60" height="150" class="bar"/>
+  <rect x="420" y="90" width="60" height="260" class="bar"/>
+
+  <!-- Labels -->
+  <text x="150" y="370" text-anchor="middle" class="label">Auth</text>
+  <text x="250" y="370" text-anchor="middle" class="label">Search</text>
+  <text x="350" y="370" text-anchor="middle" class="label">Data</text>
+  <text x="450" y="370" text-anchor="middle" class="label">Upload</text>
+
+  <!-- Y-axis labels -->
+  <text x="70" y="355" text-anchor="end" class="label">0ms</text>
+  <text x="70" y="225" text-anchor="end" class="label">50ms</text>
+  <text x="70" y="105" text-anchor="end" class="label">100ms</text>
+
+  <!-- Variance annotation -->
+  <text x="300" y="385" text-anchor="middle" class="label">Variance: 0.042ms</text>
+</svg>`;
+
+const MOCK_GENERATED_FILES: Record<string, string> = {
+    'latency_variance_analysis.png': 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(MOCK_CHART_SVG),
+    'metrics_summary.json': 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify({
+        p99_variance: 0.042,
+        outliers: ['endpoint_auth', 'endpoint_search', 'endpoint_upload'],
+        peak_correlation: 0.87,
+        generated_at: new Date().toISOString()
+    }, null, 2))
+};
+
+export function getMockGeneratedFile(filename: string): string | null {
+    return MOCK_GENERATED_FILES[filename] || null;
+}
+
 
 // --- Mock WebSocket Class ---
 
@@ -181,12 +251,8 @@ export class MockWebSocket {
         if (this.isPaused) {
             console.log('[MOCK WS] Resuming simulation...');
             this.isPaused = false;
-            
-            // CHANGE: Removed `this.addStep(0, 'RUNNING')`
-            // The next step in the pre-calculated timeline (start of n4) 
-            // will automatically set the status to RUNNING.
-            
-            // Restart the loop immediately
+            // Emit a resumed log
+            this.emitLog('KERNEL', 'INFO', 'Resuming execution loop', 'SYS');
             this.runLoop();
         }
     }
@@ -209,28 +275,89 @@ export class MockWebSocket {
         }
     }
 
+    /**
+     * Helper to emit live log events (for ToolExecutionCard testing)
+     */
+    private emitLog(agentId: string, category: string, message: string, metadata: string) {
+        const payload = {
+            type: 'log_event',
+            agent_id: agentId,
+            payload: {
+                category: category,
+                message: message,
+                metadata: metadata
+            },
+            timestamp: new Date().toISOString()
+        };
+
+        if (this.onmessage) {
+            this.onmessage({ data: JSON.stringify(payload) });
+        }
+    }
+
     private planSimulation() {
         // 1. Start State
         this.addStep(500, 'RUNNING');
 
-        // 2. Orchestrator (n1) runs
+        // 2. Orchestrator (n1) - Thinking logic
+        this.addStep(200, undefined, () => {
+             this.activeAgents.push('n1');
+             this.emitLog('n1', 'THOUGHT', 'Analyzing workflow requirements...', 'PLANNING');
+        });
         this.simulateAgentExecution('n1', 1500, 450);
 
-        // 3. Parallel Execution: n2 (Dynamic) & n3 (Static)
-        this.activeAgents.push('n2', 'n3');
-        this.addStep(200);
+        // 3. Start Parallel Execution
+        this.addStep(200, undefined, () => {
+             this.activeAgents.push('n2', 'n3');
+        });
 
+        // --- AGENT n3: PYTHON TOOL USER ---
+        // Simulating the Tool Loop from llm.py
+        this.addStep(800, undefined, () => {
+            this.emitLog('n3', 'THOUGHT', 'I need to calculate variance using pandas.', 'REASONING');
+        });
+
+        // 3a. Call Tool
+        this.addStep(400, undefined, () => {
+            // "IO_REQ" + "TOOL_CALL" triggers blue spinner in ToolExecutionCard
+            this.emitLog('n3', 'TOOL_CALL', 'execute_python({"code": "import pandas as pd\\ndf = pd.read_csv(\'data.csv\')..."})', 'IO_REQ');
+        });
+
+        // 3b. Tool Result (Success)
+        this.addStep(1500, undefined, () => {
+             // "IO_OK" + "TOOL_RESULT" triggers green check in ToolExecutionCard
+             this.emitLog('n3', 'TOOL_RESULT', 'Files generated: [\'latency_variance_analysis.png\']\nStandard Output: Done.', 'IO_OK');
+        });
+        
         // Complete n3
-        this.simulateAgentCompletion('n3', 2500, 800, false);
+        this.simulateAgentCompletion('n3', 500, 800, false);
+
+        // --- AGENT n2: DELEGATOR + ERROR SIMULATION ---
+        this.addStep(500, undefined, () => {
+             // Simulate a failed tool call first to test the Error Card
+             this.emitLog('n2', 'TOOL_CALL', 'web_search({"query": "internal_docs_v2"})', 'IO_REQ');
+        });
+
+        this.addStep(1200, undefined, () => {
+            // "IO_ERR" + "TOOL_RESULT" triggers red Error Card with traceback support
+            this.emitLog('n2', 'TOOL_RESULT', 'Error: Connection Timeout\nTraceback (most recent call last):\n  File "lib/search.py", line 40\n    raise TimeoutError("Gateway 504")', 'IO_ERR');
+        });
+
+        this.addStep(800, undefined, () => {
+            this.emitLog('n2', 'THOUGHT', 'Search failed. Attempting dynamic delegation strategy.', 'RECOVERY');
+        });
 
         // n2 does its dynamic delegation thing
         this.processDynamicChain('n2', 'n4'); 
 
         // === INSERT SYSTEM INTERVENTION HERE ===
         // We simulate a pause just before the final synthesis node (n4) starts.
-        this.addStep(0, 'AWAITING_APPROVAL'); 
-        // Note: The loop will PAUSE here until resume() is called.
-
+        this.addStep(0, 'AWAITING_APPROVAL', () => {
+            // Emit the specific log that triggers the ApprovalCard in OutputPane
+            // message="SAFETY_PATTERN_TRIGGERED", metadata="INTERVENTION"
+            this.emitLog('CORTEX', 'INFO', 'SAFETY_PATTERN_TRIGGERED', 'INTERVENTION');
+        }); 
+        
         // 4. Synthesis (n4) runs (After approval)
         this.simulateAgentExecution('n4', 3000, 2500);
 
@@ -239,44 +366,49 @@ export class MockWebSocket {
     }
 
     private processDynamicChain(currentId: string, finalDependentId: string) {
-        // Logic kept same as previous version...
         const isRoot = currentId === 'n2';
-        const chance = isRoot ? 0.6 : 0.3;
-        const shouldDelegate = Math.random() < chance;
-        const depth = currentId.split('_').length;
+        // Force delegation for n2 to show feature
+        const shouldDelegate = isRoot; 
+        
+        if (shouldDelegate) {
+            const newAgentId = `${currentId}_sub_A`;
+            const reason = "Search failed; spawning specialist.";
 
-        if (shouldDelegate && depth <= 3) {
-            const newAgentId = `${currentId}_sub${Math.floor(Math.random() * 100)}`;
-            const reason = isRoot ? "Topic too broad; spawning specialist." : "Additional verification.";
+            // This delay simulates the LLM generation time
+            this.addStep(1000, undefined, () => {
+                const output = generateDelegationArtifact(reason, currentId, newAgentId);
+                SESSION_ARTIFACTS[currentId] = { result: output };
 
-            const output = generateDelegationArtifact(reason, currentId, newAgentId);
-            SESSION_ARTIFACTS[currentId] = { result: output };
+                this.activeAgents = this.activeAgents.filter(id => id !== currentId);
+                this.completedAgents.push(currentId);
+                this.totalTokens += 500;
+                
+                this.invocations.push({
+                    id: `inv-${currentId}`,
+                    agent_id: currentId,
+                    status: 'success',
+                    tokens_used: 500,
+                    latency_ms: 1200,
+                    artifact_id: `mock-art-${currentId}`
+                });
 
-            this.activeAgents = this.activeAgents.filter(id => id !== currentId);
-            this.completedAgents.push(currentId);
-            this.totalTokens += 500;
-            
-            this.invocations.push({
-                id: `inv-${currentId}`,
-                agent_id: currentId,
-                status: 'success',
-                tokens_used: 500,
-                latency_ms: 1200,
-                artifact_id: `mock-art-${currentId}`
+                // Update Topology
+                this.topology.nodes.push(newAgentId);
+                this.topology.edges.push({ from: currentId, to: newAgentId });
+                // Rewire: n2 -> n4 becomes n2 -> sub -> n4
+                this.topology.edges = this.topology.edges.filter(e => !(e.from === currentId && e.to === finalDependentId));
+                this.topology.edges.push({ from: newAgentId, to: finalDependentId });
+
+                this.signatures[currentId] = `hash_${currentId}`;
             });
 
-            this.topology.nodes.push(newAgentId);
-            this.topology.edges.push({ from: currentId, to: newAgentId });
-            this.topology.edges = this.topology.edges.filter(e => !(e.from === currentId && e.to === finalDependentId));
-            this.topology.edges.push({ from: newAgentId, to: finalDependentId });
+            // Start New Agent
+            this.addStep(500, undefined, () => {
+                this.activeAgents.push(newAgentId);
+                this.emitLog(newAgentId, 'THOUGHT', 'I have been spawned to handle the missing documentation.', 'INIT');
+            });
 
-            this.signatures[currentId] = `hash_${currentId}`;
-            this.addStep(1000); 
-
-            this.activeAgents.push(newAgentId);
-            this.addStep(500);
-
-            this.processDynamicChain(newAgentId, finalDependentId);
+            this.simulateAgentCompletion(newAgentId, 2000, 600, true);
 
         } else {
             SESSION_ARTIFACTS[currentId] = { 
@@ -287,10 +419,11 @@ export class MockWebSocket {
     }
 
     private simulateAgentExecution(id: string, duration: number, tokens: number) {
-        if (!this.activeAgents.includes(id)) {
-            this.activeAgents.push(id);
-        }
-        this.addStep(200);
+        this.addStep(200, undefined, () => {
+            if (!this.activeAgents.includes(id)) {
+                this.activeAgents.push(id);
+            }
+        });
         this.simulateAgentCompletion(id, duration, tokens, false);
     }
 
@@ -300,50 +433,48 @@ export class MockWebSocket {
             this.completedAgents.push(id);
             this.totalTokens += tokens;
             this.signatures[id] = `hash_${Math.floor(Math.random()*10000).toString(16)}`;
-            
-            this.invocations.push({
+
+            const invocation: any = {
                 id: `inv-${id}`,
                 agent_id: id,
                 status: 'success',
                 tokens_used: tokens,
                 latency_ms: duration,
                 artifact_id: `mock-art-${id}`
-            });
+            };
+
+            // n3 uses execute_python to generate artifacts
+            if (id === 'n3') {
+                invocation.tools_used = ['execute_python'];
+            }
+
+            this.invocations.push(invocation);
         });
     }
 
     private addStep(delay: number, statusOverride?: string, action?: () => void) {
-        // Closure to capture state at execution time
-        const stepAction = () => {
-            if (action) action();
-            // Snapshot logic...
-        };
-
-        // We push a 'thunk' that generates the snapshot when called,
-        // or we push a config object and generate snapshot in runLoop.
-        // For this procedural generation, we are building a timeline array upfront,
-        // but the state needs to accumulate.
+        // We defer the state snapshot to execution time (in runLoop)
+        // by wrapping the current state logic into the stored action or checking it dynamically
+        // BUT, since we are defining the plan sequentially, we need the simulation step object
+        // to hold the *intent* of the change, and we apply it when the timer hits.
         
-        // REFACTOR NOTE: To allow procedural state accumulation, we will execute the action
-        // immediately during generation, but capture the *resultant* state into the step array.
-        // This is strictly deterministic for the mock.
-        if (action) action();
-
-        const snapshot = {
+        // However, the `steps` array in the original mock assumes pre-calculated state snapshots.
+        // To support `action` callback modifying state mid-flight, we need to adapt `runLoop`.
+        
+        this.steps.push({
             delay,
             state: {
                 status: statusOverride || 'RUNNING',
-                active_agents: [...this.activeAgents],
-                completed_agents: [...this.completedAgents],
+                active_agents: [], // These will be filled dynamically in runLoop based on `this.activeAgents`
+                completed_agents: [],
                 failed_agents: [],
-                total_tokens_used: this.totalTokens,
-                invocations: JSON.parse(JSON.stringify(this.invocations)) // Deep copy
+                total_tokens_used: 0,
+                invocations: []
             },
-            signatures: { ...this.signatures },
-            topology: JSON.parse(JSON.stringify(this.topology))
-        };
-
-        this.steps.push(snapshot);
+            signatures: {},
+            topology: { nodes: [], edges: [] },
+            action // Store the action to be run before sending update
+        });
     }
 
     private runLoop() {
@@ -354,27 +485,43 @@ export class MockWebSocket {
 
         const step = this.steps[this.currentStep];
         
-        // 1. Send the Update
+        // 1. EXECUTE ACTION (Mutates this.activeAgents, this.topology, etc.)
+        if (step.action) {
+            step.action();
+        }
+
+        // 2. CONSTRUCT DYNAMIC STATE
+        // We ignore the empty placeholders in `step.state` and build from class properties
+        const dynamicState = {
+            status: step.state.status === 'RUNNING' ? 'RUNNING' : step.state.status,
+            active_agents: [...this.activeAgents],
+            completed_agents: [...this.completedAgents],
+            failed_agents: [],
+            total_tokens_used: this.totalTokens,
+            invocations: JSON.parse(JSON.stringify(this.invocations))
+        };
+
+        // 3. Send the Update
         const message = {
             type: 'state_update',
-            state: step.state,
-            signatures: step.signatures || {},
-            topology: step.topology || null
+            state: dynamicState,
+            signatures: { ...this.signatures },
+            topology: JSON.parse(JSON.stringify(this.topology))
         };
 
         if (this.onmessage) {
             this.onmessage({ data: JSON.stringify(message) });
         }
 
-        // 2. CHECK FOR INTERVENTION (PAUSE)
-        if (step.state.status === 'AWAITING_APPROVAL') {
+        // 4. CHECK FOR INTERVENTION (PAUSE)
+        if (dynamicState.status === 'AWAITING_APPROVAL') {
             console.log('[MOCK WS] Simulation paused for approval.');
             this.isPaused = true;
-            this.currentStep++; // Ready for next step when resumed
-            return; // EXIT LOOP - Do not set timer
+            this.currentStep++; 
+            return; // EXIT LOOP
         }
 
-        // 3. Schedule next step
+        // 5. Schedule next step
         this.timer = setTimeout(() => {
             this.currentStep++;
             this.runLoop();

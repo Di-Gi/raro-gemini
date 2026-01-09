@@ -8,19 +8,28 @@ import base64
 import mimetypes
 import json
 import asyncio
+import httpx
+import re  # Added for reasoning extraction regex
 from pathlib import Path
 from datetime import datetime
 from google.genai import types
-from core.config import gemini_client, logger, resolve_model
+from core.config import gemini_client, logger, resolve_model, settings, redis_client
+from intelligence.prompts import render_runtime_system_instruction
 
 # Import Tooling Logic
 try:
-    from intelligence.tools import get_tool_declarations, execute_tool_call
+    from intelligence.tools import execute_tool_call
 except ImportError:
     logger.warning("intelligence.tools not found, tool execution will be disabled")
-    get_tool_declarations = lambda x: []
     # FIX: Robust fallback signature that accepts keyword arguments
     execute_tool_call = lambda tool_name, args, run_id="default": {"error": "Tool execution unavailable"}
+
+# Import Parser for Manual Tool Parsing
+try:
+    from core.parsers import parse_function_calls
+except ImportError:
+    logger.warning("core.parsers not found, manual function parsing will be disabled")
+    parse_function_calls = lambda x: []
 
 # ============================================================================
 # Multimodal File Loading
@@ -63,25 +72,101 @@ async def load_multimodal_file(file_path: str) -> Dict[str, Any]:
     }
 
 # ============================================================================
+# Live Telemetry Emission (Redis Pub/Sub)
+# ============================================================================
+
+def emit_telemetry(
+    run_id: str,
+    agent_id: str,
+    category: str,
+    message: str,
+    meta: str,
+    extra: dict = {}
+):
+    """
+    Publish live log event to Redis for Kernel to forward to UI.
+
+    Args:
+        run_id: Current workflow run ID
+        agent_id: Agent generating this log
+        category: TOOL_CALL | TOOL_RESULT | THOUGHT
+        message: Human-readable message
+        meta: Short tag (IO_REQ, IO_OK, IO_ERR, PLANNING, etc.)
+        extra: Additional structured data (tool_name, duration_ms, etc.)
+    """
+    if not redis_client:
+        return  # Graceful degradation if Redis unavailable
+
+    try:
+        payload = {
+            "run_id": run_id,
+            "agent_id": agent_id,
+            "category": category,
+            "message": message,
+            "metadata": meta,
+            "timestamp": datetime.now().isoformat(),
+            **extra
+        }
+
+        # Fire-and-forget publish (non-blocking)
+        redis_client.publish("raro:live_logs", json.dumps(payload))
+
+    except Exception as e:
+        logger.warning(f"Telemetry emit failed: {e}")
+        # Don't crash execution if telemetry fails
+
+# ============================================================================
 # Private Helper: Request Preparation
 # ============================================================================
 
 async def _prepare_gemini_request(
     model: str,
     prompt: str,
+    agent_id: str,
+    user_directive: str = "",
     input_data: Optional[Dict[str, Any]] = None,
     file_paths: Optional[List[str]] = None,
     parent_signature: Optional[str] = None,
     thinking_level: Optional[int] = None,
     tools: Optional[List[str]] = None,
+    # [[NEW PARAMETERS]]
+    allow_delegation: bool = False,
+    graph_view: str = "",
 ) -> Dict[str, Any]:
     """
-    Internal helper to build contents, config, and tools for API calls.
-    Returns a dict of arguments ready to pass to generate_content.
+    Internal helper to build contents, config.
+    NOTE: In Manual Parsing Mode, we do NOT pass 'tools' object to the API.
+    We inject tool info into the system_instruction instead.
+
+    Prompt Architecture (3-Layer):
+        1. Base RARO Rules (from render_runtime_system_instruction)
+        2. Node Persona (the 'prompt' field - "You are a Python specialist...")
+        3. User Directive (the runtime task - "Analyze this CSV...")
     """
-    # 1. Build Generation Config
+
+    # 1. Generate Base System Instruction
+    base_instruction = render_runtime_system_instruction(agent_id, tools)
+
+    # 2. Conditionally Inject Delegation Capability
+    if allow_delegation:
+        from intelligence.prompts import inject_delegation_capability
+        base_instruction = inject_delegation_capability(base_instruction)
+        logger.debug(f"Delegation capability granted to {agent_id}")
+
+    # 3. Add Graph Awareness
+    graph_context = f"\n\n[OPERATIONAL AWARENESS]\n{graph_view}\n" if graph_view else ""
+
+    # 4. Combine: Base + Graph + Persona
+    system_instruction = f"{base_instruction}{graph_context}\n\n[YOUR SPECIALTY]\n{prompt}"
+
+    # 2. Build Generation Config
     config_params: Dict[str, Any] = {
-        "temperature": 1.0, 
+        "temperature": 1.0,
+        "system_instruction": system_instruction,
+        # --- FIX: Explicitly disable native tools to prevent UNEXPECTED_TOOL_CALL ---
+        # This forces the model to use the text-based ```json:function``` format
+        # defined in our system prompts instead of attempting native function calls
+        # "tool_config": {"function_calling_config": {"mode": "NONE"}}
     }
 
     # Add Deep Think configuration
@@ -93,17 +178,10 @@ async def _prepare_gemini_request(
         )
         logger.debug(f"Deep Think enabled: budget={thinking_budget}")
 
-    # 2. Prepare Tools (Inject into config)
-    if tools:
-        declarations = get_tool_declarations(tools)
-        if declarations:
-            # Create tool config with the declarations
-            # Using the Google GenAI SDK format, tools are passed inside config
-            tool_obj = types.Tool(function_declarations=declarations)
-            config_params["tools"] = [tool_obj] 
-            logger.debug(f"Tools enabled: {tools}")
+    # NOTE: We intentionally DO NOT set config_params["tools"] here.
+    # The agent is instructed to use ```json:function``` text blocks.
 
-    # 3. Build Conversation Contents
+    # 4. Build Conversation Contents
     contents: List[Dict[str, Any]] = []
 
     # Add parent signature logic
@@ -114,11 +192,17 @@ async def _prepare_gemini_request(
         })
         contents.append({
             "role": "model",
-            "parts": [{"text": "Previous context acknowledged. Continuing reasoning chain."}]
+            "parts": [{"text": "Context accepted. Maintaining reasoning chain."}]
         })
 
     # Build User Message
     user_parts: List[Dict[str, Any]] = []
+
+    # 3. User Directive (if provided) - This is the runtime task
+    if user_directive:
+        user_parts.append({
+            "text": f"[OPERATOR DIRECTIVE]\n{user_directive}\n\n"
+        })
 
     # Multimodal files
     if file_paths:
@@ -130,15 +214,20 @@ async def _prepare_gemini_request(
                 logger.error(f"Failed to load file {file_path}: {e}")
                 user_parts.append({"text": f"[ERROR: Failed to load {file_path}]"})
 
-    # Context Data
+    # Context Data (from parent nodes)
     if input_data:
         context_str = json.dumps(input_data, indent=2)
         user_parts.append({
             "text": f"[CONTEXT DATA]\n{context_str}\n\n"
         })
 
-    # Main Prompt
-    user_parts.append({"text": prompt})
+    # === PREVENT EMPTY REQUEST ===
+    # Gemini throws 400 if 'parts' is empty. If we have no directive, file, or context,
+    # we must provide a generic trigger to hand over control to the model.
+    if not user_parts:
+        user_parts.append({
+            "text": "[SYSTEM] Ready. Execute based on system instructions."
+        })
 
     contents.append({
         "role": "user",
@@ -151,20 +240,77 @@ async def _prepare_gemini_request(
         "config": config_params
     }
 
+
+async def probe_sink(
+    params: Dict[str, Any],
+    run_id: str,
+    agent_id: str,
+    tools: Optional[List[str]],
+    model: str,
+    prompt: str
+) -> Optional[Dict[str, Any]]:
+    """
+    Intercepts the Agent execution if DEBUG_PROBE_URL is set.
+    """
+    # 1. Check if Probing is active
+    if not settings.DEBUG_PROBE_URL:
+        return None
+
+    # logger.warning(...) <-- Optional: Comment this out to reduce log noise
+
+    # 2. Extract Data for Visualization
+    system_instruction = params["config"].get("system_instruction", "")
+    
+    # Extract user message parts safely
+    user_parts = params["contents"][-1]["parts"] if params["contents"] else []
+    formatted_user_msg = "\n".join([
+        p.get("text", "[Binary Data/File]") for p in user_parts
+        if "text" in p
+    ])
+
+    # 3. Fire-and-forget log payload to the Probe
+    try:
+        async with httpx.AsyncClient() as client:
+            # We use a short timeout so we don't slow down the actual runtime significantly
+            await client.post(
+                f"{settings.DEBUG_PROBE_URL}/capture",
+                json={
+                    "id": run_id,
+                    "time": datetime.now().isoformat(),
+                    "agent_id": agent_id,
+                    "run_id": run_id,
+                    "tools": tools or [],
+                    "final_system_prompt": system_instruction,
+                    "final_user_message": formatted_user_msg,
+                    "original_payload": {"model": model, "prompt": prompt}
+                },
+                timeout=0.5 
+            )
+    except Exception as e:
+        logger.error(f"Failed to send debug capture: {e}")
+
+    # 4. MODIFICATION: Return None to allow actual execution to proceed
+    # Returning None tells 'call_gemini_with_context' to continue to the LLM
+    return None
+
+
 # ============================================================================
 # Unified Gemini API Caller (Sync/Batch)
 # ============================================================================
-
 async def call_gemini_with_context(
     model: str,
     prompt: str,
+    user_directive: str = "",
     input_data: Optional[Dict[str, Any]] = None,
     file_paths: Optional[List[str]] = None,
     parent_signature: Optional[str] = None,
     thinking_level: Optional[int] = None,
     tools: Optional[List[str]] = None,
     agent_id: Optional[str] = None,
-    run_id: str = "default_run"
+    run_id: str = "default_run",
+    # [[NEW PARAMETERS]]
+    allow_delegation: bool = False,
+    graph_view: str = "",
 ) -> Dict[str, Any]:
     """
     Execute Gemini interaction with full features: Multimodal, Context, and Tools.
@@ -175,24 +321,61 @@ async def call_gemini_with_context(
     concrete_model = resolve_model(model)
     logger.debug(f"Resolved model alias '{model}' to '{concrete_model}'")
 
+    safe_agent_id = agent_id or "unknown_agent"
+
+    logger.info(
+        f"\n{'#'*70}\n"
+        f"AGENT INVOCATION: {safe_agent_id} (Manual Tooling)\n"
+        f"Model: {concrete_model} | Run ID: {run_id}\n"
+        f"Tools: {tools}\n"
+        f"User Directive: {'Yes' if user_directive else 'No'}\n"
+        f"{'#'*70}"
+    )
+
     try:
-        # Prepare initial request
         params = await _prepare_gemini_request(
-            concrete_model, prompt, input_data, file_paths, 
-            parent_signature, thinking_level, tools
+            concrete_model, prompt, safe_agent_id, user_directive, input_data, file_paths,
+            parent_signature, thinking_level, tools,
+            # Pass new parameters
+            allow_delegation=allow_delegation,
+            graph_view=graph_view
         )
+
+        # =========================================================
+        # INTERCEPTION LAYER (Abstracted)
+        # =========================================================
+        probe_response = await probe_sink(
+            params=params,
+            run_id=run_id,
+            agent_id=safe_agent_id,
+            tools=tools,
+            model=model,
+            prompt=prompt
+        )
+        
+        # If probe_sink returns a dictionary, it means we are in debug mode
+        # and should return immediately, skipping the LLM call.
+        if probe_response:
+            return probe_response
+        # =========================================================
 
         current_contents = params["contents"]
         max_turns = 10
         turn_count = 0
-        final_response = None
+        final_response_text = ""
+
+        # --- FIX START: Initialize variables before the loop ---
         response = None
-        
-        # Tool Loop
+        content_text = ""
+        all_files_generated = []  # Accumulator for files from all tool calls
+        # --- FIX END ---
+
+        logger.debug(f"Agent {safe_agent_id}: Starting manual tool loop")
+
         while turn_count < max_turns:
             turn_count += 1
-            
-            # Call API
+
+            # 1. Call LLM
             response = await asyncio.to_thread(
                 gemini_client.models.generate_content,
                 model=params["model"],
@@ -200,88 +383,157 @@ async def call_gemini_with_context(
                 config=params["config"]
             )
 
-            # Check for Function Calls
-            function_calls = []
-            if (response.candidates and 
-                response.candidates[0].content and 
-                response.candidates[0].content.parts):
-                
-                for part in response.candidates[0].content.parts:
-                    if part.function_call:
-                        function_calls.append(part.function_call)
+            logger.debug(f"Full Gemini Response: {response.model_dump_json(indent=2) if response else 'None'}")
 
-            # If no function calls, we are done
-            if not function_calls:
-                final_response = response
+            if not response.candidates:
+                logger.error(f"Agent {agent_id}: API returned no candidates.")
                 break
 
-            # Handle Function Calls
-            logger.info(f"Agent {agent_id} triggered {len(function_calls)} tool calls (Turn {turn_count})")
-            
-            # Append model's thought/call to history
-            if response.candidates and response.candidates[0].content:
-                current_contents.append(response.candidates[0].content)
+            # 2. Extract Text
+            content_text = response.text or ""
 
-            # Execute Tools
-            function_responses = []
-            for call in function_calls:
-                tool_name = call.name
-                tool_args = call.args
-                
-                logger.debug(f"Executing tool: {tool_name} with args: {tool_args}")
-                
-                # PASS THE RUN_ID HERE
+            # Append model's response to history
+            current_contents.append({
+                "role": "model",
+                "parts": [{"text": content_text}]
+            })
+
+            # 3. Parse for Manual Function Calls
+            function_calls = parse_function_calls(content_text)
+
+            if not function_calls:
+                # No tools called, this is the final answer
+                final_response_text = content_text
+                break
+
+            # === PATCH: Emit Reasoning ===
+            # If there is text before/around the tool call, treat it as a thought
+            # We strip out the ```json:function ... ``` block to isolate the reasoning
+            reasoning_text = re.sub(r"```json:function[\s\S]*?```", "", content_text).strip()
+            
+            if reasoning_text:
+                emit_telemetry(
+                    run_id=run_id,
+                    agent_id=safe_agent_id,
+                    category="REASONING",
+                    message=reasoning_text,
+                    meta="PLANNING"
+                )
+            # =============================
+
+            # 4. Process Tool Calls
+            tool_outputs_text = ""
+
+            for tool_name, tool_args in function_calls:
+                # === EMIT: TOOL CALL START ===
+                args_str = json.dumps(tool_args)
+                emit_telemetry(
+                    run_id=run_id,
+                    agent_id=safe_agent_id,
+                    category="TOOL_CALL",
+                    message=f"{tool_name}({args_str[:50]}...)",  # Truncate for clean UI
+                    meta="IO_REQ",
+                    extra={"tool_name": tool_name, "args": tool_args}
+                )
+
+                logger.info(
+                    f"[TOOL DETECTED] Agent: {agent_id} | Tool: {tool_name} | Args: {str(tool_args)[:100]}..."
+                )
+
+                # Measure execution time
+                start_time = datetime.now()
+
+                # Execute
                 result_dict = execute_tool_call(tool_name, tool_args, run_id=run_id)
-                
-                function_responses.append(types.Part.from_function_response(
-                    name=tool_name,
-                    response=result_dict
-                ))
 
-            # Append results to history
-            current_contents.append(types.Content(
-                role="function",
-                parts=function_responses
-            ))
-            
-            # Loop continues to send function results back to model
+                duration_ms = (datetime.now() - start_time).total_seconds() * 1000
 
-        if not final_response:
-             # Should happen only if max_turns hit or loop didn't produce final_response
-            logger.warning(f"Agent {agent_id} hit max tool turns ({max_turns}) or failed to converge")
-            final_response = response
+                # --- FIX START: Capture generated files ---
+                if isinstance(result_dict, dict) and "files_generated" in result_dict:
+                    files = result_dict["files_generated"]
+                    if isinstance(files, list):
+                        all_files_generated.extend(files)
+                        logger.debug(f"Captured {len(files)} file(s) from {tool_name}: {files}")
+                # --- FIX END ---
 
-        # Extract Metrics & Text
-        response_text = ""
-        if final_response and final_response.text:
-            response_text = final_response.text
+                # === EMIT: TOOL RESULT ===
+                success = result_dict.get('success', True)
 
-        # Usage metadata
+                # Generate smart summary
+                output_summary = "Operation complete."
+                if "result" in result_dict:
+                    res = str(result_dict["result"])
+                    output_summary = res[:100] + "..." if len(res) > 100 else res
+                elif "error" in result_dict:
+                    output_summary = result_dict["error"]
+
+                emit_telemetry(
+                    run_id=run_id,
+                    agent_id=safe_agent_id,
+                    category="TOOL_RESULT",
+                    message=output_summary,
+                    meta="IO_OK" if success else "IO_ERR",
+                    extra={
+                        "tool_name": tool_name,
+                        "duration_ms": int(duration_ms)
+                    }
+                )
+
+                logger.info(
+                    f"[TOOL RESULT] Agent: {agent_id} | Status: {'✓' if success else '✗'}"
+                )
+
+                # Format Output for the Model
+                tool_outputs_text += f"\n[SYSTEM: Tool '{tool_name}' Result]\n{json.dumps(result_dict, indent=2)}\n"
+
+            # 5. Append Tool Outputs to History
+            current_contents.append({
+                "role": "user",
+                "parts": [{"text": tool_outputs_text}]
+            })
+
+            logger.debug(f"Agent {agent_id}: Turning over with tool results...")
+
+        # --- Finalization ---
+
+        # Metadata extraction
         input_tokens = 0
         output_tokens = 0
         cache_hit = False
-        
-        if final_response and hasattr(final_response, "usage_metadata"):
-            usage = final_response.usage_metadata
+
+        if response and hasattr(response, "usage_metadata"):
+            usage = response.usage_metadata
             input_tokens = getattr(usage, "prompt_token_count", 0) or 0
             output_tokens = getattr(usage, "candidates_token_count", 0) or 0
             cached_tokens = getattr(usage, "cached_content_token_count", 0) or 0
             cache_hit = cached_tokens > 0
 
-        # Signature Generation
         signature_data = f"{agent_id or 'unknown'}_{datetime.now().isoformat()}"
         thought_signature = base64.b64encode(signature_data.encode()).decode("utf-8")
 
+        # Fallback if loop exhausted
+        if not final_response_text:
+            final_response_text = content_text
+
+        logger.info(f"Agent {safe_agent_id} Completed. Tokens: {input_tokens}/{output_tokens} | Files: {len(all_files_generated)}")
+
         return {
-            "text": response_text,
+            "text": final_response_text,
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "thought_signature": thought_signature,
-            "cache_hit": cache_hit
+            "cache_hit": cache_hit,
+            "files_generated": all_files_generated  # Return captured files
         }
 
     except Exception as e:
-        logger.error(f"Gemini API call failed for agent {agent_id}: {str(e)}", exc_info=True)
+        logger.error(
+            f"\n{'!'*70}\n"
+            f"AGENT FAILED: {safe_agent_id}\n"
+            f"Error: {str(e)}\n"
+            f"{'!'*70}\n",
+            exc_info=True
+        )
         raise
 
 # ============================================================================
@@ -291,9 +543,15 @@ async def call_gemini_with_context(
 async def stream_gemini_response(
     model: str,
     prompt: str,
+    user_directive: str = "",
     input_data: Optional[Dict[str, Any]] = None,
     file_paths: Optional[List[str]] = None,
+    parent_signature: Optional[str] = None,
+    thinking_level: Optional[int] = None,
     tools: Optional[List[str]] = None,
+    agent_id: Optional[str] = None,
+    allow_delegation: bool = False,
+    graph_view: str = "",
     **kwargs
 ) -> AsyncIterator[str]:
     """
@@ -303,18 +561,25 @@ async def stream_gemini_response(
     if not gemini_client:
         raise ValueError("GEMINI_API_KEY not set")
     concrete_model = resolve_model(model)
-    # Reuse helper to setup context
+
+    # Establish identity for System Instruction generation
+    safe_agent_id = agent_id or "unknown_stream_agent"
+
+    # Prepare context with the new System Instruction injection logic
     params = await _prepare_gemini_request(
-        concrete_model, prompt, input_data, file_paths, 
-        tools=tools, **kwargs
+        concrete_model, prompt, safe_agent_id, user_directive, input_data, file_paths,
+        parent_signature, thinking_level, tools,
+        # Pass new parameters
+        allow_delegation=allow_delegation,
+        graph_view=graph_view
     )
     
     current_contents = params["contents"]
     
-    # We use the Async client for streaming to avoid blocking the loop
+    # Use the Async client for streaming to avoid blocking the event loop
     async_models = gemini_client.aio.models
 
-    # Initial Stream Call
+    # Initiate the stream request
     stream = await async_models.generate_content_stream(
         model=params["model"],
         contents=current_contents,
@@ -325,20 +590,20 @@ async def stream_gemini_response(
     full_response_content = []
     
     async for chunk in stream:
-        # Check if chunk contains a function call (usually start of stream)
+        # Detect function calls in the stream candidates
         if (chunk.candidates and 
             chunk.candidates[0].content and 
             chunk.candidates[0].content.parts):
             
             part = chunk.candidates[0].content.parts[0]
             if part.function_call:
-                # If tool call detected in stream, we must stop yielding text,
-                # execute the tool, and start a NEW stream with results.
-                # Currently we don't yield partial tool call args to client.
+                # If a tool call is detected, we accumulate but do not yield text.
+                # Note: Full tool loop recursion is not yet implemented in streaming mode;
+                # this block currently serves to capture the intent.
                 full_response_content.append(chunk.candidates[0].content)
                 continue
 
-        # If it's text, yield it
+        # Yield text content as it arrives
         if chunk.text:
             yield chunk.text
 

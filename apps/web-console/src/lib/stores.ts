@@ -16,6 +16,12 @@ export interface LogEntry {
   message: string;
   metadata?: string;
   isAnimated?: boolean;
+  category?: string;  // NEW: For tool/thought categorization (TOOL_CALL, TOOL_RESULT, THOUGHT)
+  // [[NEW]] Fields for merging Tool Results into the Call log
+  toolResult?: string;      // The output text from the tool
+  toolStatus?: 'success' | 'error'; 
+  toolDuration?: number;    // Execution time in ms
+  isComplete?: boolean;     // Has the tool finished?
 }
 
 export interface AgentNode {
@@ -27,6 +33,8 @@ export interface AgentNode {
   prompt: string;
   status: 'idle' | 'running' | 'complete' | 'failed';
   role: 'orchestrator' | 'worker' | 'observer';
+  acceptsDirective: boolean;  // Can this node receive operator directives?
+  allowDelegation: boolean;   // Can this node spawn sub-agents?
 }
 
 export interface PipelineEdge {
@@ -86,20 +94,20 @@ export function toggleAttachment(fileName: string) {
 
 // Initial Nodes State
 const initialNodes: AgentNode[] = [
-  { id: 'n1', label: 'ORCHESTRATOR', x: 20, y: 50, model: 'reasoning', prompt: 'Analyze the user request and determine optimal sub-tasks.', status: 'idle', role: 'orchestrator' },
-  { id: 'n2', label: 'RETRIEVAL', x: 50, y: 30, model: 'fast', prompt: 'Search knowledge base for relevant context.', status: 'idle', role: 'worker' },
-  { id: 'n3', label: 'CODE_INTERP', x: 50, y: 70, model: 'fast', prompt: 'Execute Python analysis on provided data.', status: 'idle', role: 'worker' },
-  { id: 'n4', label: 'SYNTHESIS', x: 80, y: 50, model: 'thinking', prompt: 'Synthesize all findings into a final report.', status: 'idle', role: 'worker' }
+  { id: 'orchestrator', label: 'ORCHESTRATOR', x: 20, y: 50, model: 'reasoning', prompt: 'Analyze the user request and determine optimal sub-tasks.', status: 'idle', role: 'orchestrator', acceptsDirective: true, allowDelegation: true },
+  { id: 'retrieval', label: 'RETRIEVAL', x: 50, y: 30, model: 'fast', prompt: 'Search knowledge base for relevant context.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false },
+  { id: 'code_interpreter', label: 'CODE_INTERP', x: 50, y: 70, model: 'fast', prompt: 'Execute Python analysis on provided data.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false },
+  { id: 'synthesis', label: 'SYNTHESIS', x: 80, y: 50, model: 'thinking', prompt: 'Synthesize all findings into a final report.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false }
 ];
 
 export const agentNodes = writable<AgentNode[]>(initialNodes);
 
 // Initial Edges State
 const initialEdges: PipelineEdge[] = [
-  { from: 'n1', to: 'n2', active: false, finalized: false, pulseAnimation: false },
-  { from: 'n1', to: 'n3', active: false, finalized: false, pulseAnimation: false },
-  { from: 'n2', to: 'n4', active: false, finalized: false, pulseAnimation: false },
-  { from: 'n3', to: 'n4', active: false, finalized: false, pulseAnimation: false }
+  { from: 'orchestrator', to: 'retrieval', active: false, finalized: false, pulseAnimation: false },
+  { from: 'orchestrator', to: 'code_interpreter', active: false, finalized: false, pulseAnimation: false },
+  { from: 'retrieval', to: 'synthesis', active: false, finalized: false, pulseAnimation: false },
+  { from: 'code_interpreter', to: 'synthesis', active: false, finalized: false, pulseAnimation: false }
 ];
 
 export const pipelineEdges = writable<PipelineEdge[]>(initialEdges);
@@ -121,6 +129,104 @@ export const planningMode = writable<boolean>(false);
 
 
 // === ACTIONS ===
+// === GRAPH MUTATION ACTIONS ===
+
+export function updateNodePosition(id: string, x: number, y: number) {
+    agentNodes.update(nodes => 
+        nodes.map(n => n.id === id ? { ...n, x, y } : n)
+    );
+}
+
+export function addConnection(from: string, to: string) {
+    pipelineEdges.update(edges => {
+        // Prevent duplicates
+        if (edges.find(e => e.from === from && e.to === to)) return edges;
+        // Prevent self-loops
+        if (from === to) return edges;
+        
+        return [...edges, {
+            from,
+            to,
+            active: false,
+            finalized: false,
+            pulseAnimation: false
+        }];
+    });
+}
+
+export function removeConnection(from: string, to: string) {
+    pipelineEdges.update(edges => 
+        edges.filter(e => !(e.from === from && e.to === to))
+    );
+}
+
+
+
+export function createNode(x: number, y: number) {
+    agentNodes.update(nodes => {
+        const id = `node_${Date.now().toString().slice(-4)}`;
+        return [...nodes, {
+            id,
+            label: 'NEW_AGENT',
+            x,
+            y,
+            model: 'fast',
+            prompt: 'Describe task...',
+            status: 'idle',
+            role: 'worker',
+            acceptsDirective: false,  // Default to false for new nodes
+            allowDelegation: false    // Default to false for new nodes
+        }];
+    });
+}
+
+
+
+export function deleteNode(id: string) {
+    // 1. Remove Node
+    agentNodes.update(nodes => nodes.filter(n => n.id !== id));
+    
+    // 2. Remove associated edges
+    pipelineEdges.update(edges => edges.filter(e => e.from !== id && e.to !== id));
+    
+    // 3. Clear selection if needed
+    if (get(selectedNode) === id) {
+        selectedNode.set(null);
+    }
+}
+
+export function renameNode(oldId: string, newId: string): boolean {
+  // 1. Validation: Ensure new ID is unique and valid
+  if (!newId || newId === oldId) return false;
+  
+  const currentNodes = get(agentNodes);
+  if (currentNodes.find(n => n.id === newId)) {
+    console.warn(`ID "${newId}" already exists.`);
+    return false;
+  }
+
+  // 2. Update the Node definition
+  agentNodes.update(nodes => 
+    nodes.map(n => n.id === oldId ? { ...n, id: newId } : n)
+  );
+
+  // 3. Update all Edges (Rewiring)
+  pipelineEdges.update(edges => 
+    edges.map(e => ({
+      ...e,
+      from: e.from === oldId ? newId : e.from,
+      to: e.to === oldId ? newId : e.to
+    }))
+  );
+
+  // 4. Update Selection State (Keep the panel open)
+  if (get(selectedNode) === oldId) {
+    selectedNode.set(newId);
+  }
+
+  return true;
+}
+
 
 /**
  * PURE STATE MUTATION
@@ -141,7 +247,9 @@ export function loadWorkflowManifest(manifest: WorkflowConfig) {
       model: agent.model,
       prompt: agent.prompt,
       status: 'idle',
-      role: agent.role
+      role: agent.role,
+      acceptsDirective: agent.accepts_directive || agent.role === 'orchestrator',  // Use backend flag or default to true for orchestrators
+      allowDelegation: agent.allow_delegation || false  // Use backend flag or default to false
     };
   });
 
@@ -184,7 +292,9 @@ export function overwriteGraphFromManifest(manifest: WorkflowConfig) {
       model: agent.model,
       prompt: agent.prompt,
       status: 'idle',
-      role: agent.role
+      role: agent.role,
+      acceptsDirective: agent.accepts_directive || agent.role === 'orchestrator',  // Use backend flag or default to true for orchestrators
+      allowDelegation: agent.allow_delegation || false  // Use backend flag or default to false
     };
   });
 
@@ -302,7 +412,9 @@ function syncTopology(topology: TopologySnapshot) {
                 model: 'fast', // Default to fast for dynamically spawned agents
                 prompt: 'Dynamic Agent',
                 status: 'running', // Usually spawned active
-                role: 'worker'
+                role: 'worker',
+                acceptsDirective: false,  // Dynamically spawned agents don't accept directives by default
+                allowDelegation: false    // Dynamically spawned agents don't delegate by default
             });
         }
     });
@@ -319,18 +431,58 @@ function syncTopology(topology: TopologySnapshot) {
     }
 }
 
-export function addLog(role: string, message: string, metadata: string = '', isAnimated: boolean = false, customId?: string) {
-  logs.update(l => {
-    if (customId && l.find(entry => entry.id === customId)) {
-      return l;
+/**
+ * addLog: Enhanced to merge TOOL_RESULT into previous TOOL_CALL
+ */
+export function addLog(
+    role: string,
+    message: string,
+    metadata: string = '',
+    isAnimated: boolean = false,
+    customId?: string,
+    category?: string,
+    extra?: any // Optional bag for duration, etc.
+) {
+  logs.update(currentLogs => {
+    // 1. Check for Duplicate IDs
+    if (customId && currentLogs.find(entry => entry.id === customId)) {
+      return currentLogs;
     }
-    return [...l, {
+
+    // 2. MERGE STRATEGY: If this is a TOOL_RESULT, find the pending TOOL_CALL
+    if (category === 'TOOL_RESULT') {
+        // Search backwards for the most recent TOOL_CALL by this agent that isn't complete
+        for (let i = currentLogs.length - 1; i >= 0; i--) {
+            const entry = currentLogs[i];
+            
+            // Match Agent + Category + Pending Status
+            if (entry.role === role && entry.category === 'TOOL_CALL' && !entry.isComplete) {
+                // Return new array with specific entry updated
+                const updatedLogs = [...currentLogs];
+                updatedLogs[i] = {
+                    ...entry,
+                    isComplete: true,
+                    toolResult: message, // The result message replaces/appends to the call
+                    toolStatus: metadata === 'IO_ERR' ? 'error' : 'success',
+                    metadata: metadata // Update metadata (IO_OK / IO_ERR)
+                };
+                return updatedLogs;
+            }
+        }
+        // Fallback: If no matching call found (rare), insert as new entry below
+    }
+
+    // 3. Standard Insertion
+    return [...currentLogs, {
       id: customId || crypto.randomUUID(),
       timestamp: new Date().toISOString(),
       role,
       message,
       metadata,
-      isAnimated
+      isAnimated,
+      category,
+      // Initialize Tool Call state
+      isComplete: category === 'TOOL_CALL' ? false : undefined
     }];
   });
 }
@@ -418,7 +570,25 @@ export function connectRuntimeWebSocket(runId: string) {
         if (data.state.status) {
              runtimeStore.update(s => ({ ...s, status: data.state.status.toUpperCase() }));
         }
-      } else if (data.error) {
+      }
+
+      // [[NEW]] Intermediate log events
+          else if (data.type === 'log_event') {
+            const agentId = data.agent_id ? data.agent_id.toUpperCase() : 'SYSTEM';
+            const p = data.payload;
+
+            addLog(
+              agentId,
+              p.message,
+              p.metadata || 'INFO',
+              false,
+              undefined,
+              p.category,
+              p.extra // Pass extra data if mock sends it (e.g. duration)
+            );
+          }
+
+      else if (data.error) {
         addLog('KERNEL', `Runtime error: ${data.error}`, 'ERR');
       }
     } catch (e) {
@@ -535,14 +705,52 @@ function syncState(state: any, signatures: Record<string, string> = {}, topology
                             const artifact: any = await Promise.race([fetchPromise, timeoutPromise]);
 
                             if (artifact) {
-                                let outputText = 'Output received';
-                                if (typeof artifact === 'string') outputText = artifact;
-                                else if (typeof artifact === 'object') {
+                                let outputText = '';
+
+                                if (typeof artifact === 'string') {
+                                    outputText = artifact;
+                                } else if (typeof artifact === 'object') {
+                                    // 1. Try to find actual human-readable content
                                     if (artifact.result) outputText = artifact.result;
                                     else if (artifact.output) outputText = artifact.output;
                                     else if (artifact.text) outputText = artifact.text;
-                                    else outputText = JSON.stringify(artifact, null, 2);
+                                    
+                                    // 2. Intercept Metadata-only objects (The issue you saw)
+                                    // If we see 'artifact_stored' or 'model' but no text fields, 
+                                    // suppress the raw JSON dump.
+                                    else if ('artifact_stored' in artifact || 'model' in artifact) {
+                                        // Leave empty; we will populate with file tag or generic success below
+                                        outputText = ''; 
+                                    }
+                                    else {
+                                        // Genuine unknown object, fallback to dump
+                                        outputText = JSON.stringify(artifact, null, 2);
+                                    }
                                 }
+
+                                // 3. Ensure File Generation Tags are present
+                                // This is crucial for <ArtifactCard /> rendering
+                                if (artifact.files_generated && Array.isArray(artifact.files_generated) && artifact.files_generated.length > 0) {
+                                    const filename = artifact.files_generated[0];
+
+                                    const isImage = /\.(png|jpg|jpeg|svg|webp)$/i.test(filename);
+                                    const label = isImage ? "Generated Image" : "Generated File";
+                                    
+                                    const systemTag = `[SYSTEM: ${label} saved to '${filename}']`;
+
+                                    // Only append if the tag isn't already present in the text
+                                    if (!outputText.includes(systemTag)) {
+                                        outputText = outputText ? `${outputText}\n\n${systemTag}` : systemTag;
+                                    }
+                                }
+
+                                // 4. Final Safety Fallback
+                                // If the Agent Service saved metadata to Redis but didn't save the text "result",
+                                // and no files were generated, we show a polite status instead of raw JSON.
+                                if (!outputText || outputText.trim() === '') {
+                                    outputText = "Task execution completed successfully.";
+                                }
+
                                 updateLog(inv.id, {
                                     message: outputText,
                                     metadata: `TOKENS: ${inv.tokens_used || 0} | LATENCY: ${Math.round(inv.latency_ms || 0)}ms`, // Rounded latency

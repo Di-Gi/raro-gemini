@@ -30,6 +30,9 @@ export interface AgentConfig {
   depends_on: string[];
   prompt: string;
   position?: { x: number; y: number };
+  user_directive?: string;        // Runtime task from operator
+  accepts_directive?: boolean;    // Can this node receive operator directives?
+  allow_delegation?: boolean;
 }
 
 export async function startRun(config: WorkflowConfig): Promise<{ success: boolean; run_id: string }> {
@@ -111,7 +114,8 @@ export async function generateWorkflowPlan(userQuery: string): Promise<WorkflowC
                     cache_policy: 'ephemeral',
                     depends_on: [],
                     prompt: `Research request: ${userQuery}`,
-                    position: { x: 30, y: 50 }
+                    position: { x: 30, y: 50 },
+                    accepts_directive: false
                 },
                 {
                     id: 'mock_synthesizer',
@@ -123,7 +127,8 @@ export async function generateWorkflowPlan(userQuery: string): Promise<WorkflowC
                     cache_policy: 'ephemeral',
                     depends_on: ['mock_researcher'],
                     prompt: 'Synthesize findings',
-                    position: { x: 70, y: 50 }
+                    position: { x: 70, y: 50 },
+                    accepts_directive: false
                 }
             ],
             max_token_budget: 50000,

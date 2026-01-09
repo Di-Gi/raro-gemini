@@ -5,7 +5,6 @@
 
 import json
 import time
-import re
 import asyncio
 from typing import Dict, Any, List
 from datetime import datetime
@@ -16,9 +15,9 @@ from pydantic import ValidationError
 
 from core.config import settings, gemini_client, redis_client, logger
 from core.llm import call_gemini_with_context
+from core.parsers import parse_delegation_request
 from domain.protocol import AgentRequest, AgentResponse, WorkflowManifest, PatternDefinition, DelegationRequest
 from intelligence.architect import ArchitectEngine
-from intelligence.prompts import inject_delegation_capability
 
 app = FastAPI(title="RARO Agent Service", version="0.4.0")
 
@@ -267,57 +266,46 @@ async def _execute_agent_logic(request: AgentRequest) -> AgentResponse:
         raise ValueError("Gemini Client unavailable - check GEMINI_API_KEY")
 
     try:
-        # 1. Prompt Enhancement (Flow B Support)
-        # For non-deep-think models, inject delegation capability
-        final_prompt = request.prompt
-        if "deep-think" not in request.model:
-            final_prompt = inject_delegation_capability(request.prompt)
-            logger.debug(f"Delegation capability injected for agent {request.agent_id}")
-
-        # 2. Call Unified LLM Module
+        # 1. Call Unified LLM Module
+        # NOTE: Delegation injection now happens in llm.py based on allow_delegation flag
         result = await call_gemini_with_context(
             model=request.model,
-            prompt=final_prompt,
+            prompt=request.prompt,  # Pass raw prompt, injection handled conditionally
+            user_directive=request.user_directive,  # Runtime task from operator
             input_data=request.input_data,
             file_paths=request.file_paths,
             parent_signature=request.parent_signature,
             thinking_level=request.thinking_level,
             tools=request.tools,
             agent_id=request.agent_id,
-            run_id=request.run_id # <--- PASS THE RUN ID HERE
+            run_id=request.run_id,
+            # [[NEW PARAMETERS FROM KERNEL]]
+            allow_delegation=request.allow_delegation,
+            graph_view=request.graph_view,
         )
 
         response_text = result["text"]
 
+        # --- FIX START: Extract files from LLM result ---
+        files_generated = result.get("files_generated", [])
+        logger.debug(f"Agent {request.agent_id} generated {len(files_generated)} file(s): {files_generated}")
+        # --- FIX END ---
+
         # 3. Parse Delegation Request (Flow B)
-        # ROBUST PARSING STRATEGY:
-        # We look specifically for the ```json:delegation block defined in the prompt.
-        # This prevents accidental parsing of standard ```json code blocks.
-        
+        # Use centralized parser from core.parsers module
         delegation_request = None
-        
-        # Regex to capture content inside ```json:delegation ... ``` 
-        # flags=re.DOTALL allows matching across newlines
-        delegation_pattern = r"```json:delegation\s*(\{[\s\S]*?\})\s*```"
-        
-        match = re.search(delegation_pattern, response_text, re.IGNORECASE)
 
-        if match:
+        delegation_data = parse_delegation_request(response_text)
+
+        if delegation_data:
             try:
-                json_str = match.group(1)
-                data = json.loads(json_str)
-
                 # Validate against schema
-                # Pydantic validation handles extra fields gracefully if configured, 
-                # but we explicitly check structure here via the model.
-                delegation_request = DelegationRequest(**data)
-                
+                delegation_request = DelegationRequest(**delegation_data)
+
                 logger.info(
                     f"Delegation signal received via explicit tag: {len(delegation_request.new_nodes)} nodes. "
                     f"Reason: {delegation_request.reason[:50]}..."
                 )
-            except json.JSONDecodeError as e:
-                logger.warning(f"Delegation block found but Invalid JSON: {e}")
             except Exception as e:
                 logger.warning(f"Failed to parse delegation request model: {e}")
         else:
@@ -325,18 +313,26 @@ async def _execute_agent_logic(request: AgentRequest) -> AgentResponse:
 
         # 4. Store Artifact to Redis (if available)
         artifact_stored = False
-        if redis_client and response_text:
+        # Update condition: Store if we have text OR generated files
+        if redis_client and (response_text or files_generated):
             try:
                 key = f"run:{request.run_id}:agent:{request.agent_id}:output"
                 artifact_data = {
-                    "result": response_text,
+                    # [[UPDATED]] Removed payload chunk to clean up frontend log stream.
+                    # This prevents the raw prompt/response text from being re-rendered by the ArtifactCard,
+                    # while preserving file metadata for downstream consumption.
+                    "result": response_text, 
                     "status": "completed",
                     "thinking_depth": request.thinking_level or 0,
-                    "model": request.model
+                    "model": request.model,
+                    # --- FIX START: Inject file metadata ---
+                    "files_generated": files_generated,
+                    "artifact_stored": len(files_generated) > 0
+                    # --- FIX END ---
                 }
                 redis_client.setex(key, 3600, json.dumps(artifact_data))
                 artifact_stored = True
-                logger.debug(f"Artifact stored to Redis: {key}")
+                logger.debug(f"Artifact stored to Redis: {key} (files: {len(files_generated)})")
             except Exception as e:
                 logger.warning(f"Redis write failed for {request.agent_id}: {e}")
 

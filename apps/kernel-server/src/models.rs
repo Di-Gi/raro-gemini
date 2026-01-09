@@ -48,9 +48,17 @@ pub struct AgentNodeConfig {
     pub cache_policy: String,
     // Dependencies relative to the context (Workflow or Subgraph)
     #[serde(default)]
-    pub depends_on: Vec<String>, 
+    pub depends_on: Vec<String>,
     pub prompt: String,
     pub position: Option<Position>,
+    #[serde(default)]
+    pub accepts_directive: bool,
+    #[serde(default)]
+    pub user_directive: String,  // Runtime task from operator
+
+    // [[NEW FIELD]]
+    #[serde(default)]
+    pub allow_delegation: bool,
 }
 
 fn default_cache_policy() -> String {

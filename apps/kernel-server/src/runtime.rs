@@ -23,12 +23,17 @@ pub struct InvocationPayload {
     pub agent_id: String,
     pub model: String,
     pub prompt: String,
+    pub user_directive: String,  // Runtime task from operator
     pub input_data: serde_json::Value,
     pub parent_signature: Option<String>,
     pub cached_content_id: Option<String>,
     pub thinking_level: Option<i32>,
     pub file_paths: Vec<String>,
     pub tools: Vec<String>,
+
+    // [[NEW FIELDS]]
+    pub allow_delegation: bool,
+    pub graph_view: String,
 }
 
 // #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,7 +95,11 @@ impl RARORuntime {
             thought_signatures: DashMap::new(),
             dag_store: DashMap::new(),
             cache_resources: DashMap::new(),
-            http_client: reqwest::Client::new(),
+            // http_client: reqwest::Client::new(),
+            http_client: reqwest::Client::builder()
+                .pool_max_idle_per_host(0) // Disable pooling
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
             redis_client,
             event_bus: tx,
             pattern_registry: Arc::new(PatternRegistry::new()),
@@ -424,18 +433,33 @@ impl RARORuntime {
                         if let Some(delegation) = res.delegation {
                             tracing::info!("Agent {} requested delegation: {}", agent_id, delegation.reason);
 
-                            // Splice the graph
-                            match self.handle_delegation(&run_id, &agent_id, delegation).await {
-                                Ok(_) => {
-                                    // Delegation successful.
-                                    // Mark current agent as complete (it successfully delegated).
-                                    // The loop will pick up the new nodes next.
-                                    tracing::info!("Delegation processed. Graph updated.");
-                                }
-                                Err(e) => {
-                                    tracing::error!("Delegation failed: {}", e);
-                                    self.fail_run(&run_id, &agent_id, &format!("Delegation error: {}", e)).await;
-                                    continue;
+                            // Verify agent has delegation privilege (Defense in Depth)
+                            let workflow_id = self.runtime_states.get(&run_id)
+                                .map(|s| s.workflow_id.clone());
+
+                            if let Some(wf_id) = workflow_id {
+                                if let Some(workflow) = self.workflows.get(&wf_id) {
+                                    let agent_config = workflow.agents.iter()
+                                        .find(|a| a.id == agent_id);
+
+                                    if let Some(config) = agent_config {
+                                        if !config.allow_delegation {
+                                            tracing::warn!("Agent {} attempted delegation without permission. Ignoring.", agent_id);
+                                            // Continue without processing delegation - treat as normal completion
+                                        } else {
+                                            // Agent has permission - process delegation
+                                            match self.handle_delegation(&run_id, &agent_id, delegation).await {
+                                                Ok(_) => {
+                                                    tracing::info!("Delegation processed. Graph updated.");
+                                                }
+                                                Err(e) => {
+                                                    tracing::error!("Delegation failed: {}", e);
+                                                    self.fail_run(&run_id, &agent_id, &format!("Delegation error: {}", e)).await;
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -780,31 +804,89 @@ impl RARORuntime {
         self.thought_signatures.get(run_id).map(|s| (*s).clone())
     }
 
+    /// Generate a contextual graph view based on agent's delegation privilege.
+    ///
+    /// - **detailed=true**: Returns JSON array with full topology (for orchestrators)
+    /// - **detailed=false**: Returns linear text view (for workers)
+    fn generate_graph_context(&self, run_id: &str, current_agent_id: &str, detailed: bool) -> String {
+        let state = match self.runtime_states.get(run_id) {
+            Some(s) => s,
+            None => return "Graph state unavailable.".to_string(),
+        };
+
+        let dag = match self.dag_store.get(run_id) {
+            Some(d) => d,
+            None => return "Graph topology unavailable.".to_string(),
+        };
+
+        if detailed {
+            // DETAILED VIEW: JSON topology for orchestrators
+            // Useful for making informed delegation decisions
+            let nodes: Vec<serde_json::Value> = dag.export_nodes().iter().map(|node_id| {
+                let status = if state.completed_agents.contains(node_id) { "completed" }
+                else if state.failed_agents.contains(node_id) { "failed" }
+                else if state.active_agents.contains(node_id) { "running" }
+                else { "pending" };
+
+                serde_json::json!({
+                    "id": node_id,
+                    "status": status,
+                    "is_you": node_id == current_agent_id,
+                    "dependencies": dag.get_dependencies(node_id)
+                })
+            }).collect();
+
+            return serde_json::to_string_pretty(&nodes).unwrap_or_default();
+        } else {
+            // LINEAR VIEW: High-level progress indicator for workers
+            // Shows position in pipeline: [n1:COMPLETE] -> [n2:RUNNING(YOU)] -> [n3:PENDING]
+            match dag.topological_sort() {
+                Ok(order) => {
+                    let parts: Vec<String> = order.iter().map(|node_id| {
+                        let status = if state.completed_agents.contains(node_id) { "COMPLETE" }
+                        else if state.failed_agents.contains(node_id) { "FAILED" }
+                        else if state.active_agents.contains(node_id) { "RUNNING" }
+                        else { "PENDING" };
+
+                        if node_id == current_agent_id {
+                            format!("[{}:{}(YOU)]", node_id, status)
+                        } else {
+                            format!("[{}:{}]", node_id, status)
+                        }
+                    }).collect();
+                    return parts.join(" -> ");
+                },
+                Err(_) => return "Cycle detected in graph view.".to_string()
+            }
+        }
+    }
+
     /// Prepare invocation payload with signature routing AND artifact context
     pub async fn prepare_invocation_payload(
         &self,
         run_id: &str,
         agent_id: &str,
     ) -> Result<InvocationPayload, String> {
-        // Get the workflow and agent config
+        // 1. Retrieve Runtime State
         let state = self
             .runtime_states
             .get(run_id)
             .ok_or_else(|| "Run not found".to_string())?;
 
+        // 2. Retrieve Workflow Configuration
         let workflow = self
             .workflows
             .get(&state.workflow_id)
             .ok_or_else(|| "Workflow not found".to_string())?;
 
-        // Find the agent config
+        // 3. Find Specific Agent Config
         let agent_config = workflow
             .agents
             .iter()
             .find(|a| a.id == agent_id)
             .ok_or_else(|| format!("Agent {} not found", agent_id))?;
 
-        // 1. Fetch Parent Signatures (Reasoning Continuity)
+        // 4. Fetch Parent Signatures (Chain of Thought Continuity)
         let parent_signature = if !agent_config.depends_on.is_empty() {
             agent_config
                 .depends_on
@@ -814,65 +896,70 @@ impl RARORuntime {
             None
         };
 
-        // 2. Fetch Parent Artifacts (Data Context)
+        // 5. Context & Artifact Retrieval (Redis)
         let mut context_prompt_appendix = String::new();
         let mut input_data_map = serde_json::Map::new();
+        let mut dynamic_file_mounts: Vec<String> = Vec::new();
 
         if !agent_config.depends_on.is_empty() {
             if let Some(client) = &self.redis_client {
-                // We use a separate connection for this fetch to avoid borrowing issues
+                // Use a separate async connection to avoid borrowing issues
                 match client.get_async_connection().await {
                     Ok(mut con) => {
                         for parent_id in &agent_config.depends_on {
                             let key = format!("run:{}:agent:{}:output", run_id, parent_id);
                             
-                            // Try to get artifact from Redis
+                            // Attempt to fetch artifact from Redis
                             let data: Option<String> = con.get(&key).await.unwrap_or(None);
 
                             if let Some(json_str) = data {
                                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
                                     
-                                    // Add to structured input data
+                                    // A. Structured Input Data
                                     input_data_map.insert(parent_id.clone(), val.clone());
 
-                                    // Extract text result for the prompt
+                                    // B. Text Context (The "Result" string)
                                     let content = val.get("result")
                                         .and_then(|v| v.as_str())
                                         .or_else(|| val.get("output").and_then(|v| v.as_str()))
                                         .unwrap_or("No text output");
 
                                     context_prompt_appendix.push_str(&format!("\n\n=== CONTEXT FROM AGENT {} ===\n{}\n", parent_id, content));
+
+                                    // C. Dynamic File Mounting (Manifest Pattern)
+                                    // We look for the 'files_generated' array created by the Python tool logic.
+                                    // If found, we explicitly mount these files from the session OUTPUT directory
+                                    // so the current agent can see/analyze them (Multimodal Vision).
+                                    if let Some(files_array) = val.get("files_generated").and_then(|v| v.as_array()) {
+                                        for file_val in files_array {
+                                            if let Some(filename) = file_val.as_str() {
+                                                // Construct absolute path to the RFS session output
+                                                let mount_path = format!("/app/storage/sessions/{}/output/{}", run_id, filename);
+                                                dynamic_file_mounts.push(mount_path);
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
                     },
                     Err(e) => tracing::warn!("Could not connect to Redis for context fetching: {}", e),
                 }
+            } else {
+                tracing::warn!("Redis client unavailable. Context fetching skipped.");
             }
         }
 
-        // 3. Construct Final Prompt
+        // 6. Construct Final Prompt
         let mut final_prompt = agent_config.prompt.clone();
         if !context_prompt_appendix.is_empty() {
             final_prompt.push_str(&context_prompt_appendix);
         }
 
-        // Get cached content if available
+        // 7. Get Cached Content ID (if applicable)
         let cached_content_id = self.cache_resources.get(run_id).map(|c| (*c).clone());
 
-        // Determine model variant
-        // let model = match agent_config.model {
-        //     ModelVariant::GeminiFlash => "gemini-2.5-flash",
-        //     ModelVariant::GeminiPro => "gemini-2.5-flash-lite",
-        //     ModelVariant::GeminiDeepThink => "gemini-2.5-flash",
-        // }
-        // .to_string();
-
-        // let thinking_level = if matches!(agent_config.model, ModelVariant::GeminiDeepThink) {
-        //     Some(5)
-        // } else {
-        //     None
-        // };
+        // 8. Determine Model Variant String
         let model_string = match &agent_config.model {
             ModelVariant::Fast => "fast".to_string(),
             ModelVariant::Reasoning => "reasoning".to_string(),
@@ -880,28 +967,86 @@ impl RARORuntime {
             ModelVariant::Custom(s) => s.clone(),
         };
 
-        // 2. Logic is now based on Semantic Type, not string matching!
+        // 9. Configure Thinking Budget
         let thinking_level = if matches!(agent_config.model, ModelVariant::Thinking) {
-            Some(5) // Default budget for Thinking tier
+            Some(5) // Default budget level for Thinking models
         } else {
             None
         };
 
-        let full_file_paths: Vec<String> = workflow.attached_files.iter()
+        // 10. Construct File Paths List
+        // Start with files explicitly attached to the workflow (Input Dir)
+        let mut full_file_paths: Vec<String> = workflow.attached_files.iter()
             .map(|f| format!("/app/storage/sessions/{}/input/{}", run_id, f))
             .collect();
 
+        // Track if we have dynamic artifacts (before moving the vector)
+        let has_dynamic_artifacts = !dynamic_file_mounts.is_empty();
+        let dynamic_artifact_count = dynamic_file_mounts.len();
+
+        // Append files generated by parent agents (Output Dir)
+        if has_dynamic_artifacts {
+            tracing::info!("Mounting {} dynamic artifacts for agent {}", dynamic_artifact_count, agent_id);
+            full_file_paths.extend(dynamic_file_mounts);
+        }
+
+        // 11. SMART TOOL ACCESS (Prevents UNEXPECTED_TOOL_CALL)
+        // Strategy: Start with Architect's assignments, then add baseline guarantees
+        let mut tools = agent_config.tools.clone();
+
+        // Baseline tools that ALL agents should have access to
+        // These prevent UNEXPECTED_TOOL_CALL when agents need to inspect their workspace
+        let baseline_tools = vec!["read_file", "list_files", "write_file"];
+        for baseline in baseline_tools {
+            if !tools.contains(&baseline.to_string()) {
+                tools.push(baseline.to_string());
+                tracing::debug!("Agent {}: Added baseline tool '{}'", agent_id, baseline);
+            }
+        }
+
+        // Smart Enhancement: If agent receives files from parents, give it execution capability
+        // This prevents failures when an agent needs to analyze/process generated artifacts
+        if has_dynamic_artifacts && !tools.contains(&"execute_python".to_string()) {
+            tools.push("execute_python".to_string());
+            tracing::info!(
+                "Agent {}: Added 'execute_python' tool (has {} dynamic artifacts to process)",
+                agent_id,
+                dynamic_artifact_count
+            );
+        }
+
+        // Smart Enhancement: If agent has write_file, it likely needs execute_python too
+        // (Most file generation happens via Python execution)
+        if tools.contains(&"write_file".to_string()) && !tools.contains(&"execute_python".to_string()) {
+            tools.push("execute_python".to_string());
+            tracing::debug!("Agent {}: Added 'execute_python' (has write_file capability)", agent_id);
+        }
+
+        // 11. Generate Graph Context (NEW)
+        // Give orchestrators detailed JSON, workers a simple linear view
+        let graph_view = self.generate_graph_context(
+            run_id,
+            agent_id,
+            agent_config.allow_delegation
+        );
+
+        // 12. Return Payload
         Ok(InvocationPayload {
             run_id: run_id.to_string(),
             agent_id: agent_id.to_string(),
             model: model_string,
-            prompt: final_prompt, // Updated with context
-            input_data: serde_json::Value::Object(input_data_map), // Updated with structured data
+            prompt: final_prompt,
+            user_directive: agent_config.user_directive.clone(),  // Pass operator directive
+            input_data: serde_json::Value::Object(input_data_map),
             parent_signature,
             cached_content_id,
             thinking_level,
             file_paths: full_file_paths,
-            tools: agent_config.tools.clone(),
+            tools, // Now contains Architect's choices + smart baseline guarantees
+
+            // [[NEW FIELDS]]
+            allow_delegation: agent_config.allow_delegation,
+            graph_view,
         })
     }
 

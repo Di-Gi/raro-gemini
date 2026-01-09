@@ -1,7 +1,12 @@
 # [[RARO]]/apps/agent-service/src/intelligence/prompts.py
 
 import json
+from typing import Optional, List
 from domain.protocol import WorkflowManifest, DelegationRequest, PatternDefinition
+try:
+    from intelligence.tools import get_tool_definitions_for_prompt
+except ImportError:
+    get_tool_definitions_for_prompt = lambda x: "[]"
 
 def get_schema_instruction(model_class) -> str:
     """
@@ -32,6 +37,38 @@ INSTRUCTIONS:
 3. Use the 'id' field to define the functional role (e.g., 'web_researcher', 'data_analyst').
 4. Define dependencies (e.g., 'data_analyst' depends_on ['web_researcher']).
 5. Select model: 'gemini-2.5-flash' (speed) or 'gemini-2.5-flash-lite' (reasoning).
+6. TOOL ASSIGNMENT RULES (CRITICAL):
+   Available Tools: ['execute_python', 'web_search', 'read_file', 'write_file', 'list_files']
+
+   ASSIGNMENT GUIDELINES:
+   - 'execute_python': REQUIRED for ANY agent that needs to:
+     * Create files (images, graphs, PDFs, CSV, JSON)
+     * Perform calculations or data analysis
+     * Process or transform data
+     * Generate visualizations
+     When in doubt, INCLUDE this tool - it's the most versatile.
+
+   - 'web_search': REQUIRED for agents that need:
+     * Real-time information or current events
+     * Fact verification
+     * Research from the internet
+
+   - 'read_file', 'write_file', 'list_files':
+     * Baseline tools are auto-assigned by the system
+     * You CAN explicitly include them, but it's optional
+
+   - IMPORTANT: Be GENEROUS with tool assignments. If an agent MIGHT need a tool, assign it.
+     Better to over-assign than under-assign (prevents UNEXPECTED_TOOL_CALL errors).
+
+7. PROMPT CONSTRUCTION:
+   - For agents with 'execute_python', write prompts like: "Write and EXECUTE Python code to..."
+   - Do NOT ask agents to "output code" or "describe the approach"
+   - Ask for RESULTS, not explanations
+
+8. STRICT OUTPUT PROTOCOL:
+   - Agents MUST NOT output Python code in Markdown blocks (```python).
+   - Agents MUST use the 'execute_python' tool for all logic.
+   - The pipeline relies on the *Tool Result* to pass data to the next agent. Markdown text is ignored by the compiler.
 
 OUTPUT REQUIREMENT:
 You must output PURE JSON matching this schema:
@@ -103,3 +140,80 @@ Output PURE JSON matching this schema:
 
 {schema}
 """
+
+def render_runtime_system_instruction(agent_id: str, tools: Optional[List[str]]) -> str:
+    """
+    Generates the high-priority System Instruction for the Runtime Loop (Flow B).
+    Uses MANUAL PARSING MODE with json:function blocks.
+    """
+    instruction = f"""
+SYSTEM IDENTITY:
+You are Agent '{agent_id}', an autonomous execution node within the RARO Kernel.
+You are running in a headless environment. Your outputs are consumed programmatically.
+
+OPERATIONAL CONSTRAINTS:
+1. NO CHAT: Do not output conversational filler.
+2. DIRECT ACTION: If the user request implies an action, use a tool immediately.
+3. FAIL FAST: If you cannot complete the task, return a clear error.
+"""
+
+    if tools:
+        tool_schemas = get_tool_definitions_for_prompt(tools)
+
+        instruction += f"""
+[SYSTEM CAPABILITY: TOOL USE]
+You have access to the following tools. 
+To use a tool, you MUST output a specific Markdown code block. 
+DO NOT use native function calling mechanisms.
+
+AVAILABLE TOOLS (Reference):
+{tool_schemas}
+
+[CRITICAL PROTOCOL: MANUAL CALLING]
+The system does not support native function calling. 
+You must MANUALLY type the tool call using the `json:function` tag.
+
+CORRECT FORMAT:
+```json:function
+{{
+  "name": "tool_name",
+  "args": {{
+    "parameter_name": "value"
+  }}
+}}
+```
+
+[ONE-SHOT EXAMPLE]
+User: "Calculate 25 * 4 using python"
+Assistant:
+```json:function
+{{
+  "name": "execute_python",
+  "args": {{
+    "code": "print(25 * 4)"
+  }}
+}}
+```
+
+INCORRECT FORMATS (FORBIDDEN):
+- No standard ```json``` blocks.
+- No ```python``` blocks for code execution.
+- No native tool objects.
+"""
+
+        # Specific guidance for Python
+        if "execute_python" in tools:
+            instruction += """
+[TOOL NOTE: execute_python]
+You have a secure Python sandbox.
+To run code, you MUST use the `execute_python` tool.
+Do NOT output ```python ... ``` text blocks; the system ignores them.
+[TOOL NOTE: execute_python vs read_file]
+- Use `read_file` for: Inspecting file contents, checking headers, or reading small logs. It is fast and free.
+- Use `execute_python` for: Heavy data transformation, math, creating charts/images, or processing large files. 
+  NOTE: Files created by previous agents are automatically available in your Python environment.
+"""
+    else:
+        instruction += "\nNOTE: You have NO tools available. Provide analysis based solely on the provided context.\n"
+
+    return instruction

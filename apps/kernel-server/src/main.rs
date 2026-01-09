@@ -20,6 +20,7 @@ use axum::{
 use std::sync::Arc;
 use tower_http::cors::{CorsLayer, Any};
 use tracing_subscriber;
+use futures::StreamExt;  // For Redis PubSub stream
 
 use crate::runtime::RARORuntime;
 use crate::server::handlers;
@@ -96,6 +97,66 @@ async fn main() {
         }
     });
 
+    // === REDIS LIVE LOG SUBSCRIBER ===
+    // Listens to "raro:live_logs" channel and bridges messages to internal event bus
+    if let Some(redis_client) = &runtime.redis_client {
+        let client = redis_client.clone();
+        let event_bus = runtime.event_bus.clone();
+
+        tokio::spawn(async move {
+            tracing::info!("🎧 Started Redis Log Subscriber on 'raro:live_logs'");
+
+            // Establish PubSub connection
+            let mut pubsub_conn = match client.get_async_connection().await {
+                Ok(conn) => conn.into_pubsub(),
+                Err(e) => {
+                    tracing::error!("Failed to connect to Redis for PubSub: {}", e);
+                    return;
+                }
+            };
+
+            // Subscribe to the channel
+            if let Err(e) = pubsub_conn.subscribe("raro:live_logs").await {
+                tracing::error!("Failed to subscribe to 'raro:live_logs': {}", e);
+                return;
+            }
+
+            // Stream incoming messages
+            let mut stream = pubsub_conn.on_message();
+
+            while let Some(msg) = stream.next().await {
+                let payload_str: String = msg.get_payload().unwrap_or_default();
+
+                // Parse JSON payload from Python
+                if let Ok(data) = serde_json::from_str::<serde_json::Value>(&payload_str) {
+                    let run_id = data["run_id"].as_str().unwrap_or_default();
+                    let agent_id = data["agent_id"].as_str();
+                    let message = data["message"].as_str().unwrap_or("");
+                    let metadata = data["metadata"].as_str().unwrap_or("INFO");
+                    let category = data["category"].as_str().unwrap_or("INFO");
+
+                    // Bridge to internal Event Bus (which WebSockets subscribe to)
+                    let _ = event_bus.send(crate::events::RuntimeEvent::new(
+                        run_id,
+                        crate::events::EventType::IntermediateLog,
+                        agent_id.map(|s| s.to_string()),
+                        serde_json::json!({
+                            "message": message,
+                            "metadata": metadata,
+                            "category": category
+                        })
+                    ));
+                } else {
+                    tracing::warn!("Failed to parse Redis log payload: {}", payload_str);
+                }
+            }
+
+            tracing::warn!("Redis log subscriber exited unexpectedly");
+        });
+    } else {
+        tracing::warn!("Redis client not available - live logs disabled");
+    }
+
     // Configure CORS
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -114,6 +175,7 @@ async fn main() {
         .route("/runtime/:run_id/stop", post(handlers::stop_run))
         .route("/runtime/library", get(handlers::list_library_files))
         .route("/runtime/library/upload", post(handlers::upload_library_file)) 
+        .route("/runtime/:run_id/files/:filename", get(handlers::serve_session_file)) // <--- ADD THIS
         .route("/ws/runtime/:run_id", axum::routing::get(handlers::ws_runtime_stream))
         .layer(cors)
         .with_state(runtime);
