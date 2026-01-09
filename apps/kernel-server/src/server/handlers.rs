@@ -338,6 +338,9 @@ async fn handle_runtime_stream(
     // Stream updates
     let mut interval = tokio::time::interval(std::time::Duration::from_millis(250));
 
+    // Subscribe to event bus for real-time logs
+    let mut bus_rx = runtime.event_bus.subscribe();
+
     loop {
         tokio::select! {
             // Check for client disconnect
@@ -381,6 +384,27 @@ async fn handle_runtime_stream(
                         break;
                     }
                     // === FIX END ===
+                }
+            }
+
+            // Forward real-time events from event bus
+            Ok(event) = bus_rx.recv() => {
+                // Only forward events for THIS run
+                if event.run_id == run_id {
+                    // Filter for intermediate logs
+                    if let crate::events::EventType::IntermediateLog = event.event_type {
+                        let ws_msg = json!({
+                            "type": "log_event",
+                            "agent_id": event.agent_id,
+                            "payload": event.payload,
+                            "timestamp": event.timestamp
+                        });
+
+                        if sender.send(Message::Text(ws_msg.to_string())).await.is_err() {
+                            tracing::info!("Failed to send log event, client disconnected");
+                            break;
+                        }
+                    }
                 }
             }
         }

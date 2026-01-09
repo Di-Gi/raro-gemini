@@ -21,6 +21,8 @@ pub enum EventType {
     ToolCall,
     /// A human/system intervention
     SystemIntervention,
+    /// Real-time intermediate log from agent (tool calls, thoughts)
+    IntermediateLog,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

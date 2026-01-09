@@ -97,6 +97,20 @@ def _run_e2b_sandbox(code: str, ws: WorkspaceManager) -> Dict[str, Any]:
                         except Exception as e:
                             logger.warning(f"Failed to upload {filename}: {e}")
 
+            # Agents in the same run share the output directory. 
+            # If Agent A created a CSV, Agent B needs it uploaded to their sandbox to read it.
+            if os.path.exists(ws.output_dir):
+                for filename in os.listdir(ws.output_dir):
+                    file_path = os.path.join(ws.output_dir, filename)
+                    # Avoid re-uploading large files if not needed, or just upload everything for context
+                    if os.path.isfile(file_path):
+                        try:
+                            with open(file_path, "rb") as f:
+                                sandbox.files.write(filename, f.read())
+                                logger.debug(f"Uploaded artifact {filename} to sandbox")
+                        except Exception as e:
+                            logger.warning(f"Failed to upload artifact {filename}: {e}")
+
             # 3. Execute
             logger.info(f"E2B: Executing code ({len(code)} chars)")
             execution = sandbox.run_code(code)

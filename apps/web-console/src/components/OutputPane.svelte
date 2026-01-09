@@ -4,7 +4,8 @@
   import Typewriter from './sub/Typewriter.svelte'
   import SmartText from './sub/SmartText.svelte'
   import ApprovalCard from './sub/ApprovalCard.svelte'
-  import ArtifactCard from './sub/ArtifactCard.svelte' // NEW IMPORT
+  import ArtifactCard from './sub/ArtifactCard.svelte'
+  import ToolExecutionCard from './sub/ToolExecutionCard.svelte' // NEW: Live tool logs
   import { tick } from 'svelte';
 
   // Refs
@@ -100,7 +101,15 @@
           <span class="log-role">{log.role}</span>
           
           <div class="log-content">
-            {#if log.metadata === 'INTERVENTION'}
+            {#if log.category === 'TOOL_CALL' || log.category === 'TOOL_RESULT'}
+              <!-- TOOL EXECUTION: Live telemetry -->
+              <ToolExecutionCard
+                category={log.category}
+                message={log.message}
+                metadata={log.metadata || 'INFO'}
+                agentId={log.role}
+              />
+            {:else if log.metadata === 'INTERVENTION'}
               <!-- HITL: Approval Card -->
               <ApprovalCard
                 reason={log.message === 'SAFETY_PATTERN_TRIGGERED' ? "System Policy Violation or Manual Pause Triggered" : log.message}

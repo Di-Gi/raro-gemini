@@ -208,6 +208,10 @@ INCORRECT FORMATS (FORBIDDEN):
 You have a secure Python sandbox.
 To run code, you MUST use the `execute_python` tool.
 Do NOT output ```python ... ``` text blocks; the system ignores them.
+[TOOL NOTE: execute_python vs read_file]
+- Use `read_file` for: Inspecting file contents, checking headers, or reading small logs. It is fast and free.
+- Use `execute_python` for: Heavy data transformation, math, creating charts/images, or processing large files. 
+  NOTE: Files created by previous agents are automatically available in your Python environment.
 """
     else:
         instruction += "\nNOTE: You have NO tools available. Provide analysis based solely on the provided context.\n"

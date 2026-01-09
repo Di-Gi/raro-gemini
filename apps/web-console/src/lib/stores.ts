@@ -16,6 +16,7 @@ export interface LogEntry {
   message: string;
   metadata?: string;
   isAnimated?: boolean;
+  category?: string;  // NEW: For tool/thought categorization (TOOL_CALL, TOOL_RESULT, THOUGHT)
 }
 
 export interface AgentNode {
@@ -425,7 +426,14 @@ function syncTopology(topology: TopologySnapshot) {
     }
 }
 
-export function addLog(role: string, message: string, metadata: string = '', isAnimated: boolean = false, customId?: string) {
+export function addLog(
+    role: string,
+    message: string,
+    metadata: string = '',
+    isAnimated: boolean = false,
+    customId?: string,
+    category?: string  // NEW parameter for telemetry logs
+) {
   logs.update(l => {
     if (customId && l.find(entry => entry.id === customId)) {
       return l;
@@ -436,7 +444,8 @@ export function addLog(role: string, message: string, metadata: string = '', isA
       role,
       message,
       metadata,
-      isAnimated
+      isAnimated,
+      category  // NEW: Store category for styling
     }];
   });
 }
@@ -524,7 +533,24 @@ export function connectRuntimeWebSocket(runId: string) {
         if (data.state.status) {
              runtimeStore.update(s => ({ ...s, status: data.state.status.toUpperCase() }));
         }
-      } else if (data.error) {
+      }
+
+      // [[NEW]] Intermediate log events
+      else if (data.type === 'log_event') {
+        const agentId = data.agent_id ? data.agent_id.toUpperCase() : 'SYSTEM';
+        const p = data.payload;
+
+        addLog(
+          agentId,
+          p.message,
+          p.metadata || 'INFO',
+          false,                    // Not animated (immediate)
+          undefined,                // Auto-generate ID
+          p.category                // NEW: Pass category for styling
+        );
+      }
+
+      else if (data.error) {
         addLog('KERNEL', `Runtime error: ${data.error}`, 'ERR');
       }
     } catch (e) {
@@ -668,7 +694,11 @@ function syncState(state: any, signatures: Record<string, string> = {}, topology
                                 // This is crucial for <ArtifactCard /> rendering
                                 if (artifact.files_generated && Array.isArray(artifact.files_generated) && artifact.files_generated.length > 0) {
                                     const filename = artifact.files_generated[0];
-                                    const systemTag = `[SYSTEM: Generated Image saved to '${filename}']`;
+
+                                    const isImage = /\.(png|jpg|jpeg|svg|webp)$/i.test(filename);
+                                    const label = isImage ? "Generated Image" : "Generated File";
+                                    
+                                    const systemTag = `[SYSTEM: ${label} saved to '${filename}']`;
 
                                     // Only append if the tag isn't already present in the text
                                     if (!outputText.includes(systemTag)) {

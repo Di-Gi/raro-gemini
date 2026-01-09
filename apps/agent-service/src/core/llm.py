@@ -12,7 +12,7 @@ import httpx
 from pathlib import Path
 from datetime import datetime
 from google.genai import types
-from core.config import gemini_client, logger, resolve_model, settings
+from core.config import gemini_client, logger, resolve_model, settings, redis_client
 from intelligence.prompts import render_runtime_system_instruction
 
 # Import Tooling Logic
@@ -69,6 +69,50 @@ async def load_multimodal_file(file_path: str) -> Dict[str, Any]:
             "data": file_data
         }
     }
+
+# ============================================================================
+# Live Telemetry Emission (Redis Pub/Sub)
+# ============================================================================
+
+def emit_telemetry(
+    run_id: str,
+    agent_id: str,
+    category: str,
+    message: str,
+    meta: str,
+    extra: dict = {}
+):
+    """
+    Publish live log event to Redis for Kernel to forward to UI.
+
+    Args:
+        run_id: Current workflow run ID
+        agent_id: Agent generating this log
+        category: TOOL_CALL | TOOL_RESULT | THOUGHT
+        message: Human-readable message
+        meta: Short tag (IO_REQ, IO_OK, IO_ERR, PLANNING, etc.)
+        extra: Additional structured data (tool_name, duration_ms, etc.)
+    """
+    if not redis_client:
+        return  # Graceful degradation if Redis unavailable
+
+    try:
+        payload = {
+            "run_id": run_id,
+            "agent_id": agent_id,
+            "category": category,
+            "message": message,
+            "metadata": meta,
+            "timestamp": datetime.now().isoformat(),
+            **extra
+        }
+
+        # Fire-and-forget publish (non-blocking)
+        redis_client.publish("raro:live_logs", json.dumps(payload))
+
+    except Exception as e:
+        logger.warning(f"Telemetry emit failed: {e}")
+        # Don't crash execution if telemetry fails
 
 # ============================================================================
 # Private Helper: Request Preparation
@@ -365,12 +409,28 @@ async def call_gemini_with_context(
             tool_outputs_text = ""
 
             for tool_name, tool_args in function_calls:
+                # === EMIT: TOOL CALL START ===
+                args_str = json.dumps(tool_args)
+                emit_telemetry(
+                    run_id=run_id,
+                    agent_id=safe_agent_id,
+                    category="TOOL_CALL",
+                    message=f"{tool_name}({args_str[:50]}...)",  # Truncate for clean UI
+                    meta="IO_REQ",
+                    extra={"tool_name": tool_name, "args": tool_args}
+                )
+
                 logger.info(
                     f"[TOOL DETECTED] Agent: {agent_id} | Tool: {tool_name} | Args: {str(tool_args)[:100]}..."
                 )
 
+                # Measure execution time
+                start_time = datetime.now()
+
                 # Execute
                 result_dict = execute_tool_call(tool_name, tool_args, run_id=run_id)
+
+                duration_ms = (datetime.now() - start_time).total_seconds() * 1000
 
                 # --- FIX START: Capture generated files ---
                 if isinstance(result_dict, dict) and "files_generated" in result_dict:
@@ -380,8 +440,29 @@ async def call_gemini_with_context(
                         logger.debug(f"Captured {len(files)} file(s) from {tool_name}: {files}")
                 # --- FIX END ---
 
-                # Log result
+                # === EMIT: TOOL RESULT ===
                 success = result_dict.get('success', True)
+
+                # Generate smart summary
+                output_summary = "Operation complete."
+                if "result" in result_dict:
+                    res = str(result_dict["result"])
+                    output_summary = res[:100] + "..." if len(res) > 100 else res
+                elif "error" in result_dict:
+                    output_summary = result_dict["error"]
+
+                emit_telemetry(
+                    run_id=run_id,
+                    agent_id=safe_agent_id,
+                    category="TOOL_RESULT",
+                    message=output_summary,
+                    meta="IO_OK" if success else "IO_ERR",
+                    extra={
+                        "tool_name": tool_name,
+                        "duration_ms": int(duration_ms)
+                    }
+                )
+
                 logger.info(
                     f"[TOOL RESULT] Agent: {agent_id} | Status: {'✓' if success else '✗'}"
                 )
