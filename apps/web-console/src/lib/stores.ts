@@ -17,6 +17,11 @@ export interface LogEntry {
   metadata?: string;
   isAnimated?: boolean;
   category?: string;  // NEW: For tool/thought categorization (TOOL_CALL, TOOL_RESULT, THOUGHT)
+  // [[NEW]] Fields for merging Tool Results into the Call log
+  toolResult?: string;      // The output text from the tool
+  toolStatus?: 'success' | 'error'; 
+  toolDuration?: number;    // Execution time in ms
+  isComplete?: boolean;     // Has the tool finished?
 }
 
 export interface AgentNode {
@@ -426,26 +431,58 @@ function syncTopology(topology: TopologySnapshot) {
     }
 }
 
+/**
+ * addLog: Enhanced to merge TOOL_RESULT into previous TOOL_CALL
+ */
 export function addLog(
     role: string,
     message: string,
     metadata: string = '',
     isAnimated: boolean = false,
     customId?: string,
-    category?: string  // NEW parameter for telemetry logs
+    category?: string,
+    extra?: any // Optional bag for duration, etc.
 ) {
-  logs.update(l => {
-    if (customId && l.find(entry => entry.id === customId)) {
-      return l;
+  logs.update(currentLogs => {
+    // 1. Check for Duplicate IDs
+    if (customId && currentLogs.find(entry => entry.id === customId)) {
+      return currentLogs;
     }
-    return [...l, {
+
+    // 2. MERGE STRATEGY: If this is a TOOL_RESULT, find the pending TOOL_CALL
+    if (category === 'TOOL_RESULT') {
+        // Search backwards for the most recent TOOL_CALL by this agent that isn't complete
+        for (let i = currentLogs.length - 1; i >= 0; i--) {
+            const entry = currentLogs[i];
+            
+            // Match Agent + Category + Pending Status
+            if (entry.role === role && entry.category === 'TOOL_CALL' && !entry.isComplete) {
+                // Return new array with specific entry updated
+                const updatedLogs = [...currentLogs];
+                updatedLogs[i] = {
+                    ...entry,
+                    isComplete: true,
+                    toolResult: message, // The result message replaces/appends to the call
+                    toolStatus: metadata === 'IO_ERR' ? 'error' : 'success',
+                    metadata: metadata // Update metadata (IO_OK / IO_ERR)
+                };
+                return updatedLogs;
+            }
+        }
+        // Fallback: If no matching call found (rare), insert as new entry below
+    }
+
+    // 3. Standard Insertion
+    return [...currentLogs, {
       id: customId || crypto.randomUUID(),
       timestamp: new Date().toISOString(),
       role,
       message,
       metadata,
       isAnimated,
-      category  // NEW: Store category for styling
+      category,
+      // Initialize Tool Call state
+      isComplete: category === 'TOOL_CALL' ? false : undefined
     }];
   });
 }
@@ -536,19 +573,20 @@ export function connectRuntimeWebSocket(runId: string) {
       }
 
       // [[NEW]] Intermediate log events
-      else if (data.type === 'log_event') {
-        const agentId = data.agent_id ? data.agent_id.toUpperCase() : 'SYSTEM';
-        const p = data.payload;
+          else if (data.type === 'log_event') {
+            const agentId = data.agent_id ? data.agent_id.toUpperCase() : 'SYSTEM';
+            const p = data.payload;
 
-        addLog(
-          agentId,
-          p.message,
-          p.metadata || 'INFO',
-          false,                    // Not animated (immediate)
-          undefined,                // Auto-generate ID
-          p.category                // NEW: Pass category for styling
-        );
-      }
+            addLog(
+              agentId,
+              p.message,
+              p.metadata || 'INFO',
+              false,
+              undefined,
+              p.category,
+              p.extra // Pass extra data if mock sends it (e.g. duration)
+            );
+          }
 
       else if (data.error) {
         addLog('KERNEL', `Runtime error: ${data.error}`, 'ERR');

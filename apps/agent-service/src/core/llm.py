@@ -9,6 +9,7 @@ import mimetypes
 import json
 import asyncio
 import httpx
+import re  # Added for reasoning extraction regex
 from pathlib import Path
 from datetime import datetime
 from google.genai import types
@@ -404,6 +405,21 @@ async def call_gemini_with_context(
                 # No tools called, this is the final answer
                 final_response_text = content_text
                 break
+
+            # === PATCH: Emit Reasoning ===
+            # If there is text before/around the tool call, treat it as a thought
+            # We strip out the ```json:function ... ``` block to isolate the reasoning
+            reasoning_text = re.sub(r"```json:function[\s\S]*?```", "", content_text).strip()
+            
+            if reasoning_text:
+                emit_telemetry(
+                    run_id=run_id,
+                    agent_id=safe_agent_id,
+                    category="REASONING",
+                    message=reasoning_text,
+                    meta="PLANNING"
+                )
+            # =============================
 
             # 4. Process Tool Calls
             tool_outputs_text = ""
