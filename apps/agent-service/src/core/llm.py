@@ -84,6 +84,9 @@ async def _prepare_gemini_request(
     parent_signature: Optional[str] = None,
     thinking_level: Optional[int] = None,
     tools: Optional[List[str]] = None,
+    # [[NEW PARAMETERS]]
+    allow_delegation: bool = False,
+    graph_view: str = "",
 ) -> Dict[str, Any]:
     """
     Internal helper to build contents, config.
@@ -96,11 +99,20 @@ async def _prepare_gemini_request(
         3. User Directive (the runtime task - "Analyze this CSV...")
     """
 
-    # 1. Generate System Instruction (Base RARO Rules + Tool Protocols)
+    # 1. Generate Base System Instruction
     base_instruction = render_runtime_system_instruction(agent_id, tools)
 
-    # 2. Layer in the Node's Assigned Persona
-    system_instruction = f"{base_instruction}\n\n[YOUR SPECIALTY]\n{prompt}"
+    # 2. Conditionally Inject Delegation Capability
+    if allow_delegation:
+        from intelligence.prompts import inject_delegation_capability
+        base_instruction = inject_delegation_capability(base_instruction)
+        logger.debug(f"Delegation capability granted to {agent_id}")
+
+    # 3. Add Graph Awareness
+    graph_context = f"\n\n[OPERATIONAL AWARENESS]\n{graph_view}\n" if graph_view else ""
+
+    # 4. Combine: Base + Graph + Persona
+    system_instruction = f"{base_instruction}{graph_context}\n\n[YOUR SPECIALTY]\n{prompt}"
 
     # 2. Build Generation Config
     config_params: Dict[str, Any] = {
@@ -164,6 +176,14 @@ async def _prepare_gemini_request(
             "text": f"[CONTEXT DATA]\n{context_str}\n\n"
         })
 
+    # === PREVENT EMPTY REQUEST ===
+    # Gemini throws 400 if 'parts' is empty. If we have no directive, file, or context,
+    # we must provide a generic trigger to hand over control to the model.
+    if not user_parts:
+        user_parts.append({
+            "text": "[SYSTEM] Ready. Execute based on system instructions."
+        })
+
     contents.append({
         "role": "user",
         "parts": user_parts
@@ -186,14 +206,12 @@ async def probe_sink(
 ) -> Optional[Dict[str, Any]]:
     """
     Intercepts the Agent execution if DEBUG_PROBE_URL is set.
-    Sends payload to the probe and returns a dummy response dict to short-circuit the LLM.
-    Returns None if probing is disabled.
     """
     # 1. Check if Probing is active
     if not settings.DEBUG_PROBE_URL:
         return None
 
-    logger.warning(f"DEBUG PROBE ACTIVE. Intercepting Agent {agent_id}. No LLM call.")
+    # logger.warning(...) <-- Optional: Comment this out to reduce log noise
 
     # 2. Extract Data for Visualization
     system_instruction = params["config"].get("system_instruction", "")
@@ -208,6 +226,7 @@ async def probe_sink(
     # 3. Fire-and-forget log payload to the Probe
     try:
         async with httpx.AsyncClient() as client:
+            # We use a short timeout so we don't slow down the actual runtime significantly
             await client.post(
                 f"{settings.DEBUG_PROBE_URL}/capture",
                 json={
@@ -216,25 +235,18 @@ async def probe_sink(
                     "agent_id": agent_id,
                     "run_id": run_id,
                     "tools": tools or [],
-                    # The EXACT text the model would have seen
                     "final_system_prompt": system_instruction,
                     "final_user_message": formatted_user_msg,
                     "original_payload": {"model": model, "prompt": prompt}
                 },
-                timeout=1.0
+                timeout=0.5 
             )
     except Exception as e:
         logger.error(f"Failed to send debug capture: {e}")
 
-    # 4. Return Dummy Response to keep Kernel alive
-    return {
-        "text": f"[DEBUG MODE] Agent {agent_id} prompted successfully. LLM invoke skipped.",
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "thought_signature": "debug_signature",
-        "cache_hit": False,
-        "files_generated": []
-    }
+    # 4. MODIFICATION: Return None to allow actual execution to proceed
+    # Returning None tells 'call_gemini_with_context' to continue to the LLM
+    return None
 
 
 # ============================================================================
@@ -250,7 +262,10 @@ async def call_gemini_with_context(
     thinking_level: Optional[int] = None,
     tools: Optional[List[str]] = None,
     agent_id: Optional[str] = None,
-    run_id: str = "default_run"
+    run_id: str = "default_run",
+    # [[NEW PARAMETERS]]
+    allow_delegation: bool = False,
+    graph_view: str = "",
 ) -> Dict[str, Any]:
     """
     Execute Gemini interaction with full features: Multimodal, Context, and Tools.
@@ -275,7 +290,10 @@ async def call_gemini_with_context(
     try:
         params = await _prepare_gemini_request(
             concrete_model, prompt, safe_agent_id, user_directive, input_data, file_paths,
-            parent_signature, thinking_level, tools
+            parent_signature, thinking_level, tools,
+            # Pass new parameters
+            allow_delegation=allow_delegation,
+            graph_view=graph_view
         )
 
         # =========================================================
@@ -435,6 +453,8 @@ async def stream_gemini_response(
     thinking_level: Optional[int] = None,
     tools: Optional[List[str]] = None,
     agent_id: Optional[str] = None,
+    allow_delegation: bool = False,
+    graph_view: str = "",
     **kwargs
 ) -> AsyncIterator[str]:
     """
@@ -451,7 +471,10 @@ async def stream_gemini_response(
     # Prepare context with the new System Instruction injection logic
     params = await _prepare_gemini_request(
         concrete_model, prompt, safe_agent_id, user_directive, input_data, file_paths,
-        parent_signature, thinking_level, tools
+        parent_signature, thinking_level, tools,
+        # Pass new parameters
+        allow_delegation=allow_delegation,
+        graph_view=graph_view
     )
     
     current_contents = params["contents"]

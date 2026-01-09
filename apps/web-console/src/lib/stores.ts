@@ -28,6 +28,7 @@ export interface AgentNode {
   status: 'idle' | 'running' | 'complete' | 'failed';
   role: 'orchestrator' | 'worker' | 'observer';
   acceptsDirective: boolean;  // Can this node receive operator directives?
+  allowDelegation: boolean;   // Can this node spawn sub-agents?
 }
 
 export interface PipelineEdge {
@@ -87,10 +88,10 @@ export function toggleAttachment(fileName: string) {
 
 // Initial Nodes State
 const initialNodes: AgentNode[] = [
-  { id: 'orchestrator', label: 'ORCHESTRATOR', x: 20, y: 50, model: 'reasoning', prompt: 'Analyze the user request and determine optimal sub-tasks.', status: 'idle', role: 'orchestrator', acceptsDirective: true },
-  { id: 'retrieval', label: 'RETRIEVAL', x: 50, y: 30, model: 'fast', prompt: 'Search knowledge base for relevant context.', status: 'idle', role: 'worker', acceptsDirective: false },
-  { id: 'code_interpreter', label: 'CODE_INTERP', x: 50, y: 70, model: 'fast', prompt: 'Execute Python analysis on provided data.', status: 'idle', role: 'worker', acceptsDirective: false },
-  { id: 'synthesis', label: 'SYNTHESIS', x: 80, y: 50, model: 'thinking', prompt: 'Synthesize all findings into a final report.', status: 'idle', role: 'worker', acceptsDirective: false }
+  { id: 'orchestrator', label: 'ORCHESTRATOR', x: 20, y: 50, model: 'reasoning', prompt: 'Analyze the user request and determine optimal sub-tasks.', status: 'idle', role: 'orchestrator', acceptsDirective: true, allowDelegation: true },
+  { id: 'retrieval', label: 'RETRIEVAL', x: 50, y: 30, model: 'fast', prompt: 'Search knowledge base for relevant context.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false },
+  { id: 'code_interpreter', label: 'CODE_INTERP', x: 50, y: 70, model: 'fast', prompt: 'Execute Python analysis on provided data.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false },
+  { id: 'synthesis', label: 'SYNTHESIS', x: 80, y: 50, model: 'thinking', prompt: 'Synthesize all findings into a final report.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false }
 ];
 
 export const agentNodes = writable<AgentNode[]>(initialNodes);
@@ -167,7 +168,8 @@ export function createNode(x: number, y: number) {
             prompt: 'Describe task...',
             status: 'idle',
             role: 'worker',
-            acceptsDirective: false  // Default to false for new nodes
+            acceptsDirective: false,  // Default to false for new nodes
+            allowDelegation: false    // Default to false for new nodes
         }];
     });
 }
@@ -240,7 +242,8 @@ export function loadWorkflowManifest(manifest: WorkflowConfig) {
       prompt: agent.prompt,
       status: 'idle',
       role: agent.role,
-      acceptsDirective: agent.accepts_directive || agent.role === 'orchestrator'  // Use backend flag or default to true for orchestrators
+      acceptsDirective: agent.accepts_directive || agent.role === 'orchestrator',  // Use backend flag or default to true for orchestrators
+      allowDelegation: agent.allow_delegation || false  // Use backend flag or default to false
     };
   });
 
@@ -284,7 +287,8 @@ export function overwriteGraphFromManifest(manifest: WorkflowConfig) {
       prompt: agent.prompt,
       status: 'idle',
       role: agent.role,
-      acceptsDirective: agent.accepts_directive || agent.role === 'orchestrator'  // Use backend flag or default to true for orchestrators
+      acceptsDirective: agent.accepts_directive || agent.role === 'orchestrator',  // Use backend flag or default to true for orchestrators
+      allowDelegation: agent.allow_delegation || false  // Use backend flag or default to false
     };
   });
 
@@ -403,7 +407,8 @@ function syncTopology(topology: TopologySnapshot) {
                 prompt: 'Dynamic Agent',
                 status: 'running', // Usually spawned active
                 role: 'worker',
-                acceptsDirective: false  // Dynamically spawned agents don't accept directives by default
+                acceptsDirective: false,  // Dynamically spawned agents don't accept directives by default
+                allowDelegation: false    // Dynamically spawned agents don't delegate by default
             });
         }
     });
@@ -636,23 +641,46 @@ function syncState(state: any, signatures: Record<string, string> = {}, topology
                             const artifact: any = await Promise.race([fetchPromise, timeoutPromise]);
 
                             if (artifact) {
-                                let outputText = 'Output received';
-                                if (typeof artifact === 'string') outputText = artifact;
-                                else if (typeof artifact === 'object') {
+                                let outputText = '';
+
+                                if (typeof artifact === 'string') {
+                                    outputText = artifact;
+                                } else if (typeof artifact === 'object') {
+                                    // 1. Try to find actual human-readable content
                                     if (artifact.result) outputText = artifact.result;
                                     else if (artifact.output) outputText = artifact.output;
                                     else if (artifact.text) outputText = artifact.text;
-                                    else outputText = JSON.stringify(artifact, null, 2);
+                                    
+                                    // 2. Intercept Metadata-only objects (The issue you saw)
+                                    // If we see 'artifact_stored' or 'model' but no text fields, 
+                                    // suppress the raw JSON dump.
+                                    else if ('artifact_stored' in artifact || 'model' in artifact) {
+                                        // Leave empty; we will populate with file tag or generic success below
+                                        outputText = ''; 
+                                    }
+                                    else {
+                                        // Genuine unknown object, fallback to dump
+                                        outputText = JSON.stringify(artifact, null, 2);
+                                    }
                                 }
-                                // This ensures OutputPane.svelte detects the image and renders <ArtifactCard />
+
+                                // 3. Ensure File Generation Tags are present
+                                // This is crucial for <ArtifactCard /> rendering
                                 if (artifact.files_generated && Array.isArray(artifact.files_generated) && artifact.files_generated.length > 0) {
                                     const filename = artifact.files_generated[0];
                                     const systemTag = `[SYSTEM: Generated Image saved to '${filename}']`;
 
-                                    // Only append if the tag isn't already present in the LLM's text
+                                    // Only append if the tag isn't already present in the text
                                     if (!outputText.includes(systemTag)) {
-                                        outputText += `\n\n${systemTag}`;
+                                        outputText = outputText ? `${outputText}\n\n${systemTag}` : systemTag;
                                     }
+                                }
+
+                                // 4. Final Safety Fallback
+                                // If the Agent Service saved metadata to Redis but didn't save the text "result",
+                                // and no files were generated, we show a polite status instead of raw JSON.
+                                if (!outputText || outputText.trim() === '') {
+                                    outputText = "Task execution completed successfully.";
                                 }
 
                                 updateLog(inv.id, {

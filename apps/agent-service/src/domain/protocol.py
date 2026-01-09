@@ -109,6 +109,10 @@ class AgentRequest(BaseModel):
     thinking_level: Optional[int] = None
     file_paths: List[str] = []
 
+    # [[NEW FIELDS]]
+    allow_delegation: bool = False
+    graph_view: str = "Context unavailable"
+
 class AgentResponse(BaseModel):
     """Result of an agent execution returned to the Kernel."""
     agent_id: str

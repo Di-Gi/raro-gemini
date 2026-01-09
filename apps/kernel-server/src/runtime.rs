@@ -30,6 +30,10 @@ pub struct InvocationPayload {
     pub thinking_level: Option<i32>,
     pub file_paths: Vec<String>,
     pub tools: Vec<String>,
+
+    // [[NEW FIELDS]]
+    pub allow_delegation: bool,
+    pub graph_view: String,
 }
 
 // #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -429,18 +433,33 @@ impl RARORuntime {
                         if let Some(delegation) = res.delegation {
                             tracing::info!("Agent {} requested delegation: {}", agent_id, delegation.reason);
 
-                            // Splice the graph
-                            match self.handle_delegation(&run_id, &agent_id, delegation).await {
-                                Ok(_) => {
-                                    // Delegation successful.
-                                    // Mark current agent as complete (it successfully delegated).
-                                    // The loop will pick up the new nodes next.
-                                    tracing::info!("Delegation processed. Graph updated.");
-                                }
-                                Err(e) => {
-                                    tracing::error!("Delegation failed: {}", e);
-                                    self.fail_run(&run_id, &agent_id, &format!("Delegation error: {}", e)).await;
-                                    continue;
+                            // Verify agent has delegation privilege (Defense in Depth)
+                            let workflow_id = self.runtime_states.get(&run_id)
+                                .map(|s| s.workflow_id.clone());
+
+                            if let Some(wf_id) = workflow_id {
+                                if let Some(workflow) = self.workflows.get(&wf_id) {
+                                    let agent_config = workflow.agents.iter()
+                                        .find(|a| a.id == agent_id);
+
+                                    if let Some(config) = agent_config {
+                                        if !config.allow_delegation {
+                                            tracing::warn!("Agent {} attempted delegation without permission. Ignoring.", agent_id);
+                                            // Continue without processing delegation - treat as normal completion
+                                        } else {
+                                            // Agent has permission - process delegation
+                                            match self.handle_delegation(&run_id, &agent_id, delegation).await {
+                                                Ok(_) => {
+                                                    tracing::info!("Delegation processed. Graph updated.");
+                                                }
+                                                Err(e) => {
+                                                    tracing::error!("Delegation failed: {}", e);
+                                                    self.fail_run(&run_id, &agent_id, &format!("Delegation error: {}", e)).await;
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -785,6 +804,63 @@ impl RARORuntime {
         self.thought_signatures.get(run_id).map(|s| (*s).clone())
     }
 
+    /// Generate a contextual graph view based on agent's delegation privilege.
+    ///
+    /// - **detailed=true**: Returns JSON array with full topology (for orchestrators)
+    /// - **detailed=false**: Returns linear text view (for workers)
+    fn generate_graph_context(&self, run_id: &str, current_agent_id: &str, detailed: bool) -> String {
+        let state = match self.runtime_states.get(run_id) {
+            Some(s) => s,
+            None => return "Graph state unavailable.".to_string(),
+        };
+
+        let dag = match self.dag_store.get(run_id) {
+            Some(d) => d,
+            None => return "Graph topology unavailable.".to_string(),
+        };
+
+        if detailed {
+            // DETAILED VIEW: JSON topology for orchestrators
+            // Useful for making informed delegation decisions
+            let nodes: Vec<serde_json::Value> = dag.export_nodes().iter().map(|node_id| {
+                let status = if state.completed_agents.contains(node_id) { "completed" }
+                else if state.failed_agents.contains(node_id) { "failed" }
+                else if state.active_agents.contains(node_id) { "running" }
+                else { "pending" };
+
+                serde_json::json!({
+                    "id": node_id,
+                    "status": status,
+                    "is_you": node_id == current_agent_id,
+                    "dependencies": dag.get_dependencies(node_id)
+                })
+            }).collect();
+
+            return serde_json::to_string_pretty(&nodes).unwrap_or_default();
+        } else {
+            // LINEAR VIEW: High-level progress indicator for workers
+            // Shows position in pipeline: [n1:COMPLETE] -> [n2:RUNNING(YOU)] -> [n3:PENDING]
+            match dag.topological_sort() {
+                Ok(order) => {
+                    let parts: Vec<String> = order.iter().map(|node_id| {
+                        let status = if state.completed_agents.contains(node_id) { "COMPLETE" }
+                        else if state.failed_agents.contains(node_id) { "FAILED" }
+                        else if state.active_agents.contains(node_id) { "RUNNING" }
+                        else { "PENDING" };
+
+                        if node_id == current_agent_id {
+                            format!("[{}:{}(YOU)]", node_id, status)
+                        } else {
+                            format!("[{}:{}]", node_id, status)
+                        }
+                    }).collect();
+                    return parts.join(" -> ");
+                },
+                Err(_) => return "Cycle detected in graph view.".to_string()
+            }
+        }
+    }
+
     /// Prepare invocation payload with signature routing AND artifact context
     pub async fn prepare_invocation_payload(
         &self,
@@ -946,6 +1022,14 @@ impl RARORuntime {
             tracing::debug!("Agent {}: Added 'execute_python' (has write_file capability)", agent_id);
         }
 
+        // 11. Generate Graph Context (NEW)
+        // Give orchestrators detailed JSON, workers a simple linear view
+        let graph_view = self.generate_graph_context(
+            run_id,
+            agent_id,
+            agent_config.allow_delegation
+        );
+
         // 12. Return Payload
         Ok(InvocationPayload {
             run_id: run_id.to_string(),
@@ -959,6 +1043,10 @@ impl RARORuntime {
             thinking_level,
             file_paths: full_file_paths,
             tools, // Now contains Architect's choices + smart baseline guarantees
+
+            // [[NEW FIELDS]]
+            allow_delegation: agent_config.allow_delegation,
+            graph_view,
         })
     }
 

@@ -18,7 +18,6 @@ from core.llm import call_gemini_with_context
 from core.parsers import parse_delegation_request
 from domain.protocol import AgentRequest, AgentResponse, WorkflowManifest, PatternDefinition, DelegationRequest
 from intelligence.architect import ArchitectEngine
-from intelligence.prompts import inject_delegation_capability
 
 app = FastAPI(title="RARO Agent Service", version="0.4.0")
 
@@ -267,17 +266,11 @@ async def _execute_agent_logic(request: AgentRequest) -> AgentResponse:
         raise ValueError("Gemini Client unavailable - check GEMINI_API_KEY")
 
     try:
-        # 1. Prompt Enhancement (Flow B Support)
-        # For non-deep-think models, inject delegation capability
-        final_prompt = request.prompt
-        if "deep-think" not in request.model:
-            final_prompt = inject_delegation_capability(request.prompt)
-            logger.debug(f"Delegation capability injected for agent {request.agent_id}")
-
-        # 2. Call Unified LLM Module
+        # 1. Call Unified LLM Module
+        # NOTE: Delegation injection now happens in llm.py based on allow_delegation flag
         result = await call_gemini_with_context(
             model=request.model,
-            prompt=final_prompt,
+            prompt=request.prompt,  # Pass raw prompt, injection handled conditionally
             user_directive=request.user_directive,  # Runtime task from operator
             input_data=request.input_data,
             file_paths=request.file_paths,
@@ -285,7 +278,10 @@ async def _execute_agent_logic(request: AgentRequest) -> AgentResponse:
             thinking_level=request.thinking_level,
             tools=request.tools,
             agent_id=request.agent_id,
-            run_id=request.run_id
+            run_id=request.run_id,
+            # [[NEW PARAMETERS FROM KERNEL]]
+            allow_delegation=request.allow_delegation,
+            graph_view=request.graph_view,
         )
 
         response_text = result["text"]
@@ -325,7 +321,7 @@ async def _execute_agent_logic(request: AgentRequest) -> AgentResponse:
                     # [[UPDATED]] Removed payload chunk to clean up frontend log stream.
                     # This prevents the raw prompt/response text from being re-rendered by the ArtifactCard,
                     # while preserving file metadata for downstream consumption.
-                    # "result": response_text, 
+                    "result": response_text, 
                     "status": "completed",
                     "thinking_depth": request.thinking_level or 0,
                     "model": request.model,

@@ -32,6 +32,7 @@
   let currentModel = $state('fast')
   let currentPrompt = $state('')
   let currentAcceptsDirective = $state(false)  // Directive toggle state
+  let currentAllowDelegation = $state(false)   // Delegation toggle state
   let thinkingBudget = $state(5)
   let isSubmitting = $state(false)
   let isInputFocused = $state(false)
@@ -62,6 +63,7 @@
         currentModel = node.model
         currentPrompt = node.prompt
         currentAcceptsDirective = node.acceptsDirective  // Load directive flag
+        currentAllowDelegation = node.allowDelegation    // Load delegation flag
       }
 
       // Force switch to node-config if not already there
@@ -141,7 +143,8 @@
                 prompt: n.prompt,  // Keep persona clean
                 user_directive: (n.acceptsDirective && cmdInput) ? cmdInput : "",  // Inject directive based on flag
                 position: { x: n.x, y: n.y },
-                accepts_directive: n.acceptsDirective  // Pass flag to backend
+                accepts_directive: n.acceptsDirective,  // Pass flag to backend
+                allow_delegation: n.allowDelegation     // Pass delegation flag to backend
             };
         });
 
@@ -203,7 +206,7 @@
       if (!$selectedNode) return;
       agentNodes.update(nodes => nodes.map(n => {
           if (n.id === $selectedNode) {
-              return { ...n, model: currentModel, prompt: currentPrompt, acceptsDirective: currentAcceptsDirective }
+              return { ...n, model: currentModel, prompt: currentPrompt, acceptsDirective: currentAcceptsDirective, allowDelegation: currentAllowDelegation }
           }
           return n;
       }));
@@ -459,6 +462,30 @@
               <span class="hint-active">This node will receive operator directives at runtime</span>
             {:else}
               <span class="hint-inactive">Enable to inject runtime commands directly to this node</span>
+            {/if}
+          </div>
+        </div>
+
+        <!-- DELEGATION CAPABILITY -->
+        <div class="form-group directive-port-config">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <label>Delegation Capability</label>
+            <button
+              class="port-toggle {currentAllowDelegation ? 'port-open' : 'port-closed'}"
+              onclick={() => {
+                currentAllowDelegation = !currentAllowDelegation;
+                saveNodeConfig();
+              }}
+            >
+              {currentAllowDelegation ? 'ENABLED' : 'DISABLED'}
+            </button>
+          </div>
+
+          <div class="directive-hint">
+            {#if currentAllowDelegation}
+              <span class="hint-active">This node can spawn sub-agents and modify the workflow graph</span>
+            {:else}
+              <span class="hint-inactive">Enable to allow this node to dynamically create sub-agents</span>
             {/if}
           </div>
         </div>

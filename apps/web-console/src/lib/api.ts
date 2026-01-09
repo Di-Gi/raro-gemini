@@ -32,6 +32,7 @@ export interface AgentConfig {
   position?: { x: number; y: number };
   user_directive?: string;        // Runtime task from operator
   accepts_directive?: boolean;    // Can this node receive operator directives?
+  allow_delegation?: boolean;
 }
 
 export async function startRun(config: WorkflowConfig): Promise<{ success: boolean; run_id: string }> {
