@@ -18,6 +18,7 @@ from core.llm import call_gemini_with_context
 from core.parsers import parse_delegation_request
 from domain.protocol import AgentRequest, AgentResponse, WorkflowManifest, PatternDefinition, DelegationRequest
 from intelligence.architect import ArchitectEngine
+from intelligence.tools import SandboxSession
 
 app = FastAPI(title="RARO Agent Service", version="0.4.0")
 
@@ -106,6 +107,20 @@ async def invoke_batch(requests: List[AgentRequest]):
         results.append(response)
 
     return results
+
+@app.delete("/runtime/{run_id}/cleanup")
+async def cleanup_runtime(run_id: str):
+    """
+    Called by Kernel when a workflow completes or fails.
+    Destroys the persistent E2B sandbox to save resources.
+    """
+    logger.info(f"Received cleanup request for run {run_id}")
+    try:
+        SandboxSession.kill_session(run_id)
+        return {"status": "cleaned", "run_id": run_id}
+    except Exception as e:
+        logger.error(f"Cleanup failed: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 @app.get("/agents/list")
 async def list_agents():
@@ -345,7 +360,8 @@ async def _execute_agent_logic(request: AgentRequest) -> AgentResponse:
             success=True,
             output={
                 "result": response_text,
-                "artifact_stored": artifact_stored
+                "artifact_stored": artifact_stored,
+                "files_generated": files_generated  # Pass files back so Kernel can promote them
             },
             delegation=delegation_request,
             input_tokens=result["input_tokens"],

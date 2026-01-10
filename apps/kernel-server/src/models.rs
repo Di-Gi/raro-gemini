@@ -131,6 +131,7 @@ pub struct RemoteAgentResponse {
     pub output_tokens: usize,
     pub cache_hit: bool,
     pub latency_ms: f64,
+    pub cached_content_id: Option<String>, 
     
     // === NEW: The payload for dynamic graph changes ===
     pub delegation: Option<DelegationRequest>,

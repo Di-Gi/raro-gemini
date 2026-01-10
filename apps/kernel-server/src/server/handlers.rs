@@ -18,7 +18,7 @@ use redis::AsyncCommands;
 
 use crate::models::*;
 use crate::runtime::{RARORuntime, InvocationPayload};
-use crate::fs_manager::WorkspaceInitializer; // Import the manager
+use crate::fs_manager::{WorkspaceInitializer, ArtifactMetadata}; // Import the manager and metadata
 
 use tokio::fs; // For listing library files
 
@@ -409,4 +409,142 @@ async fn handle_runtime_stream(
             }
         }
     }
+}
+
+// === ARTIFACT STORAGE HANDLERS ===
+
+/// GET /runtime/artifacts
+/// Lists all artifact runs with their metadata
+pub async fn list_all_artifacts() -> Result<Json<serde_json::Value>, StatusCode> {
+    let runs = WorkspaceInitializer::list_artifact_runs()
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to list artifact runs: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let mut artifacts = Vec::new();
+
+    for run_id in runs {
+        if let Ok(metadata) = WorkspaceInitializer::get_artifact_metadata(&run_id).await {
+            artifacts.push(json!({
+                "run_id": run_id,
+                "metadata": metadata
+            }));
+        }
+    }
+
+    Ok(Json(json!({ "artifacts": artifacts })))
+}
+
+/// GET /runtime/artifacts/:run_id
+/// Gets metadata for a specific run's artifacts
+pub async fn get_run_artifacts(
+    Path(run_id): Path<String>,
+) -> Result<Json<ArtifactMetadata>, StatusCode> {
+    WorkspaceInitializer::get_artifact_metadata(&run_id)
+        .await
+        .map(Json)
+        .map_err(|e| {
+            tracing::warn!("Artifact metadata not found for run {}: {}", run_id, e);
+            StatusCode::NOT_FOUND
+        })
+}
+
+/// GET /runtime/artifacts/:run_id/files/:filename
+/// Serves a specific artifact file from persistent storage
+pub async fn serve_artifact_file(
+    Path((run_id, filename)): Path<(String, String)>,
+) -> Result<impl IntoResponse, StatusCode> {
+    // 1. Sanitize (prevent path traversal)
+    if filename.contains("..") || filename.starts_with("/") {
+        tracing::warn!("Blocked suspicious artifact filename: {}", filename);
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    // 2. Construct path to artifacts storage
+    let file_path = format!("/app/storage/artifacts/{}/{}", run_id, filename);
+    let path = std::path::Path::new(&file_path);
+
+    // 3. Verify existence
+    if !path.exists() {
+        tracing::debug!("Artifact file not found: {}", file_path);
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    // 4. Open and stream
+    let file = tokio::fs::File::open(path).await
+        .map_err(|e| {
+            tracing::error!("Failed to open artifact file {}: {}", file_path, e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    let stream = ReaderStream::new(file);
+    let body = Body::from_stream(stream);
+
+    // 5. Determine content type
+    let content_type = if filename.ends_with(".png") { "image/png" }
+    else if filename.ends_with(".jpg") || filename.ends_with(".jpeg") { "image/jpeg" }
+    else if filename.ends_with(".csv") { "text/csv" }
+    else if filename.ends_with(".json") { "application/json" }
+    else if filename.ends_with(".md") { "text/markdown" }
+    else if filename.ends_with(".txt") { "text/plain" }
+    else if filename.ends_with(".json") { "application/json" }
+    else { "application/octet-stream" };
+
+
+    let headers = [
+        ("Content-Type", content_type),
+        ("Cache-Control", "public, max-age=86400"), // 24-hour cache
+    ];
+
+    Ok((headers, body))
+}
+
+/// DELETE /runtime/artifacts/:run_id
+/// Deletes all artifacts for a specific run
+pub async fn delete_artifact_run(
+    Path(run_id): Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    let path = format!("/app/storage/artifacts/{}", run_id);
+
+    tokio::fs::remove_dir_all(&path)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to delete artifact run {}: {}", run_id, e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    tracing::info!("Deleted artifact run: {}", run_id);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// POST /runtime/artifacts/:run_id/files/:filename/promote
+/// Promotes an artifact to permanent library storage
+pub async fn promote_artifact_to_library(
+    Path((run_id, filename)): Path<(String, String)>,
+) -> Result<StatusCode, StatusCode> {
+    // Sanitize filename
+    if filename.contains("..") || filename.starts_with("/") {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let src = format!("/app/storage/artifacts/{}/{}", run_id, filename);
+    let dst = format!("/app/storage/library/{}", filename);
+
+    // Check if source exists
+    if !std::path::Path::new(&src).exists() {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    // Copy to library
+    tokio::fs::copy(&src, &dst)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to promote artifact {} to library: {}", filename, e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    tracing::info!("Promoted artifact {} from run {} to library", filename, run_id);
+    Ok(StatusCode::CREATED)
 }

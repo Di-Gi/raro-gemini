@@ -21,6 +21,9 @@ marked.setOptions({
 });
 
 export function parseMarkdown(text: string): string {
-  // We explicitly treat this as synchronous
-  return marked.parse(text) as string;
+  if (!text) return '';
+  // FIX: Handle literal escaped newlines ("\n") often sent by JSON loggers
+  // converting them to actual newlines so 'breaks: true' can render <br>
+  const processed = text.replace(/\\n/g, '\n');
+  return marked.parse(processed) as string;
 }

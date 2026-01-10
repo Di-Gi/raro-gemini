@@ -1,5 +1,5 @@
 // [[RARO]]/apps/web-console/src/lib/mock-api.ts
-import { type WorkflowConfig } from './api';
+import { type WorkflowConfig, type ArtifactMetadata } from './api';
 
 // --- Types ---
 type TopologySnapshot = {
@@ -75,10 +75,12 @@ Key Findings:
 - 3 outlier endpoints identified
 - Peak load correlation: 0.87
 
-The variance analysis chart has been saved to disk.
+The variance analysis chart and raw data have been saved to disk.
 
-[SYSTEM: Generated Image saved to 'latency_variance_analysis.png']`,
-        files_generated: ['latency_variance_analysis.png', 'metrics_summary.json'],
+[SYSTEM: Generated Image saved to 'latency_variance_analysis.png']
+[SYSTEM: Generated File saved to 'fictional_data.json']`,
+        // UPDATED: Include both image and JSON to test ArtifactCard logic
+        files_generated: ['latency_variance_analysis.png', 'fictional_data.json'],
         artifact_stored: true
     },
     'n4': {
@@ -185,6 +187,147 @@ const MOCK_CHART_SVG = `
   <text x="300" y="385" text-anchor="middle" class="label">Variance: 0.042ms</text>
 </svg>`;
 
+const MOCK_RESEARCH_CHART_SVG = `
+<svg width="700" height="500" xmlns="http://www.w3.org/2000/svg">
+  <style>
+    .title { font: bold 18px monospace; fill: #2c3e50; }
+    .subtitle { font: 12px monospace; fill: #7f8c8d; }
+    .line { stroke: #e74c3c; stroke-width: 3; fill: none; }
+    .point { fill: #e74c3c; }
+    .grid { stroke: #ecf0f1; stroke-width: 1; }
+    .axis-label { font: 11px monospace; fill: #95a5a6; }
+  </style>
+
+  <rect width="700" height="500" fill="#ffffff"/>
+
+  <text x="350" y="30" text-anchor="middle" class="title">Research Findings Timeline</text>
+  <text x="350" y="50" text-anchor="middle" class="subtitle">Key Insights Distribution (Q1-Q4 2024)</text>
+
+  <!-- Grid -->
+  <line x1="80" y1="100" x2="80" y2="420" class="grid" stroke-width="2"/>
+  <line x1="80" y1="420" x2="650" y2="420" class="grid" stroke-width="2"/>
+
+  <!-- Data Line -->
+  <polyline points="100,380 200,320 300,280 400,200 500,240 600,160" class="line"/>
+
+  <!-- Data Points -->
+  <circle cx="100" cy="380" r="6" class="point"/>
+  <circle cx="200" cy="320" r="6" class="point"/>
+  <circle cx="300" cy="280" r="6" class="point"/>
+  <circle cx="400" cy="200" r="6" class="point"/>
+  <circle cx="500" cy="240" r="6" class="point"/>
+  <circle cx="600" cy="160" r="6" class="point"/>
+
+  <!-- X-axis labels -->
+  <text x="100" y="445" text-anchor="middle" class="axis-label">Jan</text>
+  <text x="200" y="445" text-anchor="middle" class="axis-label">Mar</text>
+  <text x="300" y="445" text-anchor="middle" class="axis-label">May</text>
+  <text x="400" y="445" text-anchor="middle" class="axis-label">Jul</text>
+  <text x="500" y="445" text-anchor="middle" class="axis-label">Sep</text>
+  <text x="600" y="445" text-anchor="middle" class="axis-label">Nov</text>
+
+  <!-- Y-axis labels -->
+  <text x="70" y="425" text-anchor="end" class="axis-label">0</text>
+  <text x="70" y="325" text-anchor="end" class="axis-label">25</text>
+  <text x="70" y="225" text-anchor="end" class="axis-label">50</text>
+  <text x="70" y="125" text-anchor="end" class="axis-label">75</text>
+</svg>`;
+
+const MOCK_EXECUTIVE_SUMMARY_MD = `# Executive Summary
+
+**Report Generated**: ${new Date().toLocaleDateString()}
+**Workflow**: Research & Analysis Pipeline
+**Status**: ✓ Complete
+
+---
+
+## Key Findings
+
+### 1. Market Analysis
+The comprehensive market research indicates a **42% growth opportunity** in the target segment over the next fiscal year. Primary drivers include:
+
+- Increased demand for automation solutions (+35%)
+- Emerging markets expansion (+18%)
+- Technology adoption acceleration (+28%)
+
+### 2. Competitive Landscape
+
+| Competitor | Market Share | Growth Rate | Key Advantage |
+|------------|--------------|-------------|---------------|
+| Alpha Corp | 32%          | +12%        | Brand Recognition |
+| Beta Inc   | 28%          | +8%         | Price Leadership |
+| Gamma Ltd  | 15%          | +22%        | Innovation |
+| **Our Position** | **25%** | **+18%** | **Service Quality** |
+
+### 3. Strategic Recommendations
+
+#### Immediate Actions (Q1 2025)
+1. **Product Diversification**: Expand portfolio with 3 new SKUs
+2. **Market Penetration**: Target 5 new geographic regions
+3. **Technology Investment**: Allocate $2.5M for R&D initiatives
+
+#### Medium-Term Goals (2025-2026)
+- Achieve 30% market share
+- Reduce operational costs by 15%
+- Increase customer retention to 92%
+
+### 4. Risk Assessment
+
+**High Priority Risks**:
+- Supply chain volatility (Probability: 65%, Impact: High)
+- Regulatory changes (Probability: 40%, Impact: Medium)
+- Competitive price wars (Probability: 55%, Impact: High)
+
+**Mitigation Strategies**:
+- Diversify supplier base (3+ vendors per critical component)
+- Establish regulatory compliance task force
+- Focus on value-add services vs. price competition
+
+---
+
+## Financial Projections
+
+\`\`\`
+Year    Revenue    Growth    EBITDA    Margin
+2024    $45.2M     +18%      $12.4M    27.4%
+2025    $58.7M     +30%      $17.8M    30.3%
+2026    $78.3M     +33%      $25.1M    32.1%
+\`\`\`
+
+---
+
+## Conclusion
+
+The research findings support a **STRONG BUY** recommendation for strategic expansion initiatives. Market conditions are favorable, competitive positioning is solid, and execution capabilities are proven.
+
+**Next Steps**:
+1. Board approval for Q1 initiatives
+2. Resource allocation finalization
+3. KPI tracking dashboard deployment
+
+---
+
+*This report was generated by the RARO autonomous research pipeline.*
+*For questions, contact the Strategy Team.*
+`;
+
+const MOCK_ANOMALY_LOG_CSV = `timestamp,severity,component,message,correlation_id
+2024-01-09T08:15:23Z,WARNING,auth-service,Failed login attempt from IP 192.168.1.45,corr-001
+2024-01-09T08:16:42Z,ERROR,database,Connection timeout to replica-2,corr-002
+2024-01-09T08:17:15Z,WARNING,api-gateway,Rate limit exceeded for client_abc123,corr-003
+2024-01-09T08:18:33Z,CRITICAL,payment-processor,Transaction validation failed - insufficient funds,corr-004
+2024-01-09T08:19:01Z,WARNING,auth-service,Failed login attempt from IP 192.168.1.45,corr-005
+2024-01-09T08:20:12Z,ERROR,cache-layer,Redis connection lost - failover initiated,corr-006
+2024-01-09T08:21:45Z,WARNING,api-gateway,Rate limit exceeded for client_abc123,corr-007
+2024-01-09T08:22:33Z,ERROR,message-queue,RabbitMQ consumer lag exceeds threshold,corr-008
+2024-01-09T08:23:18Z,CRITICAL,auth-service,Brute force attack detected from IP 192.168.1.45,corr-009
+2024-01-09T08:24:55Z,WARNING,database,Slow query detected (5.2s) on users table,corr-010
+2024-01-09T08:25:22Z,ERROR,storage-service,S3 bucket access denied - check IAM roles,corr-011
+2024-01-09T08:26:40Z,WARNING,notification-service,Email delivery delayed - SMTP timeout,corr-012
+2024-01-09T08:27:13Z,CRITICAL,payment-processor,Payment gateway unreachable - network issue,corr-013
+2024-01-09T08:28:02Z,ERROR,api-gateway,Invalid JWT signature from client_xyz789,corr-014
+2024-01-09T08:29:31Z,WARNING,monitoring,Disk usage at 87% on server-prod-3,corr-015`;
+
 const MOCK_GENERATED_FILES: Record<string, string> = {
     'latency_variance_analysis.png': 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(MOCK_CHART_SVG),
     'metrics_summary.json': 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify({
@@ -192,7 +335,16 @@ const MOCK_GENERATED_FILES: Record<string, string> = {
         outliers: ['endpoint_auth', 'endpoint_search', 'endpoint_upload'],
         peak_correlation: 0.87,
         generated_at: new Date().toISOString()
-    }, null, 2))
+    }, null, 2)),
+    'executive_summary.md': 'data:text/markdown;charset=utf-8,' + encodeURIComponent(MOCK_EXECUTIVE_SUMMARY_MD),
+    'research_chart.png': 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(MOCK_RESEARCH_CHART_SVG),
+    'security_report.pdf': 'data:text/plain;charset=utf-8,' + encodeURIComponent('PDF Preview: Security Audit Report\n\n[This is a mock PDF file - actual PDF rendering not available in demo mode]\n\nReport Summary:\n- 15 vulnerabilities identified\n- 8 critical issues resolved\n- System compliance: 94%\n- Next audit: Q2 2025'),
+    'anomaly_log.csv': 'data:text/csv;charset=utf-8,' + encodeURIComponent(MOCK_ANOMALY_LOG_CSV),
+    // UPDATED: Added the JSON file from your logs
+    'fictional_data.json': 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify([
+        { "id": 1, "name": "John Doe", "email": "john@example.com", "age": 28 },
+        { "id": 2, "name": "Jane Smith", "email": "jane@test.org", "age": 34 }
+    ], null, 2)),
 };
 
 export function getMockGeneratedFile(filename: string): string | null {
@@ -326,7 +478,8 @@ export class MockWebSocket {
         // 3b. Tool Result (Success)
         this.addStep(1500, undefined, () => {
              // "IO_OK" + "TOOL_RESULT" triggers green check in ToolExecutionCard
-             this.emitLog('n3', 'TOOL_RESULT', 'Files generated: [\'latency_variance_analysis.png\']\nStandard Output: Done.', 'IO_OK');
+             // UPDATED: Include both files in the log message to trigger the UI ArtifactCards
+             this.emitLog('n3', 'TOOL_RESULT', 'Files generated: [\'latency_variance_analysis.png\', \'fictional_data.json\']\nStandard Output: Done.', 'IO_OK');
         });
         
         // Complete n3
@@ -527,4 +680,108 @@ export class MockWebSocket {
             this.runLoop();
         }, step.delay);
     }
+}
+
+// === MOCK ARTIFACT STORAGE ===
+
+const MOCK_ARTIFACTS: ArtifactMetadata[] = [
+    {
+        run_id: 'mock-run-1234567890',
+        workflow_id: 'data_analysis_v2',
+        user_directive: 'Analyze Q3 financials and generate variance report',
+        created_at: new Date(Date.now() - 2 * 60 * 1000).toISOString(), // 2 minutes ago
+        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), // 7 days from now
+        status: 'completed',
+        artifacts: [
+            {
+                filename: 'latency_variance_analysis.png',
+                agent_id: 'visualization_agent',
+                generated_at: new Date(Date.now() - 1.5 * 60 * 1000).toISOString(),
+                size_bytes: 45120,
+                content_type: 'image/png'
+            },
+            {
+                filename: 'metrics_summary.json',
+                agent_id: 'data_processor',
+                generated_at: new Date(Date.now() - 1.8 * 60 * 1000).toISOString(),
+                size_bytes: 2048,
+                content_type: 'application/json'
+            },
+            // UPDATED: Add JSON file here for sidebar testing
+            {
+                filename: 'fictional_data.json',
+                agent_id: 'data_generator',
+                generated_at: new Date(Date.now() - 1.9 * 60 * 1000).toISOString(),
+                size_bytes: 1024,
+                content_type: 'application/json'
+            }
+        ]
+    },
+    {
+        run_id: 'mock-run-0987654321',
+        workflow_id: 'report_generation',
+        user_directive: 'Generate executive summary from research findings',
+        created_at: new Date(Date.now() - 60 * 60 * 1000).toISOString(), // 1 hour ago
+        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+        status: 'completed',
+        artifacts: [
+            {
+                filename: 'executive_summary.md',
+                agent_id: 'document_writer',
+                generated_at: new Date(Date.now() - 58 * 60 * 1000).toISOString(),
+                size_bytes: 8192,
+                content_type: 'text/markdown'
+            },
+            {
+                filename: 'research_chart.png',
+                agent_id: 'visualization_agent',
+                generated_at: new Date(Date.now() - 59 * 60 * 1000).toISOString(),
+                size_bytes: 52000,
+                content_type: 'image/png'
+            }
+        ]
+    },
+    {
+        run_id: 'mock-run-5555555555',
+        workflow_id: 'system_audit',
+        user_directive: 'Audit system logs and generate security report',
+        created_at: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(), // 25 hours ago
+        expires_at: new Date(Date.now() + 6 * 24 * 60 * 60 * 1000).toISOString(),
+        status: 'completed',
+        artifacts: [
+            {
+                filename: 'security_report.pdf',
+                agent_id: 'security_analyzer',
+                generated_at: new Date(Date.now() - 24.5 * 60 * 60 * 1000).toISOString(),
+                size_bytes: 156000,
+                content_type: 'application/pdf'
+            },
+            {
+                filename: 'anomaly_log.csv',
+                agent_id: 'log_processor',
+                generated_at: new Date(Date.now() - 24.8 * 60 * 60 * 1000).toISOString(),
+                size_bytes: 12400,
+                content_type: 'text/csv'
+            }
+        ]
+    }
+];
+
+export async function mockGetAllArtifacts(): Promise<ArtifactMetadata[]> {
+    console.log('[MOCK] Fetching all artifacts');
+    return new Promise((resolve) => {
+        setTimeout(() => {
+            resolve(MOCK_ARTIFACTS);
+        }, 300);
+    });
+}
+
+export async function mockGetRunArtifacts(runId: string): Promise<ArtifactMetadata | null> {
+    console.log(`[MOCK] Fetching artifacts for run ${runId}`);
+    return new Promise((resolve) => {
+        setTimeout(() => {
+            const metadata = MOCK_ARTIFACTS.find(a => a.run_id === runId);
+            resolve(metadata || null);
+        }, 300);
+    });
 }

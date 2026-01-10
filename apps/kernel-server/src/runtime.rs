@@ -36,22 +36,6 @@ pub struct InvocationPayload {
     pub graph_view: String,
 }
 
-// #[derive(Debug, Clone, Serialize, Deserialize)]
-// pub struct RemoteAgentResponse {
-//     pub agent_id: String,
-//     pub success: bool,
-//     pub output: Option<serde_json::Value>,
-//     pub error: Option<String>,
-//     pub tokens_used: usize,
-//     pub thought_signature: Option<String>,
-//     pub input_tokens: usize,
-//     pub output_tokens: usize,
-//     pub cache_hit: bool,
-//     pub latency_ms: f64,
-// }
-// moved to models
-
-
 pub struct RARORuntime {
     workflows: DashMap<String, WorkflowConfig>,
     runtime_states: DashMap<String, RuntimeState>,
@@ -205,6 +189,32 @@ impl RARORuntime {
     pub(crate) fn emit_event(&self, event: RuntimeEvent) {
         // Broadcast to subscribers (Observers, WebSocket, PatternEngine)
         let _ = self.event_bus.send(event);
+    }
+
+    // === RESOURCE CLEANUP ===
+
+    /// Notify Agent Service to clean up resources (E2B Sandboxes)
+    async fn trigger_remote_cleanup(&self, run_id: &str) {
+        let host = env::var("AGENT_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+        let port = env::var("AGENT_PORT").unwrap_or_else(|_| "8000".to_string());
+        let scheme = if host.contains("localhost") || host == "127.0.0.1" { "http" } else { "http" };
+
+        let url = format!("{}://{}:{}/runtime/{}/cleanup", scheme, host, port, run_id);
+
+        tracing::info!("Triggering resource cleanup for run: {}", run_id);
+
+        // Fire and forget - we don't block the kernel if cleanup fails
+        let client = self.http_client.clone();
+        tokio::spawn(async move {
+            match client.delete(&url).send().await {
+                Ok(res) => {
+                    if !res.status().is_success() {
+                        tracing::warn!("Cleanup request failed: Status {}", res.status());
+                    }
+                },
+                Err(e) => tracing::warn!("Failed to send cleanup request: {}", e),
+            }
+        });
     }
 
     // === APPROVAL CONTROL ===
@@ -381,6 +391,10 @@ impl RARORuntime {
                             state.end_time = Some(Utc::now().to_rfc3339());
                         }
                         self.persist_state(&run_id).await;
+
+                        // Trigger Cleanup
+                        self.trigger_remote_cleanup(&run_id).await;
+
                         tracing::info!("Workflow run {} completed successfully (Dynamic)", run_id);
                         break;
                     }
@@ -419,6 +433,7 @@ impl RARORuntime {
             let payload_res = self.prepare_invocation_payload(&run_id, &agent_id).await;
             if let Err(e) = payload_res {
                 self.fail_run(&run_id, &agent_id, &e).await;
+                self.trigger_remote_cleanup(&run_id).await;
                 continue;
             }
             let payload = payload_res.unwrap();
@@ -471,6 +486,50 @@ impl RARORuntime {
 
                         // Store Artifact
                         let artifact_id = if let Some(output_data) = &res.output {
+
+                            // === AUTO-PROMOTE ARTIFACTS TO PERSISTENT STORAGE ===
+                            // When agents generate files, automatically copy them from ephemeral session
+                            // storage to persistent artifacts storage with metadata tracking
+                            if let Some(files_array) = output_data.get("files_generated").and_then(|v| v.as_array()) {
+                                // Extract workflow_id from runtime state
+                                let workflow_id = self.runtime_states.get(&run_id)
+                                    .map(|s| s.workflow_id.clone())
+                                    .unwrap_or_default();
+
+                                // Extract user_directive by cloning the workflow and finding the agent
+                                let user_directive = {
+                                    if let Some(workflow) = self.workflows.get(&workflow_id) {
+                                        workflow.agents.iter()
+                                            .find(|a| a.id == agent_id)
+                                            .map(|a| a.user_directive.clone())
+                                            .unwrap_or_default()
+                                    } else {
+                                        String::new()
+                                    }
+                                };
+
+                                for file_val in files_array {
+                                    if let Some(filename) = file_val.as_str() {
+                                        let rid = run_id.clone();
+                                        let wid = workflow_id.clone();
+                                        let aid = agent_id.clone();
+                                        let fname = filename.to_string();
+                                        let directive = user_directive.clone();
+
+                                        // Fire-and-forget promotion (don't block execution on IO)
+                                        tokio::spawn(async move {
+                                            match fs_manager::WorkspaceInitializer::promote_artifact_to_storage(
+                                                &rid, &wid, &aid, &fname, &directive
+                                            ).await {
+                                                Ok(_) => tracing::info!("✓ Artifact '{}' promoted to persistent storage", fname),
+                                                Err(e) => tracing::error!("✗ Failed to promote artifact '{}': {}", fname, e),
+                                            }
+                                        });
+                                    }
+                                }
+                            }
+                            // ============================================
+
                             let agent_stored_flag = output_data.get("artifact_stored")
                                 .and_then(|v| v.as_bool())
                                 .unwrap_or(false);
@@ -522,6 +581,7 @@ impl RARORuntime {
                         ));
 
                         self.fail_run(&run_id, &agent_id, &error).await;
+                        self.trigger_remote_cleanup(&run_id).await;
                     }
                 }
                 Err(e) => {
@@ -534,6 +594,7 @@ impl RARORuntime {
                     ));
 
                     self.fail_run(&run_id, &agent_id, &e.to_string()).await;
+                    self.trigger_remote_cleanup(&run_id).await;
                 }
             }
         }
@@ -935,7 +996,12 @@ impl RARORuntime {
                                             if let Some(filename) = file_val.as_str() {
                                                 // Construct absolute path to the RFS session output
                                                 let mount_path = format!("/app/storage/sessions/{}/output/{}", run_id, filename);
-                                                dynamic_file_mounts.push(mount_path);
+
+                                                // Deduplication: Only add if not already in the list
+                                                // This prevents the same file from being mounted multiple times to Gemini
+                                                if !dynamic_file_mounts.contains(&mount_path) {
+                                                    dynamic_file_mounts.push(mount_path);
+                                                }
                                             }
                                         }
                                     }

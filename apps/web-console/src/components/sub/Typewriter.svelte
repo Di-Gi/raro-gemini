@@ -3,7 +3,7 @@
 <script lang="ts">
   import Spinner from './Spinner.svelte';
   import CodeBlock from './CodeBlock.svelte';
-  import DelegationCard from './DelegationCard.svelte'; // Render immediately
+  import DelegationCard from './DelegationCard.svelte'; 
 
   let { text, onComplete }: { text: string, onComplete?: () => void } = $props();
 
@@ -20,8 +20,12 @@
   let currentIndex = 0;
   let timer: any;
 
+
+
   // === 1. LIVE PARSER ===
   let segments = $derived(parseStream(displayedText));
+
+
 
   function parseStream(input: string) {
     const parts = [];
@@ -132,6 +136,16 @@
       if (onComplete) onComplete();
     }
   }
+
+  function escapeHtml(unsafe: string) {
+      return unsafe
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#039;");
+  }
+
 </script>
 
 <div class="typewriter-container">
@@ -141,13 +155,11 @@
       {#if segment.type === 'code'}
         <!-- ROUTER -->
         {#if segment.lang === 'json:delegation'}
-            <!-- IMMEDIATE RENDER WITH LOADING STATE -->
             <DelegationCard 
                 rawJson={segment.content} 
                 loading={segment.isOpen} 
             />
         {:else}
-            <!-- STANDARD CODE BLOCK -->
             <CodeBlock 
                 code={segment.content} 
                 language={segment.lang || 'text'} 
@@ -155,7 +167,11 @@
             />
         {/if}
       {:else}
-        <span class="text-body">{@html segment.content}</span>
+        <!--
+           1. Escape HTML (So "<Button>" shows as text, not a hidden tag)
+           2. Replace newlines with actual line breaks for pre-wrap
+        -->
+        <span class="text-body">{@html escapeHtml(segment.content).replace(/\\n/g, '\n')}</span>
         {#if isTyping && i === segments.length - 1}
            <span class="cursor" style:opacity={showCursor ? 1 : 0}>▋</span>
         {/if}
@@ -195,7 +211,8 @@
   .stream-content {
     display: block; 
     line-height: 1.6;
-    word-break: break-word;
+    word-break: break-word; /* Ensure long non-breaking strings don't scroll */
+    overflow-wrap: break-word;
     color: var(--paper-ink);
   }
 

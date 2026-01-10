@@ -1,0 +1,17 @@
+{
+  "run_id": "a4d91de6-d099-4dac-952a-27e0bb27d192",
+  "workflow_id": "flow-1768017128572",
+  "user_directive": "",
+  "created_at": "2026-01-10T03:52:16.602031391+00:00",
+  "expires_at": "2026-01-17T03:52:16.602031391+00:00",
+  "artifacts": [
+    {
+      "filename": "fictional_data.json",
+      "agent_id": "data_generator",
+      "generated_at": "2026-01-10T03:52:16.603603691+00:00",
+      "size_bytes": 1193,
+      "content_type": "application/json"
+    }
+  ],
+  "status": "active"
+}

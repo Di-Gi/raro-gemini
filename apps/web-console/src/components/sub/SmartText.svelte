@@ -2,13 +2,12 @@
 
 <script lang="ts">
   import CodeBlock from './CodeBlock.svelte';
-  import DelegationCard from './DelegationCard.svelte'; // Import new component
+  import DelegationCard from './DelegationCard.svelte'; 
   import { parseMarkdown } from '$lib/markdown';
 
   let { text }: { text: string } = $props();
 
   function parseContent(input: string) {
-    // FIX: Regex now accepts colons, hyphens, and underscores in the lang tag
     const regex = /```([a-zA-Z0-9:_-]+)?\n([\s\S]*?)```/g;
     const parts = [];
     let lastIndex = 0;
@@ -70,16 +69,18 @@
     display: flex;
     flex-direction: column;
     width: 100%;
-    gap: 8px; /* Breathing room between code blocks and text */
+    gap: 8px; 
   }
 
   /* === MARKDOWN TYPOGRAPHY SYSTEM === */
-  /* This maps standard HTML tags to your Aesthetic Variables */
 
   :global(.markdown-body) {
     font-size: 13px;
     line-height: 1.6;
     color: var(--paper-ink);
+    /* FIX: Force wrapping to prevent horizontal scroll */
+    overflow-wrap: break-word;
+    word-break: break-word;
   }
 
   /* HEADERS */
@@ -116,7 +117,7 @@
     padding-left: 4px;
   }
   :global(.markdown-body li::marker) {
-    color: var(--paper-line); /* Subtle bullets */
+    color: var(--paper-line);
   }
 
   /* INLINE ELEMENTS */
@@ -137,12 +138,11 @@
     background: var(--paper-surface);
     border: 1px solid var(--paper-line);
     border-radius: 2px;
-    color: var(--arctic-cyan); /* Matches your code theme */
+    color: var(--arctic-cyan);
   }
   
-  /* Paper Mode Override for inline code */
   :global(.mode-archival .markdown-body code) {
-    color: #e36209; /* Visible orange/red for paper mode */
+    color: #e36209;
   }
 
   /* LINKS (Configured in markdown.ts) */
@@ -164,7 +164,7 @@
     border-left: 3px solid var(--paper-line);
     background: var(--paper-surface);
     font-style: italic;
-    color: var(--paper-line); /* Dimmed text */
+    color: var(--paper-line);
   }
   
   /* TABLES */

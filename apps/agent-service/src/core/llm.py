@@ -37,39 +37,92 @@ except ImportError:
 
 async def load_multimodal_file(file_path: str) -> Dict[str, Any]:
     """
-    Load multimodal file (PDF, video, image) for Gemini 3 consumption.
+    Load multimodal file for Gemini consumption.
+    Handles text files (JSON, CSV, Code) by reading as text.
+    Handles media files (Images, PDF) by reading as binary inline_data.
 
     Args:
         file_path: Path to the file to load
 
     Returns:
-        Dict with inline_data structure for Gemini API
-
-    Raises:
-        FileNotFoundError: If file doesn't exist
+        Dict with 'text' or 'inline_data' structure for Gemini API
     """
     path = Path(file_path)
     if not path.exists():
         raise FileNotFoundError(f"File not found: {file_path}")
 
     mime_type, _ = mimetypes.guess_type(file_path)
-
     logger.debug(f"Loading multimodal file: {file_path} (type: {mime_type})")
 
-    # Read file data once
-    with open(file_path, "rb") as f:
-        file_data = base64.standard_b64encode(f.read()).decode("utf-8")
-
-    # Map to Gemini types
-    final_mime = mime_type or "application/octet-stream"
-    
-    # Specific handling if needed, otherwise generic inline_data
-    return {
-        "inline_data": {
-            "mime_type": final_mime,
-            "data": file_data
-        }
+    # === FIX: TEXT MODE DETECTION ===
+    # List of mime types/extensions that should be treated as text context
+    # to avoid 500 errors from passing them as binary blobs.
+    text_mimes = {
+        'application/json',
+        'application/xml',
+        'text/csv',
+        'text/plain',
+        'text/markdown',
+        'text/html',
+        'text/x-python',
+        'application/javascript',
+        'application/x-yaml'
     }
+    
+    text_extensions = {
+        '.json', '.csv', '.txt', '.md', '.py', '.js', '.xml', '.yml', '.yaml', '.sh', '.rs', '.ts', '.svelte'
+    }
+
+    is_text = False
+    
+    # 1. Check Mime
+    if mime_type and (mime_type.startswith('text/') or mime_type in text_mimes):
+        is_text = True
+    
+    # 2. Check Extension (Fallback if mime is None or octet-stream)
+    if not is_text:
+        ext = path.suffix.lower()
+        if ext in text_extensions:
+            is_text = True
+
+    # === MODE A: TEXT INJECTION ===
+    if is_text:
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+            
+            # Truncate if massive to prevent context overflow (e.g. > 1MB text)
+            if len(content) > 500_000:
+                content = content[:500_000] + "\n...[TRUNCATED: File too large]..."
+            
+            # Return as explicit text part with clear delimiters
+            return {
+                "text": f"\n[FILE_CONTEXT: {path.name}]\n{content}\n[END_FILE_CONTEXT]\n"
+            }
+        except UnicodeDecodeError:
+            logger.warning(f"File {file_path} identified as text but failed UTF-8 decode. Falling back to binary.")
+            # Fall through to binary mode
+        except Exception as e:
+            logger.error(f"Failed to read text file {file_path}: {e}")
+            return {"text": f"[ERROR: Could not read file {path.name}]"}
+
+    # === MODE B: BINARY BLOB (Images, PDF, Audio) ===
+    try:
+        with open(file_path, "rb") as f:
+            file_data = base64.standard_b64encode(f.read()).decode("utf-8")
+
+        # Map to Gemini types
+        final_mime = mime_type or "application/octet-stream"
+        
+        return {
+            "inline_data": {
+                "mime_type": final_mime,
+                "data": file_data
+            }
+        }
+    except Exception as e:
+        logger.error(f"Failed to load binary file {file_path}: {e}")
+        return {"text": f"[ERROR: Failed to load binary file {path.name}]"}
 
 # ============================================================================
 # Live Telemetry Emission (Redis Pub/Sub)
@@ -208,6 +261,7 @@ async def _prepare_gemini_request(
     if file_paths:
         for file_path in file_paths:
             try:
+                # Load file (text or binary)
                 file_part = await load_multimodal_file(file_path)
                 user_parts.append(file_part)
             except Exception as e:
@@ -368,6 +422,7 @@ async def call_gemini_with_context(
         response = None
         content_text = ""
         all_files_generated = []  # Accumulator for files from all tool calls
+        _seen_files = set()  # Track files to prevent duplicates during retries
         # --- FIX END ---
 
         logger.debug(f"Agent {safe_agent_id}: Starting manual tool loop")
@@ -448,11 +503,14 @@ async def call_gemini_with_context(
 
                 duration_ms = (datetime.now() - start_time).total_seconds() * 1000
 
-                # --- FIX START: Capture generated files ---
+                # --- FIX START: Capture generated files with deduplication ---
                 if isinstance(result_dict, dict) and "files_generated" in result_dict:
                     files = result_dict["files_generated"]
                     if isinstance(files, list):
-                        all_files_generated.extend(files)
+                        for f in files:
+                            if f not in _seen_files:
+                                _seen_files.add(f)
+                                all_files_generated.append(f)
                         logger.debug(f"Captured {len(files)} file(s) from {tool_name}: {files}")
                 # --- FIX END ---
 

@@ -8,7 +8,8 @@
       "Bash(docker exec:*)",
       "Bash(curl:*)",
       "Bash(docker-compose logs:*)",
-      "Bash(docker-compose up:*)"
+      "Bash(docker-compose up:*)",
+      "Bash(cargo check:*)"
     ]
   }
 }

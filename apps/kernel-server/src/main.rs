@@ -160,7 +160,7 @@ async fn main() {
     // Configure CORS
     let cors = CorsLayer::new()
         .allow_origin(Any)
-        .allow_methods([Method::GET, Method::POST])
+        .allow_methods([Method::GET, Method::POST, Method::DELETE])
         .allow_headers(Any);
 
     // Build router
@@ -174,8 +174,15 @@ async fn main() {
         .route("/runtime/:run_id/resume", post(handlers::resume_run))
         .route("/runtime/:run_id/stop", post(handlers::stop_run))
         .route("/runtime/library", get(handlers::list_library_files))
-        .route("/runtime/library/upload", post(handlers::upload_library_file)) 
-        .route("/runtime/:run_id/files/:filename", get(handlers::serve_session_file)) // <--- ADD THIS
+        .route("/runtime/library/upload", post(handlers::upload_library_file))
+        .route("/runtime/:run_id/files/:filename", get(handlers::serve_session_file))
+        // Artifact Storage Routes
+        .route("/runtime/artifacts", get(handlers::list_all_artifacts))
+        .route("/runtime/artifacts/:run_id", get(handlers::get_run_artifacts))
+        .route("/runtime/artifacts/:run_id", axum::routing::delete(handlers::delete_artifact_run))
+        .route("/runtime/artifacts/:run_id/files/:filename", get(handlers::serve_artifact_file))
+        .route("/runtime/artifacts/:run_id/files/:filename/promote", post(handlers::promote_artifact_to_library))
+        // WebSocket
         .route("/ws/runtime/:run_id", axum::routing::get(handlers::ws_runtime_stream))
         .layer(cors)
         .with_state(runtime);

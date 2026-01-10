@@ -1,5 +1,5 @@
 // [[RARO]]/apps/web-console/src/lib/api.ts
-import { mockStartRun, mockGetArtifact, mockResumeRun, mockStopRun, mockGetLibraryFiles } from './mock-api';
+import { mockStartRun, mockGetArtifact, mockResumeRun, mockStopRun, mockGetLibraryFiles, getMockGeneratedFile } from './mock-api';
 
 
 const KERNEL_API = import.meta.env.VITE_KERNEL_URL || '/api';
@@ -210,10 +210,112 @@ export async function uploadFile(file: File): Promise<string> {
         if (!res.ok) {
             throw new Error(`Upload failed: ${res.statusText}`);
         }
-        
+
         return "success";
     } catch (e) {
         console.error('Upload API Error:', e);
         throw e;
     }
+}
+
+// === ARTIFACT STORAGE API ===
+
+export interface ArtifactFile {
+    filename: string;
+    agent_id: string;
+    generated_at: string;
+    size_bytes: number;
+    content_type: string;
+}
+
+export interface ArtifactMetadata {
+    run_id: string;
+    workflow_id: string;
+    user_directive: string;
+    created_at: string;
+    expires_at: string;
+    artifacts: ArtifactFile[];
+    status: string;
+}
+
+export async function getAllArtifacts(): Promise<ArtifactMetadata[]> {
+    if (USE_MOCK) {
+        // Mock will be implemented in mock-api.ts
+        const { mockGetAllArtifacts } = await import('./mock-api');
+        return mockGetAllArtifacts();
+    }
+
+    try {
+        const res = await fetch(`${KERNEL_API}/runtime/artifacts`);
+        if (!res.ok) throw new Error('Failed to fetch artifacts');
+        const data = await res.json();
+        return data.artifacts.map((a: any) => a.metadata);
+    } catch (e) {
+        console.error('Artifacts fetch failed:', e);
+        return [];
+    }
+}
+
+export async function getRunArtifacts(runId: string): Promise<ArtifactMetadata | null> {
+    if (USE_MOCK) {
+        const { mockGetRunArtifacts } = await import('./mock-api');
+        return mockGetRunArtifacts(runId);
+    }
+
+    try {
+        const res = await fetch(`${KERNEL_API}/runtime/artifacts/${runId}`);
+        if (res.status === 404) return null;
+        if (!res.ok) throw new Error('Failed to fetch run artifacts');
+        return await res.json();
+    } catch (e) {
+        console.error('Run artifacts fetch failed:', e);
+        return null;
+    }
+}
+
+export async function deleteArtifactRun(runId: string): Promise<void> {
+    if (USE_MOCK) {
+        console.warn("[MOCK] Delete artifact run simulated.");
+        return;
+    }
+
+    try {
+        const res = await fetch(`${KERNEL_API}/runtime/artifacts/${runId}`, {
+            method: 'DELETE'
+        });
+        if (!res.ok) throw new Error('Failed to delete artifact run');
+    } catch (e) {
+        console.error('Artifact deletion failed:', e);
+        throw e;
+    }
+}
+
+export async function promoteArtifactToLibrary(runId: string, filename: string): Promise<void> {
+    if (USE_MOCK) {
+        console.warn("[MOCK] Promote artifact simulated.");
+        return;
+    }
+
+    try {
+        const res = await fetch(`${KERNEL_API}/runtime/artifacts/${runId}/files/${filename}/promote`, {
+            method: 'POST'
+        });
+        if (!res.ok) throw new Error('Failed to promote artifact');
+    } catch (e) {
+        console.error('Artifact promotion failed:', e);
+        throw e;
+    }
+}
+
+export function getArtifactFileUrl(runId: string, filename: string): string {
+    if (USE_MOCK) {
+        // In mock mode, return data URL directly
+        const mockUrl = getMockGeneratedFile(filename);
+        if (mockUrl) return mockUrl;
+
+        // Fallback to placeholder for unknown files
+        return 'data:text/plain;charset=utf-8,' + encodeURIComponent(`Mock file: ${filename}\n\nNo preview available in demo mode.`);
+    }
+
+    return `${KERNEL_API}/runtime/artifacts/${runId}/files/${filename}`;
 }

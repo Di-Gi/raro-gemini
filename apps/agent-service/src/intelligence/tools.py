@@ -6,9 +6,10 @@
 import os
 import base64
 import logging
+from datetime import datetime
 from typing import List, Dict, Any, Optional, Union
 from google.genai import types
-from core.config import settings, logger
+from core.config import settings, logger, redis_client
 import json
 
 # --- OPTIONAL DEPENDENCY LOADING ---
@@ -61,7 +62,15 @@ class WorkspaceManager:
         try:
             mode = 'wb' if isinstance(content, bytes) else 'w'
             encoding = None if isinstance(content, bytes) else 'utf-8'
-            with open(path, mode, encoding=encoding) as f: f.write(content)
+            
+            with open(path, mode, encoding=encoding) as f:
+                f.write(content)
+                # === FIX: FORCE DISK SYNC ===
+                # Ensures OS flushes buffer to Docker volume immediately.
+                # Prevents 0-byte files when Kernel tries to read immediately after.
+                f.flush()
+                os.fsync(f.fileno())
+                
             return f"Successfully saved to {clean_name}"
         except Exception as e: return f"Error writing file: {str(e)}"
 
@@ -72,119 +81,169 @@ class WorkspaceManager:
             return f"FILES:\nInputs: {inputs}\nOutputs: {outputs}"
         except Exception as e: return f"Error: {str(e)}"
 
+# ============================================================================
+# SANDBOX SESSION MANAGEMENT
+# ============================================================================
+
+class SandboxSession:
+    """
+    Manages persistent E2B sandboxes across multiple agent steps.
+    Stores the E2B Sandbox ID in Redis keyed by the RARO run_id.
+    """
+    @staticmethod
+    def get_redis_key(run_id: str) -> str:
+        return f"raro:e2b_session:{run_id}"
+
+    @classmethod
+    def get_or_create(cls, run_id: str) -> Optional[Any]:
+        if not Sandbox or not settings.E2B_API_KEY:
+            return None
+
+        key = cls.get_redis_key(run_id)
+
+        # 1. Try to recover existing session
+        if redis_client:
+            stored_sandbox_id = redis_client.get(key)
+            if stored_sandbox_id:
+                try:
+                    # FIX: Explicit cast to str to satisfy Pylance/Type Checker
+                    # Redis get returns ResponseT which matches str|None at runtime
+                    sandbox_id_str = str(stored_sandbox_id)
+                    
+                    logger.info(f"Reconnecting to existing E2B sandbox: {sandbox_id_str} for run {run_id}")
+                    # Connect to existing session
+                    sandbox = Sandbox.connect(sandbox_id_str, api_key=settings.E2B_API_KEY)
+                    return sandbox
+                except Exception as e:
+                    logger.warning(f"Failed to reconnect to sandbox {stored_sandbox_id}: {e}. Creating new one.")
+                    redis_client.delete(key)
+
+        # 2. Create new session if none exists or connection failed
+        try:
+            logger.info(f"Creating NEW E2B sandbox for run {run_id}")
+            # Set a longer timeout (e.g., 10 minutes) so it survives between agent thoughts
+            sandbox = Sandbox.create(api_key=settings.E2B_API_KEY, timeout=600)
+
+            if redis_client:
+                # Store ID for future steps. Expire after 1 hour to prevent leaks.
+                redis_client.setex(key, 3600, sandbox.sandbox_id)
+
+            return sandbox
+        except Exception as e:
+            logger.error(f"Failed to create E2B sandbox: {e}")
+            return None
+
+    @classmethod
+    def kill_session(cls, run_id: str):
+        """Explicitly kill the sandbox when the run is finished."""
+        if not redis_client or not Sandbox: return
+
+        key = cls.get_redis_key(run_id)
+        stored_sandbox_id = redis_client.get(key)
+
+        if stored_sandbox_id:
+            try:
+                # FIX: Explicit cast to str
+                sandbox_id_str = str(stored_sandbox_id)
+                logger.info(f"Killing E2B sandbox {sandbox_id_str} for completed run {run_id}")
+                Sandbox.kill(sandbox_id_str, api_key=settings.E2B_API_KEY)
+            except Exception as e:
+                logger.warning(f"Error killing sandbox: {e}")
+            finally:
+                redis_client.delete(key)
+
 # --- EXECUTION LOGIC ---
 
 def _run_e2b_sandbox(code: str, ws: WorkspaceManager) -> Dict[str, Any]:
     if Sandbox is None: return {"error": "E2B library missing."}
-    if not settings.E2B_API_KEY: return {"error": "E2B_API_KEY missing."}
 
-    logger.info(f"Initializing E2B Sandbox for run {ws.run_id}...")
+    # 1. Acquire Persistent Sandbox
+    sandbox = SandboxSession.get_or_create(ws.run_id)
+    if not sandbox:
+        return {"error": "Failed to initialize E2B Sandbox connection."}
 
     try:
-        # 1. Create Sandbox
-        with Sandbox.create(api_key=settings.E2B_API_KEY) as sandbox:
-            
-            # 2. SYNC UP: Upload existing input files to Sandbox so Python can read them
-            # (Crucial for Data Aggregator if it wants to use Python on previous files)
-            if os.path.exists(ws.input_dir):
-                for filename in os.listdir(ws.input_dir):
-                    file_path = os.path.join(ws.input_dir, filename)
-                    if os.path.isfile(file_path):
-                        try:
-                            with open(file_path, "rb") as f:
-                                sandbox.files.write(filename, f.read())
-                                logger.debug(f"Uploaded {filename} to sandbox")
-                        except Exception as e:
-                            logger.warning(f"Failed to upload {filename}: {e}")
-
-            # Agents in the same run share the output directory. 
-            # If Agent A created a CSV, Agent B needs it uploaded to their sandbox to read it.
-            if os.path.exists(ws.output_dir):
-                for filename in os.listdir(ws.output_dir):
-                    file_path = os.path.join(ws.output_dir, filename)
-                    # Avoid re-uploading large files if not needed, or just upload everything for context
-                    if os.path.isfile(file_path):
-                        try:
-                            with open(file_path, "rb") as f:
-                                sandbox.files.write(filename, f.read())
-                                logger.debug(f"Uploaded artifact {filename} to sandbox")
-                        except Exception as e:
-                            logger.warning(f"Failed to upload artifact {filename}: {e}")
-
-            # 3. Execute
-            logger.info(f"E2B: Executing code ({len(code)} chars)")
-            execution = sandbox.run_code(code)
-
-            output_log = []
-            if execution.logs.stdout: output_log.append(f"STDOUT:\n{''.join(execution.logs.stdout)}")
-            if execution.logs.stderr: output_log.append(f"STDERR:\n{''.join(execution.logs.stderr)}")
-            
-            # 4. CAPTURE ARTIFACTS (The Fix)
-            artifacts_created = []
-            
-            # A. Plot/Image Results (Standard E2B behavior)
-            for result in execution.results:
-                if hasattr(result, 'png') and result.png:
-                    img_filename = f"plot_{ws.run_id}_{len(artifacts_created)}.png"
-                    ws.write(img_filename, base64.b64decode(result.png))
-                    artifacts_created.append(img_filename)
-                    output_log.append(f"\n[SYSTEM: Generated Image saved to '{img_filename}']")
-
-            # B. File System Artifacts (JSON/CSV generated by code)
-            # We explicitly check for files created in the workdir
-            try:
-                # List files in the sandbox's current directory
-                # We filter out system files to only get what the agent made
-                files_in_sandbox = sandbox.files.list(".")
-                
-                for remote_file in files_in_sandbox:
-                    # Ignore common system/hidden files
-                    if remote_file.name.startswith(".") or remote_file.name == "__pycache__":
-                        continue
-                        
-                    # Attempt to download
+        # 2. SYNC FILES (Smart Sync)
+        if os.path.exists(ws.input_dir):
+            for filename in os.listdir(ws.input_dir):
+                file_path = os.path.join(ws.input_dir, filename)
+                if os.path.isfile(file_path):
                     try:
-                        # Read as bytes from E2B
-                        file_bytes = sandbox.files.read(remote_file.name, format="bytes")
-                        
-                        # Write to Local RFS (Output Dir)
-                        # WorkspaceManager.write handles the path security
+                        with open(file_path, "rb") as f:
+                            # Use /home/user explicitly to ensure we are in the cwd
+                            sandbox.files.write(f"/home/user/{filename}", f.read())
+                    except Exception as e:
+                        logger.warning(f"Failed to upload {filename}: {e}")
+
+        # 3. Execute Code
+        logger.info(f"E2B: Executing code ({len(code)} chars)")
+        execution = sandbox.run_code(code)
+
+        output_log = []
+        if execution.logs.stdout: output_log.append(f"STDOUT:\n{''.join(execution.logs.stdout)}")
+        if execution.logs.stderr: output_log.append(f"STDERR:\n{''.join(execution.logs.stderr)}")
+
+        # 4. CAPTURE ARTIFACTS
+        artifacts_created = []
+
+        # A. Plot/Image Results (from plt.show() or implicit display)
+        for result in execution.results:
+            if hasattr(result, 'png') and result.png:
+                timestamp = datetime.now().strftime("%H%M%S")
+                img_filename = f"plot_{ws.run_id}_{timestamp}_{len(artifacts_created)}.png"
+                ws.write(img_filename, base64.b64decode(result.png))
+                artifacts_created.append(img_filename)
+                output_log.append(f"\n[SYSTEM: Generated Image saved to '{img_filename}']")
+
+        # B. File System Artifacts (from plt.savefig() or open(..., 'w'))
+        try:
+            # FIX: Explicitly check the standard working directory
+            # list(".") sometimes returns root or behaves unexpectedly in some versions
+            files_in_sandbox = sandbox.files.list("/home/user")
+            
+            logger.debug(f"Sandbox Files Scan: {[f.name for f in files_in_sandbox]}")
+
+            for remote_file in files_in_sandbox:
+                if remote_file.name.startswith(".") or remote_file.name == "__pycache__": continue
+
+                try:
+                    # FIX: Explicit path read
+                    file_bytes = sandbox.files.read(f"/home/user/{remote_file.name}", format="bytes")
+                    
+                    if file_bytes is not None and len(file_bytes) > 0:
                         ws.write(remote_file.name, file_bytes)
-                        
-                        # Only add to list if it wasn't already captured via plot result
                         if remote_file.name not in artifacts_created:
                             artifacts_created.append(remote_file.name)
-                            logger.info(f"Synced artifact from Sandbox: {remote_file.name}")
-                            
-                    except Exception as download_err:
-                        logger.warning(f"Could not download {remote_file.name}: {download_err}")
+                    else:
+                        # Don't log warning for directory entries or empty files unless specific
+                        pass
                         
-            except Exception as list_err:
-                logger.warning(f"Failed to list/download sandbox files: {list_err}")
+                except Exception as read_err:
+                    # Often fails if it's a directory, ignore specific errors
+                    logger.debug(f"Skipping artifact capture for {remote_file.name}: {read_err}")
+        except Exception as list_err:
+            logger.warning(f"Failed to list sandbox files: {list_err}")
 
-            # 5. Handle Errors
-            if execution.error:
-                error_msg = f"RUNTIME ERROR: {execution.error.name}: {execution.error.value}"
-                if execution.error.traceback: error_msg += f"\n{execution.error.traceback}"
-                return {"success": False, "error": error_msg, "logs": "\n".join(output_log)}
+        # 5. Handle Errors (But DO NOT close sandbox)
+        if execution.error:
+            error_msg = f"RUNTIME ERROR: {execution.error.name}: {execution.error.value}"
+            if execution.error.traceback: error_msg += f"\n{execution.error.traceback}"
+            return {"success": False, "error": error_msg, "logs": "\n".join(output_log)}
 
-            logs_text = "\n".join(output_log)
-            
-            # Append artifact info to the text result so the LLM knows it succeeded
-            if artifacts_created:
-                logs_text += f"\n[SYSTEM: The following files were generated and saved to your workspace: {artifacts_created}]"
+        logs_text = "\n".join(output_log)
+        if artifacts_created:
+            logs_text += f"\n[SYSTEM: The following files were generated/updated: {artifacts_created}]"
 
-            return {
-                "success": True, 
-                "result": logs_text if logs_text else "Execution successful (No stdout).",
-                "files_generated": artifacts_created,
-                "artifact_stored": len(artifacts_created) > 0
-            }
+        return {
+            "success": True,
+            "result": logs_text if logs_text else "Execution successful (No stdout).",
+            "files_generated": artifacts_created
+        }
 
     except Exception as e:
         logger.error(f"E2B failure: {e}", exc_info=True)
         return {"success": False, "error": f"Sandbox failed: {str(e)}"}
-    
+
 def _run_tavily_search(query: str) -> Dict[str, Any]:
     if TavilyClient is None or not settings.TAVILY_API_KEY:
         return {"success": False, "error": "Search unavailable (Missing Lib or Key)."}
@@ -287,8 +346,18 @@ def execute_tool_call(tool_name: str, args: Dict[str, Any], run_id: str = "defau
     try:
         if tool_name == 'read_file':
             return {'success': True, 'result': ws.read(args.get('filename', ''))}
+        
         elif tool_name == 'write_file':
-            return {'success': True, 'result': ws.write(args.get('filename', ''), args.get('content', ''))}
+            filename = args.get('filename', '')
+            result = ws.write(filename, args.get('content', ''))
+            # === FIX: EXPLICITLY RETURN FILES_GENERATED ===
+            # This ensures the Kernel logic picks up the file for promotion/mounting.
+            return {
+                'success': True, 
+                'result': result, 
+                'files_generated': [filename] 
+            }
+            
         elif tool_name == 'list_files':
             return {'success': True, 'result': ws.list_contents()}
         elif tool_name == 'web_search':

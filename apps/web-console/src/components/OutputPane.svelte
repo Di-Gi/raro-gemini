@@ -72,9 +72,13 @@
   });
 
   $effect(() => {
-    const _l = $logs; 
+    const _l = $logs;
     tick().then(() => {
-      if (isPinnedToBottom) scrollToBottom('smooth');
+      if (isPinnedToBottom) {
+        // Use 'auto' (instant) instead of 'smooth' for live logs to prevent
+        // the viewport from lagging behind the Typewriter speed.
+        scrollToBottom('auto');
+      }
     });
   });
 
@@ -82,25 +86,43 @@
     updateLog(id, { isAnimated: false });
   }
 
-  // Detects filename for the ArtifactCard
-  function extractImageFilename(msg: string): string | null {
-      const sysMatch = msg.match(/\[SYSTEM: Generated .*? saved to '([^']+)'\]/);
-      if (sysMatch) return sysMatch[1];
-      const mdMatch = msg.match(/!\[.*?\]\(([^)]+\.(?:png|jpg|jpeg|svg))\)/i);
-      if (mdMatch) return mdMatch[1];
-      return null;
+  // === UPDATED: Extraction Logic for Multiple Files ===
+  function extractAllFilenames(msg: string): string[] {
+      const files: string[] = [];
+
+      // 1. Match RFS System Tags: [SYSTEM: Generated Image saved to 'filename.png']
+      // Allow optional spaces \s* around colons and brackets
+      const systemRegex = /\[\s*SYSTEM\s*:\s*Generated\s*(?:Image|File)\s*saved\s*to\s*'([^']+)'\s*\]/gi;
+      let match;
+      while ((match = systemRegex.exec(msg)) !== null) {
+          files.push(match[1]);
+      }
+
+      // 2. Match Markdown Images: ![alt](filename.png)
+      // (Used as fallback or for agents explicitly outputting MD)
+      // Updated regex to catch non-image extensions too in case agent formatted them as links
+      const mdRegex = /!\[.*?\]\(([^)]+\.(?:png|jpg|jpeg|svg|json|csv|txt))\)/gi;
+      while ((match = mdRegex.exec(msg)) !== null) {
+          // Avoid duplicates if both formats exist for the same file
+          if (!files.includes(match[1])) {
+              files.push(match[1]);
+          }
+      }
+
+      return files;
   }
 
   // [[FIXED]]: Removes BOTH Markdown images AND the System Tag text
   function stripSystemTags(msg: string): string {
       let cleaned = msg;
-      
+
       // 1. Remove standard markdown images: ![alt](url)
-      cleaned = cleaned.replace(/!\[.*?\]\([^)]+\.(?:png|jpg|jpeg|svg)\)/gi, '');
-      
-      // 2. Remove RFS System Tags: [SYSTEM: Generated Image saved to '...']
-      cleaned = cleaned.replace(/\[SYSTEM: Generated (?:Image|File) saved to '[^']+'\]/g, '');
-      
+      // Updated to match the broader regex in extraction
+      cleaned = cleaned.replace(/!\[.*?\]\(([^)]+\.(?:png|jpg|jpeg|svg|json|csv|txt))\)/gi, '');
+
+      // 2. Remove RFS System Tags (Relaxed Regex)
+      cleaned = cleaned.replace(/\[\s*SYSTEM\s*:\s*Generated\s*(?:Image|File)\s*saved\s*to\s*'[^']+'\s*\]/gi, '');
+
       return cleaned.trim();
   }
 </script>
@@ -157,13 +179,17 @@
                 
                 {:else}
                   <!-- Static Text + Artifacts -->
-                  {@const imageFilename = extractImageFilename(log.message)}
+                  {@const fileList = extractAllFilenames(log.message)}
                   
                   <!-- [[FIXED]]: Use the robust cleaning function -->
                   <SmartText text={stripSystemTags(log.message)} />
                   
-                  {#if imageFilename}
-                     <ArtifactCard filename={imageFilename} runId={$runtimeStore.runId || ''} />
+                  {#if fileList.length > 0}
+                     <!-- Single Card, Array of Files -->
+                     <ArtifactCard 
+                        filenames={fileList} 
+                        runId={$runtimeStore.runId || ''} 
+                     />
                   {/if}
                 {/if}
               </div>

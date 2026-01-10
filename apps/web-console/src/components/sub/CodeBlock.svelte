@@ -7,7 +7,7 @@
   let { 
     code, 
     language, 
-    activeCursor = false // NEW: specific prop to show cursor inside block
+    activeCursor = false 
   }: { 
     code: string, 
     language: string, 
@@ -17,11 +17,15 @@
   let copied = $state(false);
   let timeout: any;
 
-  // Highlight logic
-  let highlightedCode = $derived(highlight(code, language));
+  // 1. NEW: Handle escaped newlines (e.g. from JSON logs) to ensure <pre> breaks lines correctly
+  let cleanCode = $derived(code ? code.replace(/\\n/g, '\n') : '');
+
+  // 2. Highlight logic (pass the cleaned code)
+  let highlightedCode = $derived(highlight(cleanCode, language));
 
   function copyToClipboard() {
-    navigator.clipboard.writeText(code);
+    // Copy the cleaned code (actual newlines), not the escaped version
+    navigator.clipboard.writeText(cleanCode);
     copied = true;
     clearTimeout(timeout);
     timeout = setTimeout(() => copied = false, 2000);
@@ -49,7 +53,7 @@
 </div>
 
 <style>
-  /* ... Keep existing styles ... */
+  /* ... Existing styles remain unchanged ... */
   
   .code-chassis {
     margin: 16px 0;
@@ -59,7 +63,6 @@
     overflow: hidden;
     font-family: var(--font-code);
     transition: border-color 0.3s;
-    /* Ensure it breaks out of inline contexts */
     display: block; 
     width: 100%;
   }
@@ -85,7 +88,6 @@
   .code-viewport { padding: 16px; overflow-x: auto; font-size: 11px; line-height: 1.5; }
   pre { margin: 0; font-family: var(--font-code); }
 
-  /* Token styles from previous step... */
   :global(.token-kw) { color: var(--arctic-cyan); font-weight: 700; }
   :global(.mode-archival .token-kw) { color: #005cc5; }
   :global(.token-str) { color: #a5d6ff; }
@@ -94,7 +96,6 @@
   :global(.token-num), :global(.token-bool) { color: var(--alert-amber); }
   :global(.mode-archival .token-num), :global(.mode-archival .token-bool) { color: #d73a49; }
 
-  /* Cursor specific to code block */
   .cursor-block {
     display: inline-block;
     color: var(--arctic-cyan);
