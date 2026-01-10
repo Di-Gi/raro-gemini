@@ -11,7 +11,7 @@ import asyncio
 import httpx
 import re  # Added for reasoning extraction regex
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from google.genai import types
 from core.config import gemini_client, logger, resolve_model, settings, redis_client
 from intelligence.prompts import render_runtime_system_instruction
@@ -183,6 +183,7 @@ async def _prepare_gemini_request(
     thinking_level: Optional[int] = None,
     tools: Optional[List[str]] = None,
     # [[NEW PARAMETERS]]
+    cached_content_id: Optional[str] = None,
     allow_delegation: bool = False,
     graph_view: str = "",
 ) -> Dict[str, Any]:
@@ -231,6 +232,10 @@ async def _prepare_gemini_request(
         )
         logger.debug(f"Deep Think enabled: budget={thinking_budget}")
 
+    # [[CONTEXT CACHING]]
+    # Note: This block has been moved to the file handling section below
+    # where we determine the active_cache_id (either provided or newly created)
+
     # NOTE: We intentionally DO NOT set config_params["tools"] here.
     # The agent is instructed to use ```json:function``` text blocks.
 
@@ -257,16 +262,70 @@ async def _prepare_gemini_request(
             "text": f"[OPERATOR DIRECTIVE]\n{user_directive}\n\n"
         })
 
-    # Multimodal files
+    # === CONTEXT CACHING: File Handling & Auto-Creation ===
+    # Logic: If cache ID exists, skip file loading. Otherwise, load files and create cache if large.
+    active_cache_id = cached_content_id
+
     if file_paths:
-        for file_path in file_paths:
-            try:
-                # Load file (text or binary)
-                file_part = await load_multimodal_file(file_path)
-                user_parts.append(file_part)
-            except Exception as e:
-                logger.error(f"Failed to load file {file_path}: {e}")
-                user_parts.append({"text": f"[ERROR: Failed to load {file_path}]"})
+        if active_cache_id:
+            # A: Cache Exists - Skip file loading to save tokens/bandwidth
+            logger.info(f"Using existing Context Cache: {active_cache_id} (Skipping file upload)")
+        else:
+            # B: No Cache - Load files and check size
+            loaded_parts = []
+            total_est_chars = 0
+
+            for file_path in file_paths:
+                try:
+                    file_part = await load_multimodal_file(file_path)
+                    loaded_parts.append(file_part)
+
+                    # Heuristic size estimation
+                    if "text" in file_part:
+                        total_est_chars += len(file_part["text"])
+                    elif "inline_data" in file_part:
+                        # Base64 char count is rough proxy for binary complexity
+                        total_est_chars += len(file_part["inline_data"]["data"])
+                except Exception as e:
+                    logger.error(f"Failed to load file {file_path}: {e}")
+                    user_parts.append({"text": f"[ERROR: Failed to load {file_path}]"})
+
+            # Threshold: ~32k tokens. 1 token ~= 4 chars. 32000 * 4 = 128,000 chars.
+            # We use 100,000 chars as a safe lower bound to trigger caching.
+            CACHE_THRESHOLD_CHARS = 100_000
+
+            if total_est_chars > CACHE_THRESHOLD_CHARS:
+                logger.info(f"Context size ({total_est_chars} chars) exceeds threshold. Creating Cache...")
+
+                # Type safety: Ensure gemini_client is available
+                if not gemini_client:
+                    logger.warning("Cannot create cache: Gemini client not initialized. Falling back to standard payload.")
+                    user_parts.extend(loaded_parts)
+                else:
+                    try:
+                        # Create cache with 1 hour TTL
+                        cache_content = await asyncio.to_thread(
+                            gemini_client.caches.create,
+                            model=model,
+                            config={
+                                "contents": [{"role": "user", "parts": loaded_parts}],
+                                "ttl": "3600s"  # 1 Hour TTL
+                            }
+                        )
+                        active_cache_id = cache_content.name
+                        logger.info(f"✓ Cache Created: {active_cache_id}")
+
+                        # Do NOT add loaded_parts to user_parts (they are now in the cache)
+                    except Exception as e:
+                        logger.error(f"Cache creation failed: {e}. Falling back to standard payload.")
+                        user_parts.extend(loaded_parts)
+            else:
+                # Small context - just inject directly
+                user_parts.extend(loaded_parts)
+
+    # Inject active cache ID into config (if determined from file handling)
+    if active_cache_id:
+        config_params["cached_content"] = active_cache_id
 
     # Context Data (from parent nodes)
     if input_data:
@@ -291,7 +350,8 @@ async def _prepare_gemini_request(
     return {
         "model": model,
         "contents": contents,
-        "config": config_params
+        "config": config_params,
+        "active_cache_id": active_cache_id  # Return for persistence by caller
     }
 
 
@@ -363,6 +423,7 @@ async def call_gemini_with_context(
     agent_id: Optional[str] = None,
     run_id: str = "default_run",
     # [[NEW PARAMETERS]]
+    cached_content_id: Optional[str] = None,
     allow_delegation: bool = False,
     graph_view: str = "",
 ) -> Dict[str, Any]:
@@ -391,9 +452,14 @@ async def call_gemini_with_context(
             concrete_model, prompt, safe_agent_id, user_directive, input_data, file_paths,
             parent_signature, thinking_level, tools,
             # Pass new parameters
+            cached_content_id=cached_content_id,
             allow_delegation=allow_delegation,
             graph_view=graph_view
         )
+
+        # [[CONTEXT CACHING]]
+        # Extract the potentially newly created cache ID from params
+        final_cache_id = params.get("active_cache_id")
 
         # =========================================================
         # INTERCEPTION LAYER (Abstracted)
@@ -581,7 +647,8 @@ async def call_gemini_with_context(
             "output_tokens": output_tokens,
             "thought_signature": thought_signature,
             "cache_hit": cache_hit,
-            "files_generated": all_files_generated  # Return captured files
+            "files_generated": all_files_generated,  # Return captured files
+            "cached_content_id": final_cache_id  # Return cache ID (consumed or newly created)
         }
 
     except Exception as e:

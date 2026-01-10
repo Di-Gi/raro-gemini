@@ -170,6 +170,12 @@ pub async fn resume_run(
     State(runtime): State<Arc<RARORuntime>>,
     Path(run_id): Path<String>
 ) -> StatusCode {
+    // 0. Fail fast if structural integrity is lost (DAG missing from memory)
+    if !runtime.has_dag(&run_id) {
+        tracing::error!("Cannot resume run {}: DAG structure missing from memory.", run_id);
+        return StatusCode::NOT_FOUND;
+    }
+
     // 1. Verify currently paused
     let is_paused = runtime.get_state(&run_id)
         .map(|s| s.status == RuntimeStatus::AwaitingApproval)

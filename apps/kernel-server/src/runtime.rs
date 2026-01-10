@@ -444,6 +444,17 @@ impl RARORuntime {
             match response {
                 Ok(res) => {
                     if res.success {
+                        // [[CONTEXT CACHING PERSISTENCE]]
+                        // If the agent returned a cache ID (either created new or refreshed),
+                        // update the runtime store so subsequent agents reuse it.
+                        if let Some(cache_id) = &res.cached_content_id {
+                            if let Err(e) = self.set_cache_resource(&run_id, cache_id.clone()) {
+                                tracing::warn!("Failed to update cache resource for run {}: {}", run_id, e);
+                            } else {
+                                tracing::debug!("Updated Context Cache for run {}: {}", run_id, cache_id);
+                            }
+                        }
+
                         // A. Check for Delegation (Dynamic Splicing)
                         if let Some(delegation) = res.delegation {
                             tracing::info!("Agent {} requested delegation: {}", agent_id, delegation.reason);
@@ -1023,7 +1034,7 @@ impl RARORuntime {
         }
 
         // 7. Get Cached Content ID (if applicable)
-        let cached_content_id = self.cache_resources.get(run_id).map(|c| (*c).clone());
+        let cached_content_id = self.get_cache_resource(run_id);
 
         // 8. Determine Model Variant String
         let model_string = match &agent_config.model {

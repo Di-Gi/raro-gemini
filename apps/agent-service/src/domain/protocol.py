@@ -121,6 +121,12 @@ class AgentResponse(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     cache_hit: bool = False
+
+    # [[CONTEXT CACHING]]
+    # ID of the Gemini Context Cache used or created during this execution.
+    # Returned to Kernel for persistence across the DAG.
+    cached_content_id: Optional[str] = None
+
     latency_ms: float = 0.0
     thought_signature: Optional[str] = None
     output: Optional[Dict[str, Any]] = None

@@ -73,6 +73,7 @@ storage/library/*
 !storage/library/.keep
 storage/sessions/*
 !storage/sessions/.keep
-
+storage/artifacts/*
+!storage/artifacts/.keep
 # Logs
 *.log

@@ -294,7 +294,8 @@ async def _execute_agent_logic(request: AgentRequest) -> AgentResponse:
             tools=request.tools,
             agent_id=request.agent_id,
             run_id=request.run_id,
-            # [[NEW PARAMETERS FROM KERNEL]]
+            # [[CONTEXT CACHING + DELEGATION PARAMETERS FROM KERNEL]]
+            cached_content_id=request.cached_content_id,
             allow_delegation=request.allow_delegation,
             graph_view=request.graph_view,
         )
@@ -369,6 +370,11 @@ async def _execute_agent_logic(request: AgentRequest) -> AgentResponse:
             tokens_used=result["input_tokens"] + result["output_tokens"],
             thought_signature=result["thought_signature"],
             cache_hit=result["cache_hit"],
+
+            # [[CONTEXT CACHING]]
+            # Extract cache ID from LLM result (either consumed or newly created)
+            cached_content_id=result.get("cached_content_id"),
+
             latency_ms=latency_ms
         )
 
