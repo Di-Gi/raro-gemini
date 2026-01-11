@@ -1,9 +1,14 @@
 // [[RARO]]/apps/web-console/src/lib/stores.ts
+// Change Type: Modified
+// Purpose: Integrate Template System for initialization and graph switching
+// Architectural Context: State Management
+// Dependencies: api, layout-engine, mock-api, templates
 
 import { writable, get } from 'svelte/store';
 import { getWebSocketURL, USE_MOCK, type WorkflowConfig } from './api'; // Import USE_MOCK
 import { MockWebSocket, mockResumeRun, mockStopRun } from './mock-api'; 
 import { DagLayoutEngine } from './layout-engine'; // Import Layout Engine
+import { TEMPLATES, type GraphTemplate } from './templates'; // [[NEW]] Import Templates
 
 // Import KERNEL_API for resume/stop endpoints
 const KERNEL_API = import.meta.env.VITE_KERNEL_URL || '/api';
@@ -92,25 +97,17 @@ export function toggleAttachment(fileName: string) {
     });
 }
 
-// Initial Nodes State
-const initialNodes: AgentNode[] = [
-  { id: 'orchestrator', label: 'ORCHESTRATOR', x: 20, y: 50, model: 'reasoning', prompt: 'Analyze the user request and determine optimal sub-tasks.', status: 'idle', role: 'orchestrator', acceptsDirective: true, allowDelegation: true },
-  { id: 'retrieval', label: 'RETRIEVAL', x: 50, y: 30, model: 'fast', prompt: 'Search knowledge base for relevant context.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false },
-  { id: 'code_interpreter', label: 'CODE_INTERP', x: 50, y: 70, model: 'fast', prompt: 'Execute Python analysis on provided data.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false },
-  { id: 'synthesis', label: 'SYNTHESIS', x: 80, y: 50, model: 'thinking', prompt: 'Synthesize all findings into a final report.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false }
-];
+// === INITIALIZATION via TEMPLATE ===
+// Default to STANDARD on load
+// This replaces the previous hardcoded `initialNodes` and `initialEdges`
+const DEFAULT_TEMPLATE = TEMPLATES.STANDARD;
 
-export const agentNodes = writable<AgentNode[]>(initialNodes);
+// Initial Nodes State
+export const agentNodes = writable<AgentNode[]>(DEFAULT_TEMPLATE.nodes);
 
 // Initial Edges State
-const initialEdges: PipelineEdge[] = [
-  { from: 'orchestrator', to: 'retrieval', active: false, finalized: false, pulseAnimation: false },
-  { from: 'orchestrator', to: 'code_interpreter', active: false, finalized: false, pulseAnimation: false },
-  { from: 'retrieval', to: 'synthesis', active: false, finalized: false, pulseAnimation: false },
-  { from: 'code_interpreter', to: 'synthesis', active: false, finalized: false, pulseAnimation: false }
-];
+export const pipelineEdges = writable<PipelineEdge[]>(DEFAULT_TEMPLATE.edges);
 
-export const pipelineEdges = writable<PipelineEdge[]>(initialEdges);
 export const selectedNode = writable<string | null>(null);
 
 // Telemetry Store
@@ -129,6 +126,25 @@ export const planningMode = writable<boolean>(false);
 
 
 // === ACTIONS ===
+
+// [[NEW]] Template Applicator
+export function applyTemplate(templateKey: string) {
+    const template = TEMPLATES[templateKey];
+    if (!template) {
+        console.warn(`Template ${templateKey} not found.`);
+        return;
+    }
+
+    // Reset stores with template data
+    // Use deep copy (JSON serialization) to prevent mutation of the static template definitions
+    // This ensures that if the user modifies the graph, the original template remains pure.
+    agentNodes.set(JSON.parse(JSON.stringify(template.nodes)));
+    pipelineEdges.set(JSON.parse(JSON.stringify(template.edges)));
+    
+    // Clear selection to avoid stale state in configuration pane
+    selectedNode.set(null);
+}
+
 // === GRAPH MUTATION ACTIONS ===
 
 export function updateNodePosition(id: string, x: number, y: number) {
@@ -160,8 +176,6 @@ export function removeConnection(from: string, to: string) {
     );
 }
 
-
-
 export function createNode(x: number, y: number) {
     agentNodes.update(nodes => {
         const id = `node_${Date.now().toString().slice(-4)}`;
@@ -179,8 +193,6 @@ export function createNode(x: number, y: number) {
         }];
     });
 }
-
-
 
 export function deleteNode(id: string) {
     // 1. Remove Node
@@ -280,41 +292,7 @@ export function loadWorkflowManifest(manifest: WorkflowConfig) {
  * Translates Backend Manifest -> Frontend State
  */
 export function overwriteGraphFromManifest(manifest: WorkflowConfig) {
-  // 1. Transform Manifest Agents -> UI Nodes
-  const newNodes: AgentNode[] = manifest.agents.map((agent, index) => {
-    // Use semantic alias directly (fast, reasoning, thinking)
-    // No normalization needed - backend already sends the correct alias
-    return {
-      id: agent.id,
-      label: agent.id.replace(/^(agent_|node_)/i, '').toUpperCase(), // Clean ID for display
-      x: agent.position?.x || (20 + index * 15), // Fallback layout logic
-      y: agent.position?.y || (30 + index * 10),
-      model: agent.model,
-      prompt: agent.prompt,
-      status: 'idle',
-      role: agent.role,
-      acceptsDirective: agent.accepts_directive || agent.role === 'orchestrator',  // Use backend flag or default to true for orchestrators
-      allowDelegation: agent.allow_delegation || false  // Use backend flag or default to false
-    };
-  });
-
-  // 2. Transform Manifest Dependencies -> UI Edges
-  const newEdges: PipelineEdge[] = [];
-  manifest.agents.forEach(agent => {
-    agent.depends_on.forEach(parentId => {
-      newEdges.push({
-        from: parentId,
-        to: agent.id,
-        active: false,
-        finalized: false,
-        pulseAnimation: false
-      });
-    });
-  });
-
-  // 3. Commit to Store
-  agentNodes.set(newNodes);
-  pipelineEdges.set(newEdges);
+  loadWorkflowManifest(manifest);
 }
 
 
@@ -364,6 +342,7 @@ export async function stopRun(runId: string) {
         addLog('KERNEL', `Stop failed: ${e}`, 'ERR');
     }
 }
+
 // === AUTHORITATIVE TOPOLOGY SYNC ===
 // This function trusts the Kernel's topology as the source of truth
 function syncTopology(topology: TopologySnapshot) {

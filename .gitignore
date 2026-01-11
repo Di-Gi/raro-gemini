@@ -77,3 +77,6 @@ storage/artifacts/*
 !storage/artifacts/.keep
 # Logs
 *.log
+
+.cstash.json
+STRUCTURE.md
