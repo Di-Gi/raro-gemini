@@ -141,7 +141,8 @@ export async function mockGetLibraryFiles(): Promise<string[]> {
         'financials_Q3_2024.pdf',
         'system_architecture_v2.md',
         'raw_telemetry_dump.csv',
-        'cortex_safety_policy.json'
+        'cortex_safety_policy.json',
+        'legacy_script.py' // Added for code migration scenario
     ];
 }
 

@@ -125,11 +125,50 @@
 
       return cleaned.trim();
   }
+
+  // === [[NEW]] NARRATIVE TRANSLATION LAYER ===
+  // Translates technical logs into plain-English status messages
+  function translateLogToNarrative(log: LogEntry): string {
+    if (log.category === 'TOOL_CALL') {
+        if (log.message.includes('execute_python')) return "Running Python analysis on data...";
+        if (log.message.includes('web_search')) return `Searching the internet for information...`;
+        if (log.message.includes('read_file')) return "Reading file contents...";
+        if (log.message.includes('write_file')) return "Generating output file...";
+        return "Executing tool...";
+    }
+    if (log.category === 'THOUGHT') {
+        return "Reasoning about next steps...";
+    }
+    if (log.role === 'ORCHESTRATOR' || log.role === 'PLANNER' || log.role === 'ARCHITECT') {
+        return "Orchestrating workflow delegation...";
+    }
+    if (log.metadata === 'THINKING') {
+        return "Deep reasoning in progress...";
+    }
+    return "Processing...";
+  }
+
+  // Derive the current narrative status from the most recent active log
+  let lastNarrative = $derived.by(() => {
+    const reversed = [...$logs].reverse();
+    const active = reversed.find(l => l.category === 'TOOL_CALL' && !l.isComplete)
+                || reversed.find(l => l.category === 'THOUGHT');
+    return active ? translateLogToNarrative(active) : "System Idle";
+  });
 </script>
 
 <div id="output-pane" bind:this={scrollContainer} onscroll={handleScroll}>
+
+  <!-- === [[NEW]] NARRATIVE TICKER === -->
+  {#if $runtimeStore.status === 'RUNNING'}
+    <div class="narrative-ticker">
+      <span class="pulse-dot"></span>
+      <span class="narrative-text">{lastNarrative}</span>
+    </div>
+  {/if}
+
   <div class="log-wrapper" bind:this={contentWrapper}>
-    
+
     {#each groupedLogs as group (group.id)}
       <div class="log-group">
         
@@ -295,10 +334,42 @@
     opacity: 0.5;
   }
 
-  .log-content { 
-    font-size: 13px; 
-    line-height: 1.6; 
-    color: var(--paper-ink); 
-    opacity: 0.9; 
+  .log-content {
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--paper-ink);
+    opacity: 0.9;
+  }
+
+  /* === [[NEW]] NARRATIVE TICKER STYLES === */
+  .narrative-ticker {
+    position: sticky;
+    top: 0;
+    background: var(--paper-bg);
+    border-bottom: 1px solid var(--paper-line);
+    padding: 8px 16px;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--font-code);
+    font-size: 10px;
+    color: var(--paper-ink);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  .pulse-dot {
+    width: 6px;
+    height: 6px;
+    background: var(--arctic-cyan);
+    border-radius: 50%;
+    animation: pulse 1s infinite;
+  }
+
+  @keyframes pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.3; }
+    100% { opacity: 1; }
   }
 </style>

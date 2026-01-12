@@ -17,14 +17,16 @@
     renameNode,
     applyTemplate  // [[NEW]] Import Template Action
   } from '$lib/stores'
-  import { 
-    startRun, 
-    generateWorkflowPlan, 
-    type WorkflowConfig, 
-    type AgentConfig 
+  import {
+    startRun,
+    generateWorkflowPlan,
+    type WorkflowConfig,
+    type AgentConfig
   } from '$lib/api'
   import { get } from 'svelte/store'
   import { TEMPLATES } from '$lib/templates' // [[NEW]] Import Definitions
+  import { SCENARIOS, type MissionScenario } from '$lib/scenarios' // [[NEW]] Import Scenarios
+  import MissionSelector from './sub/MissionSelector.svelte' // [[NEW]] Import Mission Selector
 
   let { expanded }: { expanded: boolean } = $props();
 
@@ -81,6 +83,23 @@
       if (isSubmitting || $runtimeStore.status === 'RUNNING') return;
       applyTemplate(key);
       addLog('SYSTEM', `Pipeline Configuration reset to [${key}] template.`, 'RESET');
+  }
+
+  // [[NEW]] Mission Selector Handler
+  function handleMissionSelect(mission: MissionScenario) {
+      if (isSubmitting || $runtimeStore.status === 'RUNNING') return;
+
+      // 1. Apply Topology
+      applyTemplate(mission.templateKey);
+
+      // 2. Clear then Fill Input (Typewriter effect optional, but let's just set it)
+      cmdInput = mission.directive;
+
+      // 3. Attach Files
+      // Reset attachments for purity
+      attachedFiles.set(mission.suggestedFiles);
+
+      addLog('SYSTEM', `Mission Protocol [${mission.id.toUpperCase()}] loaded.`, 'CONFIG_LOAD');
   }
 
   async function submitPlan() {
@@ -282,21 +301,11 @@
 
     {#if !expanded || activePane === 'input'}
       <div id="pane-input" class="deck-pane">
-        
-        <!-- === [[NEW]] TEMPLATE SELECTOR === -->
-        <!-- Only visible if not in Planning Mode (Architect manages its own graph) -->
-        {#if !$planningMode}
-            <div class="template-bar">
-                {#each Object.values(TEMPLATES) as tpl}
-                    <button 
-                        class="tpl-tag" 
-                        onclick={() => handleLoadTemplate(tpl.key)}
-                        title="Load {tpl.label} Configuration"
-                    >
-                        {tpl.label}
-                    </button>
-                {/each}
-            </div>
+
+        <!-- === [[NEW]] MISSION SELECTOR === -->
+        <!-- Only visible if not in Planning Mode and not currently running -->
+        {#if !$planningMode && $runtimeStore.status !== 'RUNNING'}
+            <MissionSelector onSelect={handleMissionSelect} />
         {/if}
 
         {#if !$planningMode && $attachedFiles.length > 0}
@@ -583,7 +592,7 @@
 <style>
   /* === EXISTING STYLES === */
   #control-deck {
-    height: 160px;
+    height: 185px;
     background: var(--paper-bg);
     border-top: 1px solid var(--paper-line);
     display: flex;
@@ -628,35 +637,6 @@
   .deck-pane { flex: 1; height: 100%; padding: 20px; overflow-y: auto; }
 
   #pane-input { display: flex; flex-direction: column; justify-content: center; padding-bottom: 8px; }
-
-  /* === [[NEW]] TEMPLATE BAR STYLING === */
-  .template-bar {
-      display: flex;
-      gap: 8px;
-      margin-bottom: 8px;
-      animation: slideDown 0.2s ease-out;
-  }
-
-  .tpl-tag {
-      background: var(--paper-surface);
-      border: 1px solid var(--paper-line);
-      color: var(--paper-line);
-      font-family: var(--font-code);
-      font-size: 9px;
-      font-weight: 700;
-      padding: 4px 10px;
-      border-radius: 2px;
-      cursor: pointer;
-      transition: all 0.2s;
-      letter-spacing: 0.5px;
-      text-transform: uppercase;
-  }
-
-  .tpl-tag:hover {
-      border-color: var(--paper-ink);
-      color: var(--paper-ink);
-      background: var(--paper-bg);
-  }
 
   /* === CONTEXT RACK === */
   .context-rack { margin-bottom: 12px; display: flex; align-items: center; gap: 12px; animation: slideDown 0.2s ease-out; }
