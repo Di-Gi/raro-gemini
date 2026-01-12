@@ -4,14 +4,15 @@
 // Dependencies: Stores -->
 
 <script lang="ts">
-  import { 
-    agentNodes, 
-    pipelineEdges, 
-    selectedNode, 
-    selectNode, 
-    deselectNode, 
-    runtimeStore, 
+  import {
+    agentNodes,
+    pipelineEdges,
+    selectedNode,
+    selectNode,
+    deselectNode,
+    runtimeStore,
     planningMode,
+    graphFlash,
     type PipelineEdge,
     type AgentNode
   } from '$lib/stores'
@@ -229,7 +230,7 @@
 
 <div
   id="pipeline-stage"
-  class="{expanded ? 'expanded' : ''} {isRunComplete ? 'run-complete' : ''}"
+  class="{expanded ? 'expanded' : ''} {isRunComplete ? 'run-complete' : ''} {$graphFlash ? 'flash-update' : ''}"
   onclick={handleClick}
   onkeydown={(e) => e.key === 'Enter' && handleClick()}
   role="button"
@@ -301,6 +302,29 @@
     border-top: 1px solid var(--tac-cyan);
     border-bottom: 1px solid var(--tac-cyan);
     box-shadow: 0 0 50px rgba(0, 0, 0, 0.8);
+  }
+
+  /* Flash Animation for Graph Updates */
+  #pipeline-stage.flash-update {
+    animation: graphFlash 1s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  @keyframes graphFlash {
+    0% {
+      border-top-color: var(--tac-cyan);
+      border-bottom-color: var(--tac-cyan);
+      box-shadow: 0 0 20px rgba(0, 240, 255, 0.6), inset 0 0 20px rgba(0, 240, 255, 0.2);
+    }
+    50% {
+      border-top-color: var(--tac-cyan);
+      border-bottom-color: var(--tac-cyan);
+      box-shadow: 0 0 30px rgba(0, 240, 255, 0.4), inset 0 0 30px rgba(0, 240, 255, 0.1);
+    }
+    100% {
+      border-top-color: var(--paper-line);
+      border-bottom-color: var(--paper-line);
+      box-shadow: none;
+    }
   }
 
   /* === BACKGROUNDS === */

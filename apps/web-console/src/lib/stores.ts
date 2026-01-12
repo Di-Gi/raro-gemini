@@ -124,6 +124,14 @@ export const telemetry = writable<TelemetryState>({
 // True = Architect Mode (Query -> Agent Service -> Update Graph)
 export const planningMode = writable<boolean>(false);
 
+// Graph Update Flash Indicator
+export const graphFlash = writable<boolean>(false);
+
+// Helper to trigger flash animation
+function triggerGraphFlash() {
+    graphFlash.set(true);
+    setTimeout(() => graphFlash.set(false), 1000); // Flash for 1 second
+}
 
 // === ACTIONS ===
 
@@ -140,9 +148,12 @@ export function applyTemplate(templateKey: string) {
     // This ensures that if the user modifies the graph, the original template remains pure.
     agentNodes.set(JSON.parse(JSON.stringify(template.nodes)));
     pipelineEdges.set(JSON.parse(JSON.stringify(template.edges)));
-    
+
     // Clear selection to avoid stale state in configuration pane
     selectedNode.set(null);
+
+    // Trigger flash animation
+    triggerGraphFlash();
 }
 
 // === GRAPH MUTATION ACTIONS ===
@@ -285,6 +296,9 @@ export function loadWorkflowManifest(manifest: WorkflowConfig) {
   agentNodes.set(newNodes);
   pipelineEdges.set(newEdges);
   selectedNode.set(null); // Clear selection
+
+  // Trigger flash animation
+  triggerGraphFlash();
 }
 
 /**
