@@ -36,7 +36,7 @@
   let refreshDebounceTimer: number | null = null;
 
   // Initial Load
-  onMount(async () => {
+  onMount(() => {
     refreshAll();
 
     // Subscribe to runtime status changes

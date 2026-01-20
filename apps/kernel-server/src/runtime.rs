@@ -612,42 +612,43 @@ impl RARORuntime {
     }
 
     /// Handles the "Graph Surgery" when an agent requests delegation
-    async fn handle_delegation(&self, run_id: &str, parent_id: &str, req: DelegationRequest) -> Result<(), String> {
+    async fn handle_delegation(&self, run_id: &str, parent_id: &str, mut req: DelegationRequest) -> Result<(), String> {
         // 1. Get State to identify Workflow ID
         let state = self.runtime_states.get(run_id).ok_or("Run not found")?;
         let workflow_id = state.workflow_id.clone();
         drop(state); // Drop read lock
 
-        // 2. PRE-FETCH DEPENDENTS
-        // We need to know who currently depends on the parent to update their config.
-        // We do this before locking the workflow to avoid complex lock interleaving.
+        // 2. PRE-FETCH DEPENDENTS & SANITIZE IDs
         let existing_dependents: Vec<String> = if let Some(dag) = self.dag_store.get(run_id) {
+            // A. Sanitize IDs to prevent cycles
+            let existing_nodes = dag.export_nodes();
+            for node in &mut req.new_nodes {
+                if existing_nodes.contains(&node.id) {
+                    let old_id = node.id.clone();
+                    let suffix = Uuid::new_v4().to_string().split('-').next().unwrap().to_string();
+                    let new_id = format!("{}_{}", old_id, suffix);
+                    tracing::warn!("Delegation ID Collision: Renaming '{}' to '{}' to prevent cycles.", old_id, new_id);
+                    node.id = new_id;
+                }
+            }
+            // B. Get children
             dag.get_children(parent_id)
         } else {
             return Err("DAG not found for pre-fetch".to_string());
         };
 
         // 3. MUTATE WORKFLOW CONFIG (CRITICAL STEP FOR CONTEXT)
-        // We must add new nodes AND update existing nodes' dependencies so they look for the right context.
         if let Some(mut workflow) = self.workflows.get_mut(&workflow_id) {
             // A. Register new agents
             for node in &req.new_nodes {
-                // In production, ensure unique IDs here
                 workflow.agents.push(node.clone());
             }
 
-            // B. Rewire Configuration Dependencies (The Fix)
-            // If we insert nodes as "Children", the original dependents must now depend on the new nodes,
-            // not the original parent. This ensures prepare_invocation_payload loads the new nodes' output.
+            // B. Rewire Configuration Dependencies
             if req.strategy == DelegationStrategy::Child {
                 for dep_id in &existing_dependents {
-                    // Find the config entry for the dependent agent (e.g., 'research_planner')
                     if let Some(dep_agent) = workflow.agents.iter_mut().find(|a| a.id == *dep_id) {
-                        
-                        // 1. Remove the old parent (e.g., 'image_analyzer') from depends_on
                         dep_agent.depends_on.retain(|p| p != parent_id);
-
-                        // 2. Add the new nodes (e.g., 'vision_analyst') as dependencies
                         for new_node in &req.new_nodes {
                             if !dep_agent.depends_on.contains(&new_node.id) {
                                 dep_agent.depends_on.push(new_node.id.clone());
@@ -668,31 +669,26 @@ impl RARORuntime {
             for node in &req.new_nodes {
                 dag.add_node(node.id.clone()).map_err(|e| e.to_string())?;
 
-                // Parent -> New Node (so New Node can see Parent's context)
+                // Parent -> New Node
                 dag.add_edge(parent_id.to_string(), node.id.clone()).map_err(|e| e.to_string())?;
 
                 // B. Connect New Nodes -> Existing Dependents
-                // If strategy is Child, new nodes block the original dependents.
                 if req.strategy == DelegationStrategy::Child {
                     for dep in &existing_dependents {
-                        // Add edge New Node -> Dependent
                         dag.add_edge(node.id.clone(), dep.clone()).map_err(|e| e.to_string())?;
                     }
                 }
             }
 
             // C. Remove Old Edges (Parent -> Dependents)
-            // Only required for Child strategy to force linear flow (Parent -> New -> Dependent)
             if req.strategy == DelegationStrategy::Child {
                 for dep in &existing_dependents {
-                    // It's okay if this fails (edge might not exist), but logic says it should.
                     let _ = dag.remove_edge(parent_id, dep);
                 }
             }
 
-            // Validate Cycle (Rollback is hard, so we just check and error if bad)
+            // Validate Cycle
             if let Err(e) = dag.topological_sort() {
-                // If we broke the graph, we are in trouble.
                 tracing::error!("Delegation created a cycle: {:?}", e);
                 return Err("Delegation created a cycle in DAG".to_string());
             }
