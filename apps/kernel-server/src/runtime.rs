@@ -415,6 +415,86 @@ impl RARORuntime {
 
             // 5. Execute Agent
             tracing::info!("Processing agent: {}", agent_id);
+
+            // === PUPPET MODE: PAUSE FOR INSPECTION ===
+            let puppet_mode = env::var("PUPPET_MODE")
+                .unwrap_or_else(|_| "false".to_string())
+                .to_lowercase() == "true";
+
+            if puppet_mode {
+                tracing::info!("🎭 PUPPET MODE: Pausing execution for agent {}", agent_id);
+
+                if let Some(client) = &self.redis_client {
+                    // Gather context for puppet UI
+                    let workflow_id = self.runtime_states.get(&run_id)
+                        .map(|s| s.workflow_id.clone())
+                        .unwrap_or_default();
+
+                    let dependencies = self.dag_store.get(&run_id)
+                        .map(|dag| dag.get_dependencies(&agent_id))
+                        .unwrap_or_default();
+
+                    let agent_context = serde_json::json!({
+                        "run_id": run_id,
+                        "agent_id": agent_id,
+                        "workflow_id": workflow_id,
+                        "dependencies": dependencies,
+                        "timestamp": Utc::now().to_rfc3339(),
+                        "status": "awaiting_decision"
+                    });
+
+                    // Publish to puppet channel
+                    match client.get_async_connection().await {
+                        Ok(mut con) => {
+                            let _: Result<(), _> = con.publish(
+                                "puppet:channel",
+                                agent_context.to_string()
+                            ).await;
+
+                            // BLOCKING WAIT for puppet response (60s timeout)
+                            let response_key = format!("puppet:response:{}:{}", run_id, agent_id);
+                            let timeout = std::time::Duration::from_secs(60);
+
+                            let wait_result = tokio::time::timeout(timeout, async {
+                                loop {
+                                    match con.get::<_, Option<String>>(&response_key).await {
+                                        Ok(Some(response)) => {
+                                            // Delete response key
+                                            let _: Result<(), _> = con.del(&response_key).await;
+                                            return Some(response);
+                                        }
+                                        Ok(None) => {
+                                            // Not ready yet, wait a bit
+                                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                                        }
+                                        Err(e) => {
+                                            tracing::error!("Redis error waiting for puppet: {}", e);
+                                            return None;
+                                        }
+                                    }
+                                }
+                            }).await;
+
+                            match wait_result {
+                                Ok(Some(response)) => {
+                                    tracing::info!("🎭 Puppet response for {}: {}", agent_id, response);
+                                    // Continue execution (mock may be set in Redis by puppet service)
+                                }
+                                Ok(None) | Err(_) => {
+                                    tracing::warn!("🎭 Puppet timeout for {} - proceeding with normal execution", agent_id);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to connect to Redis for puppet mode: {}", e);
+                        }
+                    }
+                } else {
+                    tracing::warn!("🎭 PUPPET_MODE enabled but Redis unavailable");
+                }
+            }
+            // ==========================================
+
             self.update_agent_status(&run_id, &agent_id, InvocationStatus::Running).await;
             // Emit AgentStarted event
 

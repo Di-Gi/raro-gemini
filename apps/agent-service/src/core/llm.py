@@ -479,6 +479,24 @@ async def call_gemini_with_context(
             return probe_response
         # =========================================================
 
+        # =========================================================
+        # PUPPETEER INTERCEPTOR (Mock Injection)
+        # =========================================================
+        mock_key = f"mock:{run_id}:{safe_agent_id}"
+        mock_data = None
+
+        if redis_client:
+            try:
+                raw_mock = redis_client.get(mock_key)
+                if raw_mock:
+                    mock_data = json.loads(raw_mock)
+                    # Delete after use so it doesn't loop forever if the agent retries
+                    redis_client.delete(mock_key)
+                    logger.warning(f"🎭 PUPPETEER: Intercepted execution for {safe_agent_id} - Using mocked response")
+            except Exception as e:
+                logger.error(f"Failed to check puppet mock: {e}")
+        # =========================================================
+
         current_contents = params["contents"]
         max_turns = 10
         turn_count = 0
@@ -490,6 +508,7 @@ async def call_gemini_with_context(
         all_files_generated = []  # Accumulator for files from all tool calls
         _seen_files = set()  # Track files to prevent duplicates during retries
         execution_context_buffer = []  # Accumulate critical tool data for downstream context
+        puppet_turn_used = False  # Track if current turn used puppet mock
         # --- FIX END ---
 
         logger.debug(f"Agent {safe_agent_id}: Starting manual tool loop")
@@ -497,22 +516,36 @@ async def call_gemini_with_context(
         while turn_count < max_turns:
             turn_count += 1
 
-            # 1. Call LLM
-            response = await asyncio.to_thread(
-                gemini_client.models.generate_content,
-                model=params["model"],
-                contents=current_contents,
-                config=params["config"]
-            )
+            # === BRANCH: REAL vs MOCK ===
+            if mock_data and turn_count == 1:
+                # FIRST TURN OVERRIDE - Use puppeteer mock
+                content_text = mock_data["content"]
+                puppet_turn_used = True  # Mark this turn as puppet-controlled
+                logger.info(f">> 🎭 INJECTING MOCK PAYLOAD (turn {turn_count}) <<")
 
-            logger.debug(f"Full Gemini Response: {response.model_dump_json(indent=2) if response else 'None'}")
+                # Create a mock response object for consistency
+                response = None
+            else:
+                puppet_turn_used = False  # This is a real LLM turn
+                # STANDARD LLM CALL
+                response = await asyncio.to_thread(
+                    gemini_client.models.generate_content,
+                    model=params["model"],
+                    contents=current_contents,
+                    config=params["config"]
+                )
 
-            if not response.candidates:
-                logger.error(f"Agent {agent_id}: API returned no candidates.")
-                break
+            logger.debug(f"Full Gemini Response: {response.model_dump_json(indent=2) if response else 'Mocked'}")
 
-            # 2. Extract Text
-            content_text = response.text or ""
+            # Skip response validation for mocked data
+            if response:
+                if not response.candidates:
+                    logger.error(f"Agent {agent_id}: API returned no candidates.")
+                    break
+
+                # 2. Extract Text from real response
+                content_text = response.text or ""
+            # else: content_text already set from mock_data above
 
             # Append model's response to history
             current_contents.append({
@@ -622,6 +655,16 @@ async def call_gemini_with_context(
                 "role": "user",
                 "parts": [{"text": tool_outputs_text}]
             })
+
+            # === PUPPET FIX: TERMINATE AFTER TOOL EXECUTION ===
+            # If this turn was a puppet mock with tool calls, treat the tool execution
+            # as the final response. Don't loop back to call the real LLM.
+            if puppet_turn_used:
+                logger.info(f"🎭 PUPPET MODE: Tool execution complete. Terminating agent (no LLM follow-up).")
+                # Set final_response_text to the original mock text (includes reasoning + tool call)
+                final_response_text = content_text
+                break  # Exit loop - don't call real LLM with tool results
+            # ===================================================
 
             logger.debug(f"Agent {agent_id}: Turning over with tool results...")
 

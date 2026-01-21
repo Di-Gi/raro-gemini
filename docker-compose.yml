@@ -16,13 +16,18 @@ services:
     environment:
       - RUST_LOG=raro_kernel=debug,tower_http=trace
       - KERNEL_PORT=3000
-      
+
       # === ROUTING CONFIGURATION ===
       # Point back to real agents (Probe intercepts at the Agent level now)
       - AGENT_HOST=agents
       - AGENT_PORT=8000
-      
+
       - REDIS_URL=redis://redis:6379
+
+      # === PUPPET MODE ===
+      # Enable puppet mode to pause execution before each agent invocation
+      # Set to "true" to enable interactive debugging
+      - PUPPET_MODE=${PUPPET_MODE:-false}
     volumes:
       - ./storage:/app/storage # <--- SHARED MOUNT FOR RFS
     networks:
@@ -83,6 +88,27 @@ services:
       - "8081:8080" # UI Dashboard accessible at localhost:8081
     networks:
       - raro-net
+
+  # 3.5 THE PUPPET MASTER: Debug Puppet
+  # Active injector that allows mocking agent responses for testing.
+  debug-puppet:
+    build:
+      context: ./apps/debug-puppet
+      dockerfile: Dockerfile
+    container_name: raro-debug-puppet
+    ports:
+      - "8082:8081" # UI Dashboard accessible at localhost:8082
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - KERNEL_URL=http://kernel:3000
+    networks:
+      - raro-net
+    depends_on:
+      redis:
+        condition: service_healthy
+      kernel:
+        condition: service_healthy
 
   # 4. THE FACE: Svelte Web Console
   # Reactive UI for visualization and control.
