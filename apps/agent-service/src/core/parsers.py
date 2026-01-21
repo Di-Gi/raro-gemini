@@ -105,31 +105,46 @@ def extract_code_block(text: str, block_type: str) -> Optional[ParsedBlock]:
 
 def extract_all_code_blocks(text: str, block_type: str) -> List[ParsedBlock]:
     """
-    Extract and parse ALL code blocks of specified type from text.
-
-    Args:
-        text: The text to search for code blocks
-        block_type: The type identifier (e.g., 'function', 'delegation')
-
-    Returns:
-        List of ParsedBlock objects (empty list if none found)
+    Extract and parse ALL code blocks. 
+    1. STRICT pass: Matches ```json:block_type
+    2. LOOSE pass (Fallback): Matches ```json if content adheres to schema
     """
-    pattern = rf"```json:{re.escape(block_type)}\s*(\{{[\s\S]*?\}})\s*```"
-
-    matches = re.finditer(pattern, text, re.IGNORECASE)
     blocks = []
-
+    
+    # --- 1. STRICT PASS (Priority) ---
+    # Matches ```json:function ... ```
+    strict_pattern = rf"```json:{re.escape(block_type)}\s*(\{{[\s\S]*?\}})\s*```"
+    matches = list(re.finditer(strict_pattern, text, re.IGNORECASE))
+    
     for match in matches:
         json_str = match.group(1)
-        
-        # Use robust parsing helper
         data = _parse_with_repair(json_str, block_type)
-        
         if data:
             blocks.append(ParsedBlock(block_type=block_type, data=data, raw_json=json_str))
-        else:
-            # Error already logged in _parse_with_repair
-            pass
+
+    # If strict pass found something, trust it and return (prevents double counting)
+    if blocks:
+        return blocks
+
+    # --- 2. LOOSE PASS (Recovery) ---
+    # Only if block_type is 'function'. We don't want loose parsing for 'delegation' usually.
+    if block_type == 'function':
+        logger.warning(f"No strict `json:{block_type}` found. Attempting loose JSON recovery.")
+        
+        # Matches standard ```json ... ```
+        loose_pattern = r"```json\s*(\{[\s\S]*?\})\s*```"
+        loose_matches = re.finditer(loose_pattern, text, re.IGNORECASE)
+        
+        for match in loose_matches:
+            json_str = match.group(1)
+            data = _parse_with_repair(json_str, block_type)
+            
+            # HEURISTIC CHECK:
+            # Does this JSON look like a tool call? 
+            # Must have "name" and "args" keys.
+            if data and isinstance(data, dict) and "name" in data and "args" in data:
+                logger.info(f"Recovered valid tool call from loose JSON block: {data['name']}")
+                blocks.append(ParsedBlock(block_type=block_type, data=data, raw_json=json_str))
 
     return blocks
 

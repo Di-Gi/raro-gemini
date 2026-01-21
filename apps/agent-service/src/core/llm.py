@@ -489,6 +489,7 @@ async def call_gemini_with_context(
         content_text = ""
         all_files_generated = []  # Accumulator for files from all tool calls
         _seen_files = set()  # Track files to prevent duplicates during retries
+        execution_context_buffer = []  # Accumulate critical tool data for downstream context
         # --- FIX END ---
 
         logger.debug(f"Agent {safe_agent_id}: Starting manual tool loop")
@@ -608,7 +609,13 @@ async def call_gemini_with_context(
                 )
 
                 # Format Output for the Model
-                tool_outputs_text += f"\n[SYSTEM: Tool '{tool_name}' Result]\n{json.dumps(result_dict, indent=2)}\n"
+                tool_output_str = json.dumps(result_dict, indent=2)
+                tool_outputs_text += f"\n[SYSTEM: Tool '{tool_name}' Result]\n{tool_output_str}\n"
+
+                # === CAPTURE CRITICAL DATA FOR DOWNSTREAM CONTEXT ===
+                # Store outputs from tools that generate data other agents need
+                if tool_name in ['web_search', 'read_file']:
+                    execution_context_buffer.append(f"--- {tool_name} results ---\n{tool_output_str}")
 
             # 5. Append Tool Outputs to History
             current_contents.append({
@@ -638,6 +645,14 @@ async def call_gemini_with_context(
         # Fallback if loop exhausted
         if not final_response_text:
             final_response_text = content_text
+
+        # === FIX: APPEND CONTEXT FOR DOWNSTREAM AGENTS ===
+        # If we have captured tool data but the model didn't explicitly repeat it in final_response_text,
+        # attach it so the NEXT agent can see it via Redis.
+        if execution_context_buffer:
+            context_dump = "\n\n".join(execution_context_buffer)
+            # Only append if not already heavily present (simple length heuristic or just append)
+            final_response_text += f"\n\n[AUTOMATED CONTEXT ATTACHMENT]\n{context_dump}"
 
         logger.info(f"Agent {safe_agent_id} Completed. Tokens: {input_tokens}/{output_tokens} | Files: {len(all_files_generated)}")
 

@@ -13,9 +13,11 @@ use uuid::Uuid;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::env;
+use std::collections::HashMap; // Added for ID remapping
 use redis::AsyncCommands;
 use tokio::sync::broadcast;
 use crate::fs_manager;
+
 /// Payload for invoking an agent with signature routing and caching
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InvocationPayload {
@@ -89,6 +91,7 @@ impl RARORuntime {
             pattern_registry: Arc::new(PatternRegistry::new()),
         }
     }
+    /// Saves the current state of a run to Redis and manages the active index
 
     // === PERSISTENCE LAYER ===
 
@@ -142,17 +145,17 @@ impl RARORuntime {
                         if let Some(json) = state_json {
                             match serde_json::from_str::<RuntimeState>(&json) {
                                 Ok(mut state) => {
-                                    // IMPORTANT: On recovery, we might find a run that was "Running" 
-                                    // when the server crashed. We should probably mark it as "Failed" 
+                                    // IMPORTANT: On recovery, we might find a run that was "Running"
+                                    // when the server crashed. We should probably mark it as "Failed"
                                     // or "Interrupted" so the UI knows it's not actually processing anymore.
                                     // For now, we will leave it as is to allow for potential resume logic later,
                                     // but logging it is essential.
                                     tracing::warn!("Rehydrating run: {} (Status: {:?})", state.run_id, state.status);
-                                    
-                                    // Restore DAG store if possible (Note: DAG structure isn't currently persisted in this simple implementation, 
-                                    // so complex resume isn't possible without rebuilding DAG from workflow config. 
+                                    // Restore DAG store if possible (Note: DAG structure isn't currently persisted in this simple implementation,
+                                    // so complex resume isn't possible without rebuilding DAG from workflow config.
                                     // We will mark orphan runs as Failed for safety in this iteration).
                                     
+                                    // Handle crash recovery state
                                     if state.status == RuntimeStatus::Running {
                                         state.status = RuntimeStatus::Failed; 
                                         // We treat crash recovery as failure for now
@@ -183,9 +186,9 @@ impl RARORuntime {
         }
     }
 
+    /// Emit an event to the event bus for Cortex pattern matching
     // === EVENT EMISSION ===
 
-    /// Emit an event to the event bus for Cortex pattern matching
     pub(crate) fn emit_event(&self, event: RuntimeEvent) {
         // Broadcast to subscribers (Observers, WebSocket, PatternEngine)
         let _ = self.event_bus.send(event);
@@ -202,8 +205,8 @@ impl RARORuntime {
         let url = format!("{}://{}:{}/runtime/{}/cleanup", scheme, host, port, run_id);
 
         tracing::info!("Triggering resource cleanup for run: {}", run_id);
-
         // Fire and forget - we don't block the kernel if cleanup fails
+
         let client = self.http_client.clone();
         tokio::spawn(async move {
             match client.delete(&url).send().await {
@@ -216,15 +219,15 @@ impl RARORuntime {
             }
         });
     }
+    /// Request approval from user, pausing execution
 
     // === APPROVAL CONTROL ===
 
-    /// Request approval from user, pausing execution
     pub async fn request_approval(&self, run_id: &str, agent_id: Option<&str>, reason: &str) {
         if let Some(mut state) = self.runtime_states.get_mut(run_id) {
             state.status = RuntimeStatus::AwaitingApproval;
-
             // Log the intervention event
+
             self.emit_event(RuntimeEvent::new(
                 run_id,
                 EventType::SystemIntervention,
@@ -238,48 +241,48 @@ impl RARORuntime {
         self.persist_state(run_id).await;
         tracing::info!("Run {} PAUSED for approval: {}", run_id, reason);
     }
+    /// Start a new workflow execution
 
     // === EXECUTION LOGIC ===
 
-    /// Start a new workflow execution
     pub fn start_workflow(self: &Arc<Self>, config: WorkflowConfig) -> Result<String, String> {
         // Validate workflow structure
         let mut dag = DAG::new();
-
         // Add all nodes
+
         for agent in &config.agents {
             dag.add_node(agent.id.clone())
                 .map_err(|e| format!("Failed to add node: {}", e))?;
         }
-
         // Add edges based on dependencies
+
         for agent in &config.agents {
             for dep in &agent.depends_on {
                 dag.add_edge(dep.clone(), agent.id.clone())
                     .map_err(|e| format!("Failed to add edge: {}", e))?;
             }
         }
-
         // Verify topological sort (catches cycles)
+
         let _execution_order = dag
             .topological_sort()
             .map_err(|e| format!("Invalid workflow: {}", e))?;
 
         let workflow_id = config.id.clone();
         let run_id = Uuid::new_v4().to_string();
-
         // === RFS INITIALIZATION ===
         // Create the session folder and copy files
+
         if let Err(e) = fs_manager::WorkspaceInitializer::init_run_session(&run_id, config.attached_files.clone()) {
              tracing::error!("Failed to initialize workspace for {}: {}", run_id, e);
              return Err(format!("FileSystem Initialization Error: {}", e));
         }
-
         // Store workflow and DAG
+
         self.workflows.insert(workflow_id.clone(), config.clone());
         self.dag_store.insert(run_id.clone(), dag);
-
         // Initialize runtime state
+
         let state = RuntimeState {
             run_id: run_id.clone(),
             workflow_id: workflow_id.clone(),
@@ -294,16 +297,16 @@ impl RARORuntime {
         };
 
         self.runtime_states.insert(run_id.clone(), state);
-
         // Initialize thought signature store
+
         self.thought_signatures.insert(
             run_id.clone(),
             ThoughtSignatureStore {
                 signatures: Default::default(),
             },
         );
-
         // Spawn the execution task (Fire and Forget)
+
         let runtime_clone = self.clone();
         let run_id_clone = run_id.clone();
 
@@ -316,14 +319,12 @@ impl RARORuntime {
     }
 
     /// DYNAMIC EXECUTION LOOP
-    /// Keeps pulling 'ready' nodes from the DAG until completion or failure.
-    /// Handles graph mutations (delegation) mid-flight.
     pub(crate) async fn execute_dynamic_dag(&self, run_id: String) {
         tracing::info!("Starting DYNAMIC DAG execution for run_id: {}", run_id);
-
         // We use a simplified loop: Re-calculate topology, filter for uncompleted, take the next one.
         // In a real high-throughput system, we'd use a proper ready-queue, but re-calculating topology
         // on a small graph (<100 nodes) is negligible and safer for consistency.
+
         loop {
             // 1. Check if Run is still valid/active or paused
             if let Some(state) = self.runtime_states.get(&run_id) {
@@ -340,9 +341,12 @@ impl RARORuntime {
                 // Run vanished
                 break;
             }
-
             // 2. Determine Next Agent(s)
             // We get the full topological sort, then find the first node that is NOT complete and NOT running.
+
+            // 2. Determine Next Agent(s) - FIX: INTEGRATED DEPENDENCY CHECK
+            // We search for the first node that is pending AND has all dependencies satisfied.
+            // This prevents head-of-line blocking where a waiting node prevents independent siblings from running.
             let next_agent_opt = {
                 // Scope for locks
                 let dag = match self.dag_store.get(&run_id) {
@@ -361,17 +365,25 @@ impl RARORuntime {
                     }
                 };
 
-                let state = self.runtime_states.get(&run_id).unwrap(); // Safe due to check above
-
+                let state = self.runtime_states.get(&run_id).unwrap();  // Safe due to check above
                 // Find first node that isn't done and isn't currently running
+
+                // FIX: Filter for nodes that are NOT complete, NOT running, AND have dependencies met
                 execution_order.into_iter().find(|agent_id| {
-                    !state.completed_agents.contains(agent_id) &&
-                    !state.failed_agents.contains(agent_id) &&
-                    !state.active_agents.contains(agent_id)
+                    let is_pending = !state.completed_agents.contains(agent_id) &&
+                                     !state.failed_agents.contains(agent_id) &&
+                                     !state.active_agents.contains(agent_id);
+                    
+                    if !is_pending { return false; }
+
+                    // Immediate dependency check
+                    let deps = dag.get_dependencies(agent_id);
+                    deps.iter().all(|d| state.completed_agents.contains(d))
                 })
             };
-
             // 3. If no next agent, check if we are done
+
+            // 3. Process Selection or Wait
             let agent_id = match next_agent_opt {
                 Some(id) => id,
                 None => {
@@ -382,6 +394,7 @@ impl RARORuntime {
 
                     if running_count > 0 {
                         // Wait for them to finish (simple polling for this implementation)
+                        // Wait for active agents to finish
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                         continue;
                     } else {
@@ -391,7 +404,6 @@ impl RARORuntime {
                             state.end_time = Some(Utc::now().to_rfc3339());
                         }
                         self.persist_state(&run_id).await;
-
                         // Trigger Cleanup
                         self.trigger_remote_cleanup(&run_id).await;
 
@@ -401,28 +413,11 @@ impl RARORuntime {
                 }
             };
 
-            // 4. Verify Dependencies
-            // The topo sort gives us order, but we must ensure parents are actually *completed*.
-            let can_run = {
-                let dag = self.dag_store.get(&run_id).unwrap();
-                let deps = dag.get_dependencies(&agent_id);
-                let state = self.runtime_states.get(&run_id).unwrap();
-                deps.iter().all(|d| state.completed_agents.contains(d))
-            };
-
-            if !can_run {
-                // If dependencies aren't met, but topological sort put us here,
-                // it means dependencies are still running or failed.
-                // We wait.
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                continue;
-            }
-
             // 5. Execute Agent
             tracing::info!("Processing agent: {}", agent_id);
             self.update_agent_status(&run_id, &agent_id, InvocationStatus::Running).await;
-
             // Emit AgentStarted event
+
             self.emit_event(RuntimeEvent::new(
                 &run_id,
                 EventType::AgentStarted,
@@ -459,32 +454,32 @@ impl RARORuntime {
                         if let Some(delegation) = res.delegation {
                             tracing::info!("Agent {} requested delegation: {}", agent_id, delegation.reason);
 
-                            // Verify agent has delegation privilege (Defense in Depth)
-                            let workflow_id = self.runtime_states.get(&run_id)
-                                .map(|s| s.workflow_id.clone());
-
-                            if let Some(wf_id) = workflow_id {
+                            // === FIX: SEPARATE LOCK SCOPES TO PREVENT DEADLOCK ===
+                            // === FIX: DEADLOCK PREVENTION ===
+                            // Separate lock scopes. 
+                            // 1. Acquire Read Lock to check permission, then DROP IT immediately.
+                            let can_delegate = if let Some(state) = self.runtime_states.get(&run_id) {
+                                let wf_id = state.workflow_id.clone();
                                 if let Some(workflow) = self.workflows.get(&wf_id) {
-                                    let agent_config = workflow.agents.iter()
-                                        .find(|a| a.id == agent_id);
+                                    workflow.agents.iter()
+                                        .find(|a| a.id == agent_id)
+                                        .map(|a| a.allow_delegation)
+                                        .unwrap_or(false)
+                                } else { false }
+                            } else { false };
 
-                                    if let Some(config) = agent_config {
-                                        if !config.allow_delegation {
-                                            tracing::warn!("Agent {} attempted delegation without permission. Ignoring.", agent_id);
-                                            // Continue without processing delegation - treat as normal completion
-                                        } else {
-                                            // Agent has permission - process delegation
-                                            match self.handle_delegation(&run_id, &agent_id, delegation).await {
-                                                Ok(_) => {
-                                                    tracing::info!("Delegation processed. Graph updated.");
-                                                }
-                                                Err(e) => {
-                                                    tracing::error!("Delegation failed: {}", e);
-                                                    self.fail_run(&run_id, &agent_id, &format!("Delegation error: {}", e)).await;
-                                                    continue;
-                                                }
-                                            }
-                                        }
+                            // 2. Acquire Write Lock inside handle_delegation (if permitted)
+                            if !can_delegate {
+                                tracing::warn!("Agent {} attempted delegation without permission. Ignoring.", agent_id);
+                            } else {
+                                match self.handle_delegation(&run_id, &agent_id, delegation).await {
+                                    Ok(_) => {
+                                        tracing::info!("Delegation processed. Graph updated.");
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Delegation failed: {}", e);
+                                        self.fail_run(&run_id, &agent_id, &format!("Delegation error: {}", e)).await;
+                                        continue;
                                     }
                                 }
                             }
@@ -495,28 +490,20 @@ impl RARORuntime {
                             let _ = self.set_thought_signature(&run_id, &agent_id, sig);
                         }
 
-                        // Store Artifact
                         let artifact_id = if let Some(output_data) = &res.output {
-
-                            // === AUTO-PROMOTE ARTIFACTS TO PERSISTENT STORAGE ===
-                            // When agents generate files, automatically copy them from ephemeral session
-                            // storage to persistent artifacts storage with metadata tracking
+                            // File Promotion Logic
                             if let Some(files_array) = output_data.get("files_generated").and_then(|v| v.as_array()) {
-                                // Extract workflow_id from runtime state
                                 let workflow_id = self.runtime_states.get(&run_id)
                                     .map(|s| s.workflow_id.clone())
                                     .unwrap_or_default();
 
-                                // Extract user_directive by cloning the workflow and finding the agent
                                 let user_directive = {
                                     if let Some(workflow) = self.workflows.get(&workflow_id) {
                                         workflow.agents.iter()
                                             .find(|a| a.id == agent_id)
                                             .map(|a| a.user_directive.clone())
                                             .unwrap_or_default()
-                                    } else {
-                                        String::new()
-                                    }
+                                    } else { String::new() }
                                 };
 
                                 for file_val in files_array {
@@ -527,7 +514,6 @@ impl RARORuntime {
                                         let fname = filename.to_string();
                                         let directive = user_directive.clone();
 
-                                        // Fire-and-forget promotion (don't block execution on IO)
                                         tokio::spawn(async move {
                                             match fs_manager::WorkspaceInitializer::promote_artifact_to_storage(
                                                 &rid, &wid, &aid, &fname, &directive
@@ -539,7 +525,6 @@ impl RARORuntime {
                                     }
                                 }
                             }
-                            // ============================================
 
                             let agent_stored_flag = output_data.get("artifact_stored")
                                 .and_then(|v| v.as_bool())
@@ -552,7 +537,6 @@ impl RARORuntime {
                             }
                         } else { None };
 
-                        // Record Metrics
                         let invocation = AgentInvocation {
                             id: Uuid::new_v4().to_string(),
                             agent_id: agent_id.clone(),
@@ -572,7 +556,6 @@ impl RARORuntime {
 
                         let _ = self.record_invocation(&run_id, invocation).await;
 
-                        // Emit AgentCompleted event
                         self.emit_event(RuntimeEvent::new(
                             &run_id,
                             EventType::AgentCompleted,
@@ -580,30 +563,24 @@ impl RARORuntime {
                             serde_json::json!({"agent_id": agent_id, "tokens_used": res.tokens_used}),
                         ));
                     } else {
-                        // Failure
                         let error = res.error.unwrap_or_else(|| "Unknown error".to_string());
-
-                        // Emit AgentFailed event
                         self.emit_event(RuntimeEvent::new(
                             &run_id,
                             EventType::AgentFailed,
                             Some(agent_id.clone()),
                             serde_json::json!({"agent_id": agent_id, "error": error}),
                         ));
-
                         self.fail_run(&run_id, &agent_id, &error).await;
                         self.trigger_remote_cleanup(&run_id).await;
                     }
                 }
                 Err(e) => {
-                    // Emit AgentFailed event for network errors
                     self.emit_event(RuntimeEvent::new(
                         &run_id,
                         EventType::AgentFailed,
                         Some(agent_id.clone()),
                         serde_json::json!({"agent_id": agent_id, "error": e.to_string()}),
                     ));
-
                     self.fail_run(&run_id, &agent_id, &e.to_string()).await;
                     self.trigger_remote_cleanup(&run_id).await;
                 }
@@ -613,38 +590,71 @@ impl RARORuntime {
 
     /// Handles the "Graph Surgery" when an agent requests delegation
     async fn handle_delegation(&self, run_id: &str, parent_id: &str, mut req: DelegationRequest) -> Result<(), String> {
-        // 1. Get State to identify Workflow ID
         let state = self.runtime_states.get(run_id).ok_or("Run not found")?;
         let workflow_id = state.workflow_id.clone();
-        drop(state); // Drop read lock
+        drop(state);  // Drop read lock
 
         // 2. PRE-FETCH DEPENDENTS & SANITIZE IDs
-        let existing_dependents: Vec<String> = if let Some(dag) = self.dag_store.get(run_id) {
-            // A. Sanitize IDs to prevent cycles
-            let existing_nodes = dag.export_nodes();
-            for node in &mut req.new_nodes {
-                if existing_nodes.contains(&node.id) {
-                    let old_id = node.id.clone();
-                    let suffix = Uuid::new_v4().to_string().split('-').next().unwrap().to_string();
-                    let new_id = format!("{}_{}", old_id, suffix);
-                    tracing::warn!("Delegation ID Collision: Renaming '{}' to '{}' to prevent cycles.", old_id, new_id);
-                    node.id = new_id;
-                }
-            }
-            // B. Get children
-            dag.get_children(parent_id)
+        let (existing_dependents, existing_node_ids) = if let Some(dag) = self.dag_store.get(run_id) {
+            (dag.get_children(parent_id), dag.export_nodes())
         } else {
             return Err("DAG not found for pre-fetch".to_string());
         };
 
-        // 3. MUTATE WORKFLOW CONFIG (CRITICAL STEP FOR CONTEXT)
+        // FIX: ID Collision Remapping with Ghost Prevention
+        // If a new node has an ID that already exists:
+        // - If the existing node is PENDING (not started), adopt it (overwrite)
+        // - If the existing node is ACTIVE/COMPLETED, rename to avoid corruption
+        let mut id_map: HashMap<String, String> = HashMap::new();
+
+        for node in &mut req.new_nodes {
+            if existing_node_ids.contains(&node.id) {
+                // CHECK STATUS OF EXISTING NODE
+                let is_pending = if let Some(state) = self.runtime_states.get(run_id) {
+                    !state.active_agents.contains(&node.id) &&
+                    !state.completed_agents.contains(&node.id) &&
+                    !state.failed_agents.contains(&node.id)
+                } else {
+                    false
+                };
+
+                if is_pending {
+                    tracing::info!("Delegation: Adopting existing pending node '{}' instead of renaming.", node.id);
+                    // We do NOT rename. We essentially update the definition of the existing node
+                    // by pushing it to the workflow config below.
+                    // However, we must remove the OLD definition from workflow.agents first to avoid duplicates there.
+                    if let Some(mut workflow) = self.workflows.get_mut(&workflow_id) {
+                        if let Some(pos) = workflow.agents.iter().position(|a| a.id == node.id) {
+                            workflow.agents.remove(pos);
+                        }
+                    }
+                } else {
+                    // Node is already running/done, we MUST rename to avoid history corruption
+                    let old_id = node.id.clone();
+                    let suffix = Uuid::new_v4().to_string().split('-').next().unwrap().to_string();
+                    let new_id = format!("{}_{}", old_id, suffix);
+                    tracing::warn!("Delegation ID Collision: Renaming '{}' to '{}' (node already active/completed)", old_id, new_id);
+
+                    node.id = new_id.clone();
+                    id_map.insert(old_id, new_id);
+                }
+            }
+        }
+
+        // Apply rewiring to new nodes' dependency lists
+        for node in &mut req.new_nodes {
+            node.depends_on = node.depends_on.iter().map(|dep| {
+                // If dependency is in our map, update it. Otherwise keep original.
+                id_map.get(dep).cloned().unwrap_or(dep.clone())
+            }).collect();
+        }
+
+        // 3. MUTATE WORKFLOW CONFIG
         if let Some(mut workflow) = self.workflows.get_mut(&workflow_id) {
-            // A. Register new agents
             for node in &req.new_nodes {
                 workflow.agents.push(node.clone());
             }
 
-            // B. Rewire Configuration Dependencies
             if req.strategy == DelegationStrategy::Child {
                 for dep_id in &existing_dependents {
                     if let Some(dep_agent) = workflow.agents.iter_mut().find(|a| a.id == *dep_id) {
@@ -662,17 +672,37 @@ impl RARORuntime {
             return Err("Workflow config not found".to_string());
         }
 
-        // 4. MUTATE DAG TOPOLOGY (EXECUTION ORDER)
+        // 4. MUTATE DAG TOPOLOGY
         if let Some(mut dag) = self.dag_store.get_mut(run_id) {
             
-            // A. Add New Nodes & Edges from Parent
             for node in &req.new_nodes {
                 dag.add_node(node.id.clone()).map_err(|e| e.to_string())?;
 
-                // Parent -> New Node
-                dag.add_edge(parent_id.to_string(), node.id.clone()).map_err(|e| e.to_string())?;
+                // Add explicit edges from config
+                // This covers internal dependencies (B depends on A) inside the delegated cluster
+                for dep in &node.depends_on {
+                    if let Err(e) = dag.add_edge(dep.clone(), node.id.clone()) {
+                        // If it's a new node dependency, it should work. 
+                        // If it's the parent, we handle it below explicitly, but adding here is fine if safe.
+                        // However, we must ensure we don't double add or cause issues if logic below handles parent.
+                        // For SAFETY: Let's trust the explicit parent logic below for the "Root" connection,
+                        // and use this loop only for internal or other external dependencies.
+                        // Actually, `dag.add_edge` is safe (idempotent logic usually handled or error if cycle).
+                        // Let's just log warning if it fails but continue for parent connection.
+                        tracing::debug!("Adding dependency edge {} -> {}: {:?}", dep, node.id, e);
+                    }
+                }
 
-                // B. Connect New Nodes -> Existing Dependents
+                // If node has NO dependencies in the new set, attach to Parent (if Child strategy)
+                // Or if it explicitly depends on Parent (which we might have remapped?)
+                // Simplified Logic: If strategy is Child, we FORCE parent connection if not already present?
+                // Actually, the Architect/LLM usually adds parent to `depends_on`.
+                // If LLM output `depends_on: []`, we must attach to parent.
+                if node.depends_on.is_empty() || node.depends_on.contains(&parent_id.to_string()) {
+                     let _ = dag.add_edge(parent_id.to_string(), node.id.clone());
+                }
+
+                // B. Connect New Nodes -> Existing Dependents (Splicing)
                 if req.strategy == DelegationStrategy::Child {
                     for dep in &existing_dependents {
                         dag.add_edge(node.id.clone(), dep.clone()).map_err(|e| e.to_string())?;
@@ -686,8 +716,8 @@ impl RARORuntime {
                     let _ = dag.remove_edge(parent_id, dep);
                 }
             }
-
             // Validate Cycle
+
             if let Err(e) = dag.topological_sort() {
                 tracing::error!("Delegation created a cycle: {:?}", e);
                 return Err("Delegation created a cycle in DAG".to_string());
@@ -698,8 +728,6 @@ impl RARORuntime {
 
         Ok(())
     }
-
-
 
     /// Helper to fail the run and update state (Async + Persistent)
     pub async fn fail_run(&self, run_id: &str, agent_id: &str, error: &str) {
@@ -743,7 +771,7 @@ impl RARORuntime {
                      }
                 },
                 _ => {}
-            }
+            }  // Drop write lock before persisting
          }
          
          if changed {
@@ -811,13 +839,13 @@ impl RARORuntime {
 
         None
     }
-
     /// Get current runtime state
+
     pub fn get_state(&self, run_id: &str) -> Option<RuntimeState> {
         self.runtime_states.get(run_id).map(|r| (*r).clone())
     }
-
     /// Record an agent invocation (Async + Persistent)
+
     pub async fn record_invocation(&self, run_id: &str, invocation: AgentInvocation) -> Result<(), String> {
         {
             let mut state = self
@@ -844,14 +872,14 @@ impl RARORuntime {
                 }
                 _ => {}
             }
-        } // Drop write lock before persisting
+        } 
 
         self.persist_state(run_id).await;
 
         Ok(())
     }
-
     /// Store or retrieve thought signature
+
     pub fn set_thought_signature(&self, run_id: &str, agent_id: &str, signature: String) -> Result<(), String> {
         let mut store = self
             .thought_signatures
@@ -888,8 +916,6 @@ impl RARORuntime {
         };
 
         if detailed {
-            // DETAILED VIEW: JSON topology for orchestrators
-            // Useful for making informed delegation decisions
             let nodes: Vec<serde_json::Value> = dag.export_nodes().iter().map(|node_id| {
                 let status = if state.completed_agents.contains(node_id) { "completed" }
                 else if state.failed_agents.contains(node_id) { "failed" }
@@ -906,8 +932,6 @@ impl RARORuntime {
 
             return serde_json::to_string_pretty(&nodes).unwrap_or_default();
         } else {
-            // LINEAR VIEW: High-level progress indicator for workers
-            // Shows position in pipeline: [n1:COMPLETE] -> [n2:RUNNING(YOU)] -> [n3:PENDING]
             match dag.topological_sort() {
                 Ok(order) => {
                     let parts: Vec<String> = order.iter().map(|node_id| {
@@ -929,32 +953,27 @@ impl RARORuntime {
         }
     }
 
-    /// Prepare invocation payload with signature routing AND artifact context
     pub async fn prepare_invocation_payload(
         &self,
         run_id: &str,
         agent_id: &str,
     ) -> Result<InvocationPayload, String> {
-        // 1. Retrieve Runtime State
         let state = self
             .runtime_states
             .get(run_id)
             .ok_or_else(|| "Run not found".to_string())?;
 
-        // 2. Retrieve Workflow Configuration
         let workflow = self
             .workflows
             .get(&state.workflow_id)
             .ok_or_else(|| "Workflow not found".to_string())?;
 
-        // 3. Find Specific Agent Config
         let agent_config = workflow
             .agents
             .iter()
             .find(|a| a.id == agent_id)
             .ok_or_else(|| format!("Agent {} not found", agent_id))?;
 
-        // 4. Fetch Parent Signatures (Chain of Thought Continuity)
         let parent_signature = if !agent_config.depends_on.is_empty() {
             agent_config
                 .depends_on
@@ -964,29 +983,23 @@ impl RARORuntime {
             None
         };
 
-        // 5. Context & Artifact Retrieval (Redis)
         let mut context_prompt_appendix = String::new();
         let mut input_data_map = serde_json::Map::new();
         let mut dynamic_file_mounts: Vec<String> = Vec::new();
 
         if !agent_config.depends_on.is_empty() {
             if let Some(client) = &self.redis_client {
-                // Use a separate async connection to avoid borrowing issues
                 match client.get_async_connection().await {
                     Ok(mut con) => {
                         for parent_id in &agent_config.depends_on {
                             let key = format!("run:{}:agent:{}:output", run_id, parent_id);
                             
-                            // Attempt to fetch artifact from Redis
                             let data: Option<String> = con.get(&key).await.unwrap_or(None);
 
                             if let Some(json_str) = data {
                                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
-                                    
-                                    // A. Structured Input Data
                                     input_data_map.insert(parent_id.clone(), val.clone());
 
-                                    // B. Text Context (The "Result" string)
                                     let content = val.get("result")
                                         .and_then(|v| v.as_str())
                                         .or_else(|| val.get("output").and_then(|v| v.as_str()))
@@ -994,18 +1007,10 @@ impl RARORuntime {
 
                                     context_prompt_appendix.push_str(&format!("\n\n=== CONTEXT FROM AGENT {} ===\n{}\n", parent_id, content));
 
-                                    // C. Dynamic File Mounting (Manifest Pattern)
-                                    // We look for the 'files_generated' array created by the Python tool logic.
-                                    // If found, we explicitly mount these files from the session OUTPUT directory
-                                    // so the current agent can see/analyze them (Multimodal Vision).
                                     if let Some(files_array) = val.get("files_generated").and_then(|v| v.as_array()) {
                                         for file_val in files_array {
                                             if let Some(filename) = file_val.as_str() {
-                                                // Construct absolute path to the RFS session output
                                                 let mount_path = format!("/app/storage/sessions/{}/output/{}", run_id, filename);
-
-                                                // Deduplication: Only add if not already in the list
-                                                // This prevents the same file from being mounted multiple times to Gemini
                                                 if !dynamic_file_mounts.contains(&mount_path) {
                                                     dynamic_file_mounts.push(mount_path);
                                                 }
@@ -1023,16 +1028,13 @@ impl RARORuntime {
             }
         }
 
-        // 6. Construct Final Prompt
         let mut final_prompt = agent_config.prompt.clone();
         if !context_prompt_appendix.is_empty() {
             final_prompt.push_str(&context_prompt_appendix);
         }
 
-        // 7. Get Cached Content ID (if applicable)
         let cached_content_id = self.get_cache_resource(run_id);
 
-        // 8. Determine Model Variant String
         let model_string = match &agent_config.model {
             ModelVariant::Fast => "fast".to_string(),
             ModelVariant::Reasoning => "reasoning".to_string(),
@@ -1040,45 +1042,64 @@ impl RARORuntime {
             ModelVariant::Custom(s) => s.clone(),
         };
 
-        // 9. Configure Thinking Budget
         let thinking_level = if matches!(agent_config.model, ModelVariant::Thinking) {
-            Some(5) // Default budget level for Thinking models
+            Some(5)  // Default budget level for Thinking models
         } else {
             None
         };
 
-        // 10. Construct File Paths List
-        // Start with files explicitly attached to the workflow (Input Dir)
         let mut full_file_paths: Vec<String> = workflow.attached_files.iter()
             .map(|f| format!("/app/storage/sessions/{}/input/{}", run_id, f))
             .collect();
 
-        // Track if we have dynamic artifacts (before moving the vector)
         let has_dynamic_artifacts = !dynamic_file_mounts.is_empty();
         let dynamic_artifact_count = dynamic_file_mounts.len();
 
-        // Append files generated by parent agents (Output Dir)
         if has_dynamic_artifacts {
             tracing::info!("Mounting {} dynamic artifacts for agent {}", dynamic_artifact_count, agent_id);
             full_file_paths.extend(dynamic_file_mounts);
         }
 
-        // 11. SMART TOOL ACCESS (Prevents UNEXPECTED_TOOL_CALL)
-        // Strategy: Start with Architect's assignments, then add baseline guarantees
         let mut tools = agent_config.tools.clone();
 
-        // Baseline tools that ALL agents should have access to
-        // These prevent UNEXPECTED_TOOL_CALL when agents need to inspect their workspace
-        let baseline_tools = vec!["read_file", "list_files", "write_file"];
+        // === SMART BASELINE: Only read/list are universal ===
+        // write_file is now a privileged capability
+        let baseline_tools = vec!["read_file", "list_files"];
         for baseline in baseline_tools {
             if !tools.contains(&baseline.to_string()) {
                 tools.push(baseline.to_string());
-                tracing::debug!("Agent {}: Added baseline tool '{}'", agent_id, baseline);
             }
         }
 
-        // Smart Enhancement: If agent receives files from parents, give it execution capability
-        // This prevents failures when an agent needs to analyze/process generated artifacts
+        // === PRIVILEGED WRITE ACCESS ===
+        // Only give write capability if:
+        // 1. It's explicitly in the config (Architect asked for it)
+        // 2. OR The agent ID contains "writer", "coder", "save", "generate"
+        // 3. OR The role is Orchestrator (often needs to save plans)
+        let is_privileged_writer = agent_config.role == crate::models::AgentRole::Orchestrator ||
+                                   agent_id.contains("writer") ||
+                                   agent_id.contains("coder") ||
+                                   agent_id.contains("save") ||
+                                   agent_id.contains("generate") ||
+                                   tools.contains(&"write_file".to_string());
+
+        if is_privileged_writer {
+            if !tools.contains(&"write_file".to_string()) {
+                tools.push("write_file".to_string());
+                tracing::debug!("Agent {}: Granted write_file (privileged writer)", agent_id);
+            }
+            // Writers often need python for formatting/PDFs
+            if !tools.contains(&"execute_python".to_string()) {
+                tools.push("execute_python".to_string());
+                tracing::debug!("Agent {}: Added execute_python (writer capability)", agent_id);
+            }
+        } else {
+            // Ensure non-writers CANNOT write, even if they hallucinate the capability
+            tools.retain(|t| t != "write_file");
+            tracing::debug!("Agent {}: write_file restricted (not a privileged writer)", agent_id);
+        }
+
+        // Dynamic artifacts require python for processing
         if has_dynamic_artifacts && !tools.contains(&"execute_python".to_string()) {
             tools.push("execute_python".to_string());
             tracing::info!(
@@ -1088,22 +1109,12 @@ impl RARORuntime {
             );
         }
 
-        // Smart Enhancement: If agent has write_file, it likely needs execute_python too
-        // (Most file generation happens via Python execution)
-        if tools.contains(&"write_file".to_string()) && !tools.contains(&"execute_python".to_string()) {
-            tools.push("execute_python".to_string());
-            tracing::debug!("Agent {}: Added 'execute_python' (has write_file capability)", agent_id);
-        }
-
-        // 11. Generate Graph Context (NEW)
-        // Give orchestrators detailed JSON, workers a simple linear view
         let graph_view = self.generate_graph_context(
             run_id,
             agent_id,
             agent_config.allow_delegation
         );
 
-        // 12. Return Payload
         Ok(InvocationPayload {
             run_id: run_id.to_string(),
             agent_id: agent_id.to_string(),
@@ -1115,9 +1126,7 @@ impl RARORuntime {
             cached_content_id,
             thinking_level,
             file_paths: full_file_paths,
-            tools, // Now contains Architect's choices + smart baseline guarantees
-
-            // [[NEW FIELDS]]
+            tools,  // Now contains Architect's choices + smart baseline guarantees
             allow_delegation: agent_config.allow_delegation,
             graph_view,
         })
@@ -1126,17 +1135,14 @@ impl RARORuntime {
     pub fn set_run_status(&self, run_id: &str, status: RuntimeStatus) {
         if let Some(mut state) = self.runtime_states.get_mut(run_id) {
             state.status = status;
-            // Trigger async persistence here
         }
     }
     
-    /// Returns the current topology (nodes and edges) for visualization
     pub fn get_topology_snapshot(&self, run_id: &str) -> Option<serde_json::Value> {
         if let Some(dag) = self.dag_store.get(run_id) {
             let edges = dag.export_edges();
             let nodes = dag.export_nodes();
             
-            // Convert to the JSON structure the frontend expects
             Some(serde_json::json!({
                 "nodes": nodes,
                 "edges": edges.into_iter().map(|(from, to)| {

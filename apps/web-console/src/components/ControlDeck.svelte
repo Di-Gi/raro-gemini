@@ -287,12 +287,42 @@
         <div class="nav-item node-tab active">
           COMPONENT SETTINGS // {$selectedNode}
         </div>
-        <div class="nav-item action-close" onclick={handleCloseNode}>×</div>
+        <div
+            class="nav-item action-close"
+            role="button"
+            tabindex="0"
+            onclick={handleCloseNode}
+            onkeydown={(e) => e.key === 'Enter' && handleCloseNode()}
+        >×</div>
       {:else}
-        <div class="nav-item {activePane === 'overview' ? 'active' : ''}" onclick={() => handlePaneSelect('overview')}>Overview</div>
-        <div class="nav-item {activePane === 'pipeline' ? 'active' : ''}" onclick={() => handlePaneSelect('pipeline')}>Pipeline</div>
-        <div class="nav-item {activePane === 'sim' ? 'active' : ''}" onclick={() => handlePaneSelect('sim')}>Simulation</div>
-        <div class="nav-item {activePane === 'stats' ? 'active' : ''}" onclick={() => handlePaneSelect('stats')}>Telemetry</div>
+        <div
+            class="nav-item {activePane === 'overview' ? 'active' : ''}"
+            role="button"
+            tabindex="0"
+            onclick={() => handlePaneSelect('overview')}
+            onkeydown={(e) => e.key === 'Enter' && handlePaneSelect('overview')}
+        >Overview</div>
+        <div
+            class="nav-item {activePane === 'pipeline' ? 'active' : ''}"
+            role="button"
+            tabindex="0"
+            onclick={() => handlePaneSelect('pipeline')}
+            onkeydown={(e) => e.key === 'Enter' && handlePaneSelect('pipeline')}
+        >Pipeline</div>
+        <div
+            class="nav-item {activePane === 'sim' ? 'active' : ''}"
+            role="button"
+            tabindex="0"
+            onclick={() => handlePaneSelect('sim')}
+            onkeydown={(e) => e.key === 'Enter' && handlePaneSelect('sim')}
+        >Simulation</div>
+        <div
+            class="nav-item {activePane === 'stats' ? 'active' : ''}"
+            role="button"
+            tabindex="0"
+            onclick={() => handlePaneSelect('stats')}
+            onkeydown={(e) => e.key === 'Enter' && handlePaneSelect('stats')}
+        >Telemetry</div>
       {/if}
     </div>
   {/if}
