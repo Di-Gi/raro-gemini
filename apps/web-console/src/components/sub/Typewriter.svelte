@@ -3,19 +3,27 @@
 <script lang="ts">
   import Spinner from './Spinner.svelte';
   import CodeBlock from './CodeBlock.svelte';
-  import DelegationCard from './DelegationCard.svelte'; 
+  import DelegationCard from './DelegationCard.svelte';
 
   let { text, onComplete }: { text: string, onComplete?: () => void } = $props();
+
+  // Strip context attachment BEFORE typewriter to prevent flash
+  const ATTACHMENT_HEADER = "\n\n[AUTOMATED CONTEXT ATTACHMENT]";
+  let cleanedText = $derived.by(() => {
+    if (!text) return '';
+    const splitIndex = text.indexOf(ATTACHMENT_HEADER);
+    return splitIndex !== -1 ? text.substring(0, splitIndex) : text;
+  });
 
   let displayedText = $state('');
   let isTyping = $state(true);
   let showCursor = $state(true);
-  
+
   // Telemetry
   let charCount = $state(0);
   let charSpeed = $state(0);
   let lastFrameTime = 0;
-  
+
   // Internal State
   let currentIndex = 0;
   let timer: any;
@@ -86,10 +94,10 @@
   });
 
   $effect(() => {
-    if (text && text.length > currentIndex) {
+    if (cleanedText && cleanedText.length > currentIndex) {
       isTyping = true;
       typeNext();
-    } else if (text && text.length === currentIndex) {
+    } else if (cleanedText && cleanedText.length === currentIndex) {
         isTyping = false;
         if (onComplete) onComplete();
     }
@@ -97,8 +105,8 @@
 
   function typeNext() {
     clearTimeout(timer);
-    
-    if (currentIndex < text.length) {
+
+    if (currentIndex < cleanedText.length) {
       const now = Date.now();
       if (lastFrameTime) {
           const delta = now - lastFrameTime;
@@ -106,27 +114,27 @@
       }
       lastFrameTime = now;
 
-      const remaining = text.length - currentIndex;
+      const remaining = cleanedText.length - currentIndex;
       let chunk = 1;
       let delay = 20;
 
       // HTML Tag Skip
-      if (text[currentIndex] === '<') {
-          const closeIdx = text.indexOf('>', currentIndex);
+      if (cleanedText[currentIndex] === '<') {
+          const closeIdx = cleanedText.indexOf('>', currentIndex);
           if (closeIdx !== -1) {
               chunk = (closeIdx - currentIndex) + 1;
-              delay = 0; 
+              delay = 0;
           }
-      } 
+      }
       // Speed up for code blocks
-      else if (text.slice(currentIndex, currentIndex+3) === '```') {
+      else if (cleanedText.slice(currentIndex, currentIndex+3) === '```') {
            chunk = 3; delay = 10;
       }
       else if (remaining > 500) { chunk = 25; delay = 2; }
       else if (remaining > 100) { chunk = 5; delay = 10; }
-      
-      const nextIndex = Math.min(currentIndex + chunk, text.length);
-      displayedText = text.substring(0, nextIndex);
+
+      const nextIndex = Math.min(currentIndex + chunk, cleanedText.length);
+      displayedText = cleanedText.substring(0, nextIndex);
       currentIndex = nextIndex;
       charCount = currentIndex;
       

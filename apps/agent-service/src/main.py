@@ -334,17 +334,13 @@ async def _execute_agent_logic(request: AgentRequest) -> AgentResponse:
             try:
                 key = f"run:{request.run_id}:agent:{request.agent_id}:output"
                 artifact_data = {
-                    # [[UPDATED]] Removed payload chunk to clean up frontend log stream.
-                    # This prevents the raw prompt/response text from being re-rendered by the ArtifactCard,
-                    # while preserving file metadata for downstream consumption.
-                    "result": response_text, 
+                    "result": response_text,  # Clean model output
                     "status": "completed",
                     "thinking_depth": request.thinking_level or 0,
                     "model": request.model,
-                    # --- FIX START: Inject file metadata ---
                     "files_generated": files_generated,
+                    "machine_context": result.get("machine_data_context", ""),  # Hidden from UI
                     "artifact_stored": len(files_generated) > 0
-                    # --- FIX END ---
                 }
                 redis_client.setex(key, 3600, json.dumps(artifact_data))
                 artifact_stored = True

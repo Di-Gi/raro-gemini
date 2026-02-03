@@ -1,10 +1,11 @@
 # [[RARO]]/apps/agent-service/src/core/parsers.py
 # Purpose: Unified Parser Module for Markdown Code Block Extraction
 # Architecture: Core Layer - Shared parsing utilities
-# Dependencies: re, json, typing
+# Dependencies: re, json, typing, codecs
 
 import re
 import json
+import codecs
 from typing import Optional, List, Dict, Any, Tuple
 from core.config import logger
 
@@ -37,7 +38,8 @@ def _repair_json_string(json_str: str) -> str:
     """
     # Regex logic: Find a backslash that is NOT followed by a valid JSON escape char.
     # Valid JSON escapes are: " \ / b f n r t u
-    # If we find a backslash followed by anything else (like 'd' in '\d'), double it.
+    # Pylance Fix: We want to match the literal characters b, f, n, r, t, u, ", \, /
+    # We do NOT use \b (backspace) inside the character class.
     pattern = r'\\(?![/u"\\bfnrt])'
     
     # Replace single backslash with double backslash
@@ -46,102 +48,160 @@ def _repair_json_string(json_str: str) -> str:
 
 def _parse_with_repair(json_str: str, block_type: str) -> Optional[Dict[str, Any]]:
     """
-    Helper to parse JSON with a fallback repair mechanism.
+    Helper to parse JSON with multiple fallback/repair mechanisms.
     
-    1. Tries standard json.loads().
-    2. If that fails, applies _repair_json_string() and tries again.
-    3. Logs warnings/errors appropriately.
+    Strategies:
+    1. Standard Parse (strict=False): Handles control chars like newlines.
+    2. Regex Repair: Fixes invalid backslashes (e.g. in regex strings).
+    3. Unicode Unescape: Fixes over-escaped JSON (e.g. \"key\": \"val\", \n).
+    4. Hybrid (Unescape + Repair): Fixes over-escaped JSON that ALSO has invalid escapes.
     """
+    # --- Strategy 1: Standard Parse ---
     try:
-        # Attempt 1: Standard Parse
-        return json.loads(json_str)
-    except json.JSONDecodeError:
-        try:
-            # Attempt 2: Auto-Repair (Fix regex backslashes)
-            logger.warning(f"Initial JSON parse failed for ```json:{block_type}```, attempting regex repair...")
-            
-            repaired_json = _repair_json_string(json_str)
-            data = json.loads(repaired_json)
-            
-            logger.info(f"JSON repair successful for ```json:{block_type}```.")
+        # strict=False allows control characters (like real newlines) inside strings
+        return json.loads(json_str, strict=False)
+    except json.JSONDecodeError as e1:
+        # Log basic failure only if debug is on to reduce noise, as we have fallbacks
+        logger.debug(f"JSON Strategy 1 failed for {block_type}: {e1}")
+
+    # --- Strategy 2: Regex Repair (Invalid Escapes) ---
+    try:
+        repaired_json = _repair_json_string(json_str)
+        # Check if repair actually changed anything before trying
+        if repaired_json != json_str:
+            logger.warning(f"Attempting regex repair for ```json:{block_type}```...")
+            data = json.loads(repaired_json, strict=False)
+            logger.info(f"JSON regex repair successful for ```json:{block_type}```.")
             return data
-        except json.JSONDecodeError as e:
-            # Attempt 3: Final Failure
-            logger.error(f"Failed to parse ```json:{block_type}``` block even after repair: {e}")
-            logger.debug(f"Failed JSON content: {json_str[:200]}...") # Log partial content for debug
-            return None
+    except json.JSONDecodeError:
+        pass
+
+    # --- Strategy 3 & 4: Unicode Unescape variants ---
+    # Handles cases like: {\n \"name\": \"value\" \n}
+    try:
+        # Decode python string literals (turns literal \n into newline, \" into ")
+        unescaped_json = codecs.decode(json_str, 'unicode_escape')
+        
+        if unescaped_json != json_str:
+            # Sub-strategy 3a: Direct Load after unescape
+            try:
+                data = json.loads(unescaped_json, strict=False)
+                logger.info(f"JSON unescape successful for ```json:{block_type}```.")
+                return data
+            except json.JSONDecodeError:
+                # Sub-strategy 4: Unescape THEN Regex Repair
+                # (Handles cases like \"pattern\": \"\\d+\" -> "pattern": "\d+" -> "pattern": "\\d+")
+                repaired_unescaped = _repair_json_string(unescaped_json)
+                data = json.loads(repaired_unescaped, strict=False)
+                logger.info(f"JSON Hybrid (Unescape+Repair) successful for ```json:{block_type}```.")
+                return data
+
+    except Exception as e3:
+        logger.debug(f"JSON Advanced Strategies failed: {e3}")
+
+    # --- Final Failure ---
+    logger.error(f"Failed to parse ```json:{block_type}``` block after all strategies.")
+    logger.debug(f"Failed JSON content (first 200 chars): {json_str[:200]}...") 
+    return None
 
 
 def extract_code_block(text: str, block_type: str) -> Optional[ParsedBlock]:
+    """Helper for single block extraction"""
+    blocks = extract_all_code_blocks(text, block_type)
+    return blocks[0] if blocks else None
+
+
+def _find_balanced_json_end(text: str, start_idx: int) -> int:
     """
-    Extract and parse a single code block of specified type from text.
-
-    Args:
-        text: The text to search for code blocks
-        block_type: The type identifier (e.g., 'function', 'delegation')
-
-    Returns:
-        ParsedBlock if found and valid, None otherwise
+    Fast balanced brace parser to find the end of a JSON object.
+    Tracks {/} depth while respecting string escaping.
     """
-    # Pattern matches: ```json:TYPE \n { ... } \n ```
-    # [\s\S]*? matches any character including newlines, non-greedy
-    pattern = rf"```json:{re.escape(block_type)}\s*(\{{[\s\S]*?\}})\s*```"
+    depth = 0
+    in_string = False
+    escape_next = False
 
-    match = re.search(pattern, text, re.IGNORECASE)
+    for i in range(start_idx, len(text)):
+        char = text[i]
 
-    if not match:
-        return None
+        if escape_next:
+            escape_next = False
+            continue
 
-    json_str = match.group(1)
-    
-    # Use robust parsing helper
-    data = _parse_with_repair(json_str, block_type)
+        if char == '\\':
+            escape_next = True
+            continue
 
-    if data:
-        return ParsedBlock(block_type=block_type, data=data, raw_json=json_str)
-    
-    return None
+        if char == '"' and not escape_next:
+            in_string = not in_string
+
+        if not in_string:
+            if char == '{':
+                depth += 1
+            elif char == '}':
+                depth -= 1
+                if depth == 0:
+                    return i + 1  # Return index after closing brace
+
+    return -1  # Unbalanced
 
 
 def extract_all_code_blocks(text: str, block_type: str) -> List[ParsedBlock]:
     """
-    Extract and parse ALL code blocks. 
-    1. STRICT pass: Matches ```json:block_type
-    2. LOOSE pass (Fallback): Matches ```json if content adheres to schema
+    Extract and parse ALL code blocks with nested markdown support.
     """
     blocks = []
-    
+
+    logger.debug(f"[PARSER] Searching for block_type='{block_type}' in text of length {len(text)}")
+
+    # --- PRE-PROCESSING: Handle literal \n escape sequences ---
+    # Global 're' is used here, safe from UnboundLocalError
+    if '\\n' in text and '```json:' in text:
+        def fix_fence_newlines(match):
+            full_match = match.group(0)
+            json_start = full_match.find('{')
+            if json_start == -1: return full_match
+            header = full_match[:json_start].replace('\\n', '\n')
+            body = full_match[json_start:]
+            return header + body
+
+        fence_pattern = r'```json:[a-zA-Z0-9_-]+[^\{]*'
+        text = re.sub(fence_pattern, fix_fence_newlines, text)
+        logger.debug("[PARSER] Converted literal \\n in fence markers")
+
     # --- 1. STRICT PASS (Priority) ---
-    # Matches ```json:function ... ```
-    strict_pattern = rf"```json:{re.escape(block_type)}\s*(\{{[\s\S]*?\}})\s*```"
-    matches = list(re.finditer(strict_pattern, text, re.IGNORECASE))
-    
-    for match in matches:
-        json_str = match.group(1)
+    start_marker_regex = re.compile(rf"```json:\s*{re.escape(block_type)}", re.IGNORECASE)
+    start_indices = [m.start() for m in start_marker_regex.finditer(text)]
+
+    for start_idx in start_indices:
+        json_start = text.find('{', start_idx)
+        if json_start == -1: continue
+
+        json_end = _find_balanced_json_end(text, json_start)
+        if json_end == -1:
+            logger.warning(f"Unbalanced braces in {block_type} block at index {start_idx}")
+            continue
+
+        json_str = text[json_start:json_end].strip()
         data = _parse_with_repair(json_str, block_type)
+        
         if data:
             blocks.append(ParsedBlock(block_type=block_type, data=data, raw_json=json_str))
+            logger.debug(f"[PARSER] Successfully parsed block at index {start_idx}")
+        else:
+            logger.warning(f"[PARSER] Valid brace structure but invalid JSON for {block_type} at index {start_idx}")
 
-    # If strict pass found something, trust it and return (prevents double counting)
     if blocks:
         return blocks
 
     # --- 2. LOOSE PASS (Recovery) ---
-    # Only if block_type is 'function'. We don't want loose parsing for 'delegation' usually.
     if block_type == 'function':
-        logger.warning(f"No strict `json:{block_type}` found. Attempting loose JSON recovery.")
-        
-        # Matches standard ```json ... ```
+        logger.debug(f"[PARSER] Strict pass found 0 blocks, trying loose pass...")
         loose_pattern = r"```json\s*(\{[\s\S]*?\})\s*```"
         loose_matches = re.finditer(loose_pattern, text, re.IGNORECASE)
-        
+
         for match in loose_matches:
             json_str = match.group(1)
             data = _parse_with_repair(json_str, block_type)
-            
-            # HEURISTIC CHECK:
-            # Does this JSON look like a tool call? 
-            # Must have "name" and "args" keys.
             if data and isinstance(data, dict) and "name" in data and "args" in data:
                 logger.info(f"Recovered valid tool call from loose JSON block: {data['name']}")
                 blocks.append(ParsedBlock(block_type=block_type, data=data, raw_json=json_str))
@@ -150,76 +210,33 @@ def extract_all_code_blocks(text: str, block_type: str) -> List[ParsedBlock]:
 
 
 # ============================================================================
-# Specialized Parsers for Delegation and Function Calls
+# Specialized Parsers
 # ============================================================================
 
 def parse_delegation_request(text: str) -> Optional[Dict[str, Any]]:
-    """
-    Parse a delegation request from agent output.
-
-    Searches for ```json:delegation blocks and extracts the structured data.
-
-    Args:
-        text: The agent's output text
-
-    Returns:
-        Dictionary with delegation data if found, None otherwise
-    """
     block = extract_code_block(text, 'delegation')
     return block.data if block else None
 
-
 def parse_function_calls(text: str) -> List[Tuple[str, Dict[str, Any]]]:
     """
-    Parse function call requests from agent output.
-
-    Searches for ```json:function blocks and extracts tool invocations.
-
-    Args:
-        text: The agent's output text
-
-    Returns:
-        List of tuples: [(tool_name, args), ...]
+    Extracts function calls and guarantees strict return typing.
+    Filters out any blocks where 'name' is missing or not a string.
     """
     blocks = extract_all_code_blocks(text, 'function')
-
-    function_calls = []
-    for block in blocks:
-        tool_name = block.data.get('name')
-        tool_args = block.data.get('args', {})
-
-        if not tool_name:
-            logger.warning(f"Function block missing 'name' field: {block.raw_json[:100]}")
-            continue
-
-        function_calls.append((tool_name, tool_args))
-
-    return function_calls
-
+    results: List[Tuple[str, Dict[str, Any]]] = []
+    
+    for b in blocks:
+        name = b.data.get('name')
+        args = b.data.get('args', {})
+        
+        # Pylance Fix: Explicit check ensures 'name' is strictly 'str'
+        if isinstance(name, str):
+            results.append((name, args))
+            
+    return results
 
 def has_delegation_request(text: str) -> bool:
-    """
-    Quick check if text contains a delegation request.
-
-    Args:
-        text: The text to check
-
-    Returns:
-        True if delegation block is present, False otherwise
-    """
-    pattern = r"```json:delegation\s*\{[\s\S]*?\}\s*```"
-    return bool(re.search(pattern, text, re.IGNORECASE))
-
+    return bool(extract_code_block(text, 'delegation'))
 
 def has_function_calls(text: str) -> bool:
-    """
-    Quick check if text contains function call requests.
-
-    Args:
-        text: The text to check
-
-    Returns:
-        True if function block is present, False otherwise
-    """
-    pattern = r"```json:function\s*\{[\s\S]*?\}\s*```"
-    return bool(re.search(pattern, text, re.IGNORECASE))
+    return bool(extract_all_code_blocks(text, 'function'))

@@ -5,6 +5,7 @@
 
 import os
 import base64
+import hashlib
 import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Union
@@ -154,6 +155,18 @@ class SandboxSession:
 
 # --- EXECUTION LOGIC ---
 
+def _compute_file_hash(file_path: str) -> str:
+    """Compute MD5 hash of a file for change detection."""
+    hash_md5 = hashlib.md5()
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            hash_md5.update(chunk)
+    return hash_md5.hexdigest()
+
+def _get_file_sync_key(run_id: str, filename: str) -> str:
+    """Redis key for tracking uploaded file hashes."""
+    return f"raro:e2b_files:{run_id}:{filename}"
+
 def _run_e2b_sandbox(code: str, ws: WorkspaceManager) -> Dict[str, Any]:
     if Sandbox is None: return {"error": "E2B library missing."}
 
@@ -163,17 +176,42 @@ def _run_e2b_sandbox(code: str, ws: WorkspaceManager) -> Dict[str, Any]:
         return {"error": "Failed to initialize E2B Sandbox connection."}
 
     try:
-        # 2. SYNC FILES (Smart Sync)
+        # 2. SMART FILE SYNC (Checksum-based deduplication)
+        files_synced = 0
+        files_skipped = 0
+
         if os.path.exists(ws.input_dir):
             for filename in os.listdir(ws.input_dir):
                 file_path = os.path.join(ws.input_dir, filename)
                 if os.path.isfile(file_path):
                     try:
-                        with open(file_path, "rb") as f:
-                            # Use /home/user explicitly to ensure we are in the cwd
-                            sandbox.files.write(f"/home/user/{filename}", f.read())
+                        # Compute current file hash
+                        current_hash = _compute_file_hash(file_path)
+                        sync_key = _get_file_sync_key(ws.run_id, filename)
+
+                        # Check if file was already uploaded with same hash
+                        cached_hash = redis_client.get(sync_key) if redis_client else None
+
+                        if cached_hash and cached_hash.decode('utf-8') == current_hash:
+                            # File unchanged, skip upload
+                            files_skipped += 1
+                            logger.debug(f"Skipping unchanged file: {filename}")
+                        else:
+                            # File is new or modified, upload it
+                            with open(file_path, "rb") as f:
+                                sandbox.files.write(f"/home/user/{filename}", f.read())
+
+                            # Cache the hash for future checks (TTL: 1 hour)
+                            if redis_client:
+                                redis_client.setex(sync_key, 3600, current_hash)
+
+                            files_synced += 1
+                            logger.info(f"Uploaded file to E2B: {filename} ({os.path.getsize(file_path)} bytes)")
                     except Exception as e:
                         logger.warning(f"Failed to upload {filename}: {e}")
+
+        if files_synced > 0 or files_skipped > 0:
+            logger.info(f"File sync complete: {files_synced} uploaded, {files_skipped} skipped (cached)")
 
         # 3. Execute Code
         logger.info(f"E2B: Executing code ({len(code)} chars)")

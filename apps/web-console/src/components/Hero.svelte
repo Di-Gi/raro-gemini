@@ -1,10 +1,10 @@
 <!-- // [[RARO]]/apps/web-console/src/components/Hero.svelte -->
-<!-- Purpose: The "Monolith" Boot Interface. High-fidelity entry point. -->
+<!-- Purpose: The "Monolith" Boot Interface + Project Manifesto. -->
 <!-- Architecture: UX/UI Component -->
 <!-- Dependencies: Svelte Transition, Local Assets -->
 
 <script lang="ts">
-  import { fade, fly } from 'svelte/transition';
+  import { fade, fly, slide } from 'svelte/transition';
   import { onMount } from 'svelte';
   import { USE_MOCK } from '$lib/api'; 
 
@@ -16,7 +16,6 @@
   
   // === CAPACITOR LOGIC ===
   let chargeLevel = $state(0);
-  let chargeVelocity = 0;
   let rafId: number;
 
   // === TERMINAL LOGIC ===
@@ -37,6 +36,7 @@
     }
 
     setTimeout(() => logs.push("MEMORY_INTEGRITY_CHECK..."), 600);
+    setTimeout(() => logs.push("LOADING_MISSION_MANIFEST..."), 800);
     
     return () => clearInterval(cursorInterval);
   });
@@ -56,7 +56,6 @@
       lastTime = now;
 
       // Physics: Charge accelerates but encounters "Resistance" near 100%
-      // This creates tactile "weight"
       const baseSpeed = 0.15; 
       const resistance = Math.max(0, (chargeLevel - 80) * 0.005);
       
@@ -101,7 +100,6 @@
       { t: 1000, msg: ">> CONNECTING_TO_ORCHESTRATOR..." },
     ];
 
-    // Add specific mock confirmation in boot sequence
     if (USE_MOCK) {
         seq.push({ t: 1200, msg: ">> !! MOCK_ADAPTER_ENGAGED !!" });
     } else {
@@ -113,7 +111,6 @@
     seq.forEach(step => {
       setTimeout(() => {
         logs = [...logs, step.msg];
-        // Keep terminal scrolled to bottom
         const el = document.getElementById('term-feed');
         if(el) el.scrollTop = el.scrollHeight;
       }, step.t);
@@ -128,33 +125,29 @@
 
 <div class="viewport" out:fade={{ duration: 600 }}>
   
-  <!-- OPTIONAL: NOISE TEXTURE OVERLAY -->
   <div class="noise-layer"></div>
 
   <!-- THE MONOLITH -->
   <div class="monolith-stack">
     
-    <!-- 1. THE SHADOW SLAB (Depth Anchor) -->
     <div class="slab-shadow"></div>
 
-    <!-- 2. THE MAIN UNIT -->
     <div class="slab-main">
       
       <!-- A. HEADER BAR -->
       <div class="machine-header">
         <div class="brand-zone">
-          <div class="logo-type">RARO <span class="dim">//</span> KERNEL</div>
+          <div class="logo-type">RARO <span class="dim">//</span> RECURSIVE AGENT RUNTIME ORCHESTRATOR</div>
           <div class="build-tag">
-              BUILD_2026.01.02
-              {#if USE_MOCK}<span class="tag-mock">::SIM</span>{/if}
+              HACKATHON_BUILD_RC1
+              {#if USE_MOCK}<span class="tag-mock">::SIMULATION</span>{/if}
           </div>
         </div>
         
-        <!-- Status Array -->
         <div class="status-zone">
            <div class="status-dot {sysState === 'CHARGING' ? 'amber' : ''} {sysState === 'LOCKED' ? 'cyan' : ''}"></div>
            <div class="status-label">
-             {#if sysState === 'IDLE'}STANDBY{:else if sysState === 'CHARGING'}ARMING{:else}ACTIVE{/if}
+             {#if sysState === 'IDLE'}SYSTEM_READY{:else if sysState === 'CHARGING'}ARMING{:else}BOOTING{/if}
            </div>
         </div>
       </div>
@@ -162,19 +155,59 @@
       <!-- B. CONTENT GRID -->
       <div class="machine-body">
         
-        <!-- LEFT: Typography Engine -->
+        <!-- LEFT: THE MANIFESTO (Project Info) -->
         <div class="col-left">
-          <div class="hero-block">
-             <h1>RECURSIVE</h1>
-             <h1>AGENT</h1>
-             <h1>REASONING<span class="dot">.</span></h1>
-          </div>
-          
-          <div class="meta-block">
-            <p>
-              High-latency orchestration runtime for <span class="highlight">Gemini 3 Protocol</span>.
-              Designed for deep-context synthesis and multi-hop reasoning chains.
-            </p>
+          <div class="manifest-container">
+            
+            <!-- SECTION 1: THE PITCH -->
+            <div class="manifest-section">
+                <div class="section-label">01 // OBJECTIVE</div>
+                <h1>Structured Reasoning for<br><span class="highlight">Complex Horizons.</span></h1>
+                <p>
+                    RARO solves the "Context Collapse" problem in LLM agents. 
+                    Instead of a single chaotic loop, we use a <strong>Dynamic DAG Architecture</strong> 
+                    to break complex tasks into atomic, verifiable steps.
+                </p>
+            </div>
+
+            <!-- SECTION 2: THE ARCHITECTURE -->
+            <div class="manifest-section">
+                <div class="section-label">02 // CAPABILITIES</div>
+                <div class="grid-2col">
+                    <div class="spec-card">
+                        <span class="icon">⑃</span>
+                        <strong>Dynamic Delegation</strong>
+                        <p>Agents can spawn sub-graphs recursively at runtime to handle unforeseen complexity.</p>
+                    </div>
+                    <div class="spec-card">
+                        <span class="icon">🛡</span>
+                        <strong>Cortex Safety Layer</strong>
+                        <p>Real-time pattern matching intercepts dangerous tool use before execution.</p>
+                    </div>
+                    <div class="spec-card">
+                        <span class="icon">📂</span>
+                        <strong>RFS (Raro File System)</strong>
+                        <p>Secure, isolated workspaces for agents to read/write/execute code artifacts.</p>
+                    </div>
+                    <div class="spec-card">
+                        <span class="icon">🧠</span>
+                        <strong>Gemini 3.0 Integration</strong>
+                        <p>Native multi-modal input and "Deep Think" reasoning support.</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SECTION 3: THE STACK -->
+            <div class="manifest-section">
+                <div class="section-label">03 // STACK</div>
+                <div class="stack-line">
+                    <span class="tech-pill">RUST (Kernel)</span>
+                    <span class="tech-pill">PYTHON (Agents)</span>
+                    <span class="tech-pill">SVELTE (Console)</span>
+                    <span class="tech-pill">REDIS (State)</span>
+                </div>
+            </div>
+
           </div>
         </div>
 
@@ -183,13 +216,8 @@
           <div class="terminal-frame">
             <div class="scanlines"></div>
             <div class="terminal-header">
-              <span>SYS_OUT</span>
-              
-              <!-- MOCK INDICATOR -->
-              {#if USE_MOCK}
-                <span class="mock-warning">MOCK_ENV</span>
-              {/if}
-
+              <span>KERNEL_LOG</span>
+              {#if USE_MOCK}<span class="mock-warning">MOCK_MODE</span>{/if}
               <span>TTY_1</span>
             </div>
             
@@ -207,7 +235,7 @@
 
       </div>
 
-      <!-- C. INTERACTION DECK (The Trigger) -->
+      <!-- C. INTERACTION DECK -->
       <div class="machine-footer">
         <button 
           class="trigger-plate"
@@ -218,23 +246,20 @@
           ontouchend={releaseCharge}
           disabled={sysState === 'LOCKED' || sysState === 'BOOTING'}
         >
-          <!-- The Capacitor Fill -->
           <div class="capacitor-bar" style="width: {chargeLevel}%"></div>
           
-          <!-- The Data Overlay -->
           <div class="trigger-data">
             <div class="label-primary">
               {#if sysState === 'LOCKED' || sysState === 'BOOTING'}
-                SYSTEM_ENGAGED
+                INITIALIZING...
               {:else}
-                INITIALIZE_RUNTIME
+                [ HOLD TO BOOT SYSTEM ]
               {/if}
             </div>
             
             <div class="label-secondary">
-              <span class="bracket">[</span>
+              <span class="bracket">AUTH_KEY:</span>
               <span class="val">{Math.floor(chargeLevel).toString().padStart(3, '0')}%</span>
-              <span class="bracket">]</span>
             </div>
           </div>
 
@@ -259,35 +284,29 @@
   .noise-layer {
     position: absolute; top: 0; left: 0; width: 100%; height: 100%;
     background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.04'/%3E%3C/svg%3E");
-    pointer-events: none;
-    z-index: 0;
+    pointer-events: none; z-index: 0;
   }
 
   /* === 2. THE MONOLITH STACK === */
   .monolith-stack {
     position: relative;
-    width: 700px;
+    width: 900px; /* Widened for content */
+    max-width: 95vw;
     z-index: 1;
   }
 
-  /* The physical depth shadow layer */
   .slab-shadow {
-    position: absolute;
-    top: 12px; left: 12px;
-    width: 100%; height: 100%;
-    background: #1a1918;
-    z-index: 0;
-    opacity: 0.1;
+    position: absolute; top: 12px; left: 12px; width: 100%; height: 100%;
+    background: #1a1918; z-index: 0; opacity: 0.1;
   }
 
-  /* The Main Interface Unit */
   .slab-main {
     position: relative;
     background: var(--paper-surface);
     border: 1px solid var(--paper-line);
     z-index: 1;
     display: flex; flex-direction: column;
-    box-shadow: 0 40px 80px -20px rgba(0,0,0,0.15); /* Soft ambient float */
+    box-shadow: 0 40px 80px -20px rgba(0,0,0,0.15);
   }
 
   /* === 3. HEADER === */
@@ -299,9 +318,9 @@
     background: #fff;
   }
 
-  .logo-type { font-family: var(--font-code); font-weight: 700; font-size: 12px; letter-spacing: 1px; color: var(--paper-ink); }
+  .logo-type { font-family: var(--font-code); font-weight: 900; font-size: 14px; letter-spacing: 1px; color: var(--paper-ink); }
   .dim { color: #ccc; }
-  .build-tag { font-family: var(--font-code); font-size: 9px; color: #888; margin-top: 2px; }
+  .build-tag { font-family: var(--font-code); font-size: 10px; color: #888; margin-top: 2px; }
   .tag-mock { color: var(--alert-amber); font-weight: 700; margin-left: 4px; }
 
   .status-zone { display: flex; align-items: center; gap: 8px; }
@@ -316,53 +335,75 @@
   /* === 4. BODY LAYOUT === */
   .machine-body {
     display: grid;
-    grid-template-columns: 1.4fr 1fr;
-    min-height: 320px;
+    grid-template-columns: 1.6fr 1fr; /* Info takes more space */
+    min-height: 420px;
   }
 
-  /* Left Column: Typography */
+  /* --- LEFT: INFO MANIFESTO --- */
   .col-left {
-    padding: 40px 32px;
-    display: flex; flex-direction: column; justify-content: space-between;
+    padding: 32px;
     border-right: 1px solid var(--paper-line);
+    background: #FDFDFD;
+    display: flex;
+    flex-direction: column;
   }
 
-  .hero-block h1 {
-    font-family: var(--font-ui);
-    font-size: 56px;
-    font-weight: 900;
-    line-height: 0.82;
-    letter-spacing: -3px;
-    color: var(--paper-ink);
-    margin: 0;
+  .manifest-container {
+    display: flex; flex-direction: column; gap: 32px;
   }
-  .dot { color: #A53F2B; }
 
-  .meta-block {
-    font-family: var(--font-code);
-    font-size: 11px;
-    line-height: 1.6;
-    color: #666;
+  .manifest-section h1 {
+    font-family: var(--font-ui); font-size: 32px; font-weight: 900;
+    line-height: 1; letter-spacing: -1px; color: var(--paper-ink); margin: 0 0 12px 0;
+  }
+  
+  .highlight { color: var(--arctic-cyan); -webkit-text-stroke: 1px var(--paper-ink); /* Stylistic */ }
+  :global(.mode-archival) .highlight { color: #A53F2B; -webkit-text-stroke: 0; }
+
+  .manifest-section p {
+    font-family: var(--font-ui); font-size: 13px; line-height: 1.6; color: #555; margin: 0;
     max-width: 90%;
-    margin-top: 40px;
   }
-  .highlight { color: var(--paper-ink); font-weight: 700; border-bottom: 1px solid #ccc; }
 
-  /* Right Column: Terminal */
+  .section-label {
+    font-family: var(--font-code); font-size: 9px; font-weight: 700; color: #999;
+    margin-bottom: 8px; letter-spacing: 1px;
+  }
+
+  .grid-2col {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+  }
+
+  .spec-card {
+    border: 1px solid var(--paper-line); background: #fff;
+    padding: 10px; border-radius: 2px;
+  }
+  .spec-card .icon { font-size: 14px; margin-right: 4px; }
+  .spec-card strong { display: block; font-family: var(--font-code); font-size: 10px; font-weight: 700; margin-bottom: 4px; color: var(--paper-ink); }
+  .spec-card p { font-size: 10px; line-height: 1.4; color: #666; }
+
+  .stack-line { display: flex; gap: 8px; flex-wrap: wrap; }
+  .tech-pill {
+    font-family: var(--font-code); font-size: 9px; font-weight: 600; 
+    background: var(--paper-surface-dim); padding: 4px 8px; border-radius: 2px;
+    border: 1px solid var(--paper-line); color: var(--paper-ink);
+  }
+
+  /* --- RIGHT: TERMINAL --- */
   .col-right {
     background: #FAFAFA;
-    padding: 24px;
+    padding: 0;
     display: flex; flex-direction: column;
   }
 
   .terminal-frame {
     flex: 1;
-    background: #111;
-    border: 1px solid #333;
+    background: #09090b;
+    border-left: 1px solid #333;
     position: relative;
     overflow: hidden;
     display: flex; flex-direction: column;
-    box-shadow: inset 0 0 20px rgba(0,0,0,0.5);
+    box-shadow: inset 0 0 40px rgba(0,0,0,0.5);
   }
 
   .scanlines {
@@ -373,35 +414,31 @@
   }
 
   .terminal-header {
-    height: 24px; background: #222; border-bottom: 1px solid #333;
+    height: 32px; background: #18181b; border-bottom: 1px solid #333;
     display: flex; justify-content: space-between; align-items: center;
-    padding: 0 8px;
-    font-family: var(--font-code); font-size: 8px; color: #666;
+    padding: 0 12px;
+    font-family: var(--font-code); font-size: 9px; color: #666;
   }
   
-  .mock-warning {
-    color: var(--alert-amber);
-    font-weight: 700;
-    animation: blink 1s infinite;
-  }
+  .mock-warning { color: var(--alert-amber); font-weight: 700; animation: blink 1s infinite; }
 
   .terminal-content {
     flex: 1;
-    padding: 12px;
-    font-family: var(--font-code); font-size: 10px; color: #8b949e;
-    overflow-y: hidden; /* Programmatic scroll */
+    padding: 20px;
+    font-family: var(--font-code); font-size: 11px; color: #a1a1aa;
+    overflow-y: hidden;
     display: flex; flex-direction: column; justify-content: flex-end;
   }
 
-  .line { margin-bottom: 4px; word-break: break-all; }
-  .prompt { color: var(--arctic-lilac); margin-right: 6px; }
+  .line { margin-bottom: 6px; word-break: break-all; }
+  .prompt { color: var(--arctic-lilac); margin-right: 8px; }
   .cursor { color: var(--arctic-lilac); }
 
   /* === 5. TRIGGER DECK === */
   .machine-footer {
-    height: 80px;
+    height: 72px;
     border-top: 1px solid var(--paper-line);
-    padding: 0; /* Full bleed button */
+    padding: 0;
   }
 
   .trigger-plate {
@@ -417,33 +454,27 @@
   .trigger-plate:hover:not(:disabled) { background: #fdfdfd; }
   .trigger-plate:disabled { cursor: default; }
 
-  /* The Capacitor Bar */
   .capacitor-bar {
     position: absolute; top: 0; left: 0; height: 100%;
     background: var(--paper-ink);
     z-index: 1;
-    /* No transition for instant physical feel */
   }
   
-  /* Success State */
   .trigger-plate:disabled .capacitor-bar { background: var(--arctic-lilac-lite); transition: background 0.4s; }
 
-  /* Data Overlay */
   .trigger-data {
     position: relative; z-index: 2;
     width: 100%; height: 100%;
     display: flex; justify-content: space-between; align-items: center;
     padding: 0 32px;
     mix-blend-mode: difference;
-    color: white; /* Inverts to black on white bg, white on black fill */
+    color: white;
   }
   
-  /* Isolate stacking context for mix-blend-mode */
   .trigger-plate { isolation: isolate; }
 
   .label-primary { font-family: var(--font-code); font-weight: 700; font-size: 14px; letter-spacing: 2px; }
-  
-  .label-secondary { font-family: var(--font-code); font-size: 12px; letter-spacing: 1px; opacity: 0.8; margin-right: 30px; }
+  .label-secondary { font-family: var(--font-code); font-size: 12px; letter-spacing: 1px; opacity: 0.8; }
   .val { display: inline-block; width: 40px; text-align: center; }
 
 </style>

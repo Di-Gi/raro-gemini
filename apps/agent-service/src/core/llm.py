@@ -507,7 +507,7 @@ async def call_gemini_with_context(
         content_text = ""
         all_files_generated = []  # Accumulator for files from all tool calls
         _seen_files = set()  # Track files to prevent duplicates during retries
-        execution_context_buffer = []  # Accumulate critical tool data for downstream context
+        machine_context_buffer = []  # Accumulate machine-only context (e.g., read_file)
         puppet_turn_used = False  # Track if current turn used puppet mock
         # --- FIX END ---
 
@@ -617,11 +617,15 @@ async def call_gemini_with_context(
                 # === EMIT: TOOL RESULT ===
                 success = result_dict.get('success', True)
 
-                # Generate smart summary
+                # Generate summary - FULL result for web_search (UI rendering), truncated for others
                 output_summary = "Operation complete."
                 if "result" in result_dict:
                     res = str(result_dict["result"])
-                    output_summary = res[:100] + "..." if len(res) > 100 else res
+                    # For web_search, send full results so frontend can render sources
+                    if tool_name == 'web_search':
+                        output_summary = res
+                    else:
+                        output_summary = res[:100] + "..." if len(res) > 100 else res
                 elif "error" in result_dict:
                     output_summary = result_dict["error"]
 
@@ -647,8 +651,10 @@ async def call_gemini_with_context(
 
                 # === CAPTURE CRITICAL DATA FOR DOWNSTREAM CONTEXT ===
                 # Store outputs from tools that generate data other agents need
-                if tool_name in ['web_search', 'read_file']:
-                    execution_context_buffer.append(f"--- {tool_name} results ---\n{tool_output_str}")
+                # web_search: Already emitted via telemetry (full results), no need to buffer
+                # read_file: Machine-only context (prevents double-print in UI)
+                if tool_name in ['read_file']:
+                    machine_context_buffer.append(f"--- {tool_name} results ---\n{tool_output_str}")
 
             # 5. Append Tool Outputs to History
             current_contents.append({
@@ -689,24 +695,26 @@ async def call_gemini_with_context(
         if not final_response_text:
             final_response_text = content_text
 
-        # === FIX: APPEND CONTEXT FOR DOWNSTREAM AGENTS ===
-        # If we have captured tool data but the model didn't explicitly repeat it in final_response_text,
-        # attach it so the NEXT agent can see it via Redis.
-        if execution_context_buffer:
-            context_dump = "\n\n".join(execution_context_buffer)
-            # Only append if not already heavily present (simple length heuristic or just append)
-            final_response_text += f"\n\n[AUTOMATED CONTEXT ATTACHMENT]\n{context_dump}"
+        # === MACHINE CONTEXT FOR DOWNSTREAM AGENTS ===
+        # Don't append to final_response_text - prevents system prompt leakage
+        # web_search: Delivered via live telemetry (full results, frontend handles rendering)
+        # read_file: Stored separately for machine-to-machine context only
+
+        machine_context = ""
+        if machine_context_buffer:
+            machine_context = "\n\n".join(machine_context_buffer)
 
         logger.info(f"Agent {safe_agent_id} Completed. Tokens: {input_tokens}/{output_tokens} | Files: {len(all_files_generated)}")
 
         return {
-            "text": final_response_text,
+            "text": final_response_text,  # Clean model output only
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "thought_signature": thought_signature,
             "cache_hit": cache_hit,
-            "files_generated": all_files_generated,  # Return captured files
-            "cached_content_id": final_cache_id  # Return cache ID (consumed or newly created)
+            "files_generated": all_files_generated,
+            "cached_content_id": final_cache_id,
+            "machine_data_context": machine_context  # Machine-only data for downstream agents
         }
 
     except Exception as e:

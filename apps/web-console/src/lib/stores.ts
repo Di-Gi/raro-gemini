@@ -21,7 +21,7 @@ export interface LogEntry {
   message: string;
   metadata?: string;
   isAnimated?: boolean;
-  category?: string;  // NEW: For tool/thought categorization (TOOL_CALL, TOOL_RESULT, THOUGHT)
+  category?: string;  // NEW: For tool/reasoning categorization (TOOL_CALL, TOOL_RESULT, REASONING)
   // [[NEW]] Fields for merging Tool Results into the Call log
   toolResult?: string;      // The output text from the tool
   toolStatus?: 'success' | 'error'; 
@@ -681,6 +681,66 @@ function syncState(state: any, signatures: Record<string, string> = {}, topology
 
     // 5. Sync Logs
     if (state.invocations && Array.isArray(state.invocations)) {
+        // Extract the fetching logic to a helper function
+        async function fetchAndPopulateArtifact(runId: string, inv: any) {
+            const agentLabel = (inv.agent_id || 'UNKNOWN').toUpperCase();
+            try {
+                const { getArtifact } = await import('./api');
+                const fetchPromise = getArtifact(runId, inv.agent_id);
+                const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000));
+                const artifact: any = await Promise.race([fetchPromise, timeoutPromise]);
+
+                if (artifact) {
+                    let outputText = '';
+
+                    if (typeof artifact === 'string') {
+                        outputText = artifact;
+                    } else if (typeof artifact === 'object') {
+                        // 1. Try to find actual human-readable content
+                        if (artifact.result) outputText = artifact.result;
+                        else if (artifact.output) outputText = artifact.output;
+                        else if (artifact.text) outputText = artifact.text;
+
+                        // 2. Intercept Metadata-only objects
+                        else if ('artifact_stored' in artifact || 'model' in artifact) {
+                            outputText = '';
+                        }
+                        else {
+                            outputText = JSON.stringify(artifact, null, 2);
+                        }
+                    }
+
+                    // 3. Ensure File Generation Tags are present
+                    if (artifact.files_generated && Array.isArray(artifact.files_generated) && artifact.files_generated.length > 0) {
+                        const filename = artifact.files_generated[0];
+                        const isImage = /\.(png|jpg|jpeg|svg|webp)$/i.test(filename);
+                        const label = isImage ? "Generated Image" : "Generated File";
+                        const systemTag = `[SYSTEM: ${label} saved to '${filename}']`;
+
+                        if (!outputText.includes(systemTag)) {
+                            outputText = outputText ? `${outputText}\n\n${systemTag}` : systemTag;
+                        }
+                    }
+
+                    // 4. Final Safety Fallback
+                    if (!outputText || outputText.trim() === '') {
+                        outputText = "Task execution completed successfully.";
+                    }
+
+                    updateLog(inv.id, {
+                        message: outputText,
+                        metadata: `TOKENS: ${inv.tokens_used || 0} | LATENCY: ${Math.round(inv.latency_ms || 0)}ms`,
+                        isAnimated: true
+                    });
+                } else {
+                    updateLog(inv.id, { message: 'Artifact empty or expired', metadata: 'WARN' });
+                }
+            } catch (err) {
+                console.error('Artifact fetch failed:', err);
+                updateLog(inv.id, { message: 'Output retrieval failed. Check connection.', metadata: 'NET_ERR' });
+            }
+        }
+
         state.invocations.forEach(async (inv: any) => {
             if (!inv || !inv.id || processedInvocations.has(inv.id)) return;
 
@@ -690,71 +750,20 @@ function syncState(state: any, signatures: Record<string, string> = {}, topology
             try {
                 if (inv.status === 'success') {
                     if (inv.artifact_id) {
-                        addLog(agentLabel, 'Initiating output retrieval...', 'LOADING', false, inv.id);
-                        try {
-                            const { getArtifact } = await import('./api');
-                            const fetchPromise = getArtifact(state.run_id, inv.agent_id);
-                            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 5000));
-                            const artifact: any = await Promise.race([fetchPromise, timeoutPromise]);
+                        // CHECK: Does a log for this agent already exist from the live stream?
+                        const currentLogs = get(logs);
+                        const existingLiveLog = currentLogs.find(l =>
+                            l.role === agentLabel &&
+                            (l.category === 'REASONING' || l.category === 'TOOL_CALL')
+                        );
 
-                            if (artifact) {
-                                let outputText = '';
-
-                                if (typeof artifact === 'string') {
-                                    outputText = artifact;
-                                } else if (typeof artifact === 'object') {
-                                    // 1. Try to find actual human-readable content
-                                    if (artifact.result) outputText = artifact.result;
-                                    else if (artifact.output) outputText = artifact.output;
-                                    else if (artifact.text) outputText = artifact.text;
-                                    
-                                    // 2. Intercept Metadata-only objects (The issue you saw)
-                                    // If we see 'artifact_stored' or 'model' but no text fields, 
-                                    // suppress the raw JSON dump.
-                                    else if ('artifact_stored' in artifact || 'model' in artifact) {
-                                        // Leave empty; we will populate with file tag or generic success below
-                                        outputText = ''; 
-                                    }
-                                    else {
-                                        // Genuine unknown object, fallback to dump
-                                        outputText = JSON.stringify(artifact, null, 2);
-                                    }
-                                }
-
-                                // 3. Ensure File Generation Tags are present
-                                // This is crucial for <ArtifactCard /> rendering
-                                if (artifact.files_generated && Array.isArray(artifact.files_generated) && artifact.files_generated.length > 0) {
-                                    const filename = artifact.files_generated[0];
-
-                                    const isImage = /\.(png|jpg|jpeg|svg|webp)$/i.test(filename);
-                                    const label = isImage ? "Generated Image" : "Generated File";
-                                    
-                                    const systemTag = `[SYSTEM: ${label} saved to '${filename}']`;
-
-                                    // Only append if the tag isn't already present in the text
-                                    if (!outputText.includes(systemTag)) {
-                                        outputText = outputText ? `${outputText}\n\n${systemTag}` : systemTag;
-                                    }
-                                }
-
-                                // 4. Final Safety Fallback
-                                // If the Agent Service saved metadata to Redis but didn't save the text "result",
-                                // and no files were generated, we show a polite status instead of raw JSON.
-                                if (!outputText || outputText.trim() === '') {
-                                    outputText = "Task execution completed successfully.";
-                                }
-
-                                updateLog(inv.id, {
-                                    message: outputText,
-                                    metadata: `TOKENS: ${inv.tokens_used || 0} | LATENCY: ${Math.round(inv.latency_ms || 0)}ms`, // Rounded latency
-                                    isAnimated: true
-                                });
-                            } else {
-                                updateLog(inv.id, { message: 'Artifact empty or expired', metadata: 'WARN' });
-                            }
-                        } catch (err) {
-                            console.error('Artifact fetch failed:', err);
-                            updateLog(inv.id, { message: 'Output retrieval failed. Check connection.', metadata: 'NET_ERR' });
+                        if (existingLiveLog) {
+                            // OPTION A: If live logs exist, just update without creating "Loading" placeholder
+                            await fetchAndPopulateArtifact(state.run_id, inv);
+                        } else {
+                            // OPTION B: No live logs yet (e.g. simple agent), use standard behavior
+                            addLog(agentLabel, 'Initiating output retrieval...', 'LOADING', false, inv.id);
+                            await fetchAndPopulateArtifact(state.run_id, inv);
                         }
                     } else {
                         addLog(agentLabel, 'Completed (No Output)', `TOKENS: ${inv.tokens_used}`, false, inv.id);

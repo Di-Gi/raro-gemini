@@ -2,10 +2,19 @@
 
 <script lang="ts">
   import CodeBlock from './CodeBlock.svelte';
-  import DelegationCard from './DelegationCard.svelte'; 
+  import DelegationCard from './DelegationCard.svelte';
   import { parseMarkdown } from '$lib/markdown';
 
   let { text }: { text: string } = $props();
+
+  // Strip context attachment BEFORE rendering to prevent flash
+  // (Should already be stripped in OutputPane, but defensive layering)
+  const ATTACHMENT_HEADER = "\n\n[AUTOMATED CONTEXT ATTACHMENT]";
+  let cleanedText = $derived.by(() => {
+    if (!text) return '';
+    const splitIndex = text.indexOf(ATTACHMENT_HEADER);
+    return splitIndex !== -1 ? text.substring(0, splitIndex) : text;
+  });
 
   function parseContent(input: string) {
     const regex = /```([a-zA-Z0-9:_-]+)?\n([\s\S]*?)```/g;
@@ -40,7 +49,7 @@
     return parts;
   }
 
-  let blocks = $derived(parseContent(text));
+  let blocks = $derived(parseContent(cleanedText));
 </script>
 
 <div class="smart-text-wrapper">

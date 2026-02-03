@@ -19,7 +19,7 @@ dist/
 downloads/
 eggs/
 .eggs/
-
+_logs/
 lib64/
 parts/
 sdist/

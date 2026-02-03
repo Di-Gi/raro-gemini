@@ -6,6 +6,7 @@
   import ApprovalCard from './sub/ApprovalCard.svelte'
   import ArtifactCard from './sub/ArtifactCard.svelte'
   import ToolExecutionCard from './sub/ToolExecutionCard.svelte'
+  import ContextAttachmentCard from './sub/ContextAttachmentCard.svelte'
   import { tick } from 'svelte';
 
   // Refs & Scroll Logic
@@ -126,6 +127,30 @@
       return cleaned.trim();
   }
 
+  // === [[NEW]] CONTEXT ATTACHMENT SPLITTER ===
+  // Splits message into [Main Body] and [Attachment Data]
+  function processMessageContent(msg: string): { body: string, attachment: string | null } {
+      if (!msg) return { body: '', attachment: null };
+
+      const ATTACHMENT_HEADER = "\n\n[AUTOMATED CONTEXT ATTACHMENT]";
+      const splitIndex = msg.indexOf(ATTACHMENT_HEADER);
+
+      let body = msg;
+      let attachment = null;
+
+      if (splitIndex !== -1) {
+          // 1. Extract Body (Everything before the tag)
+          body = msg.substring(0, splitIndex);
+          // 2. Extract Attachment (Everything after the tag + header length)
+          attachment = msg.substring(splitIndex + ATTACHMENT_HEADER.length).trim();
+      }
+
+      // Further clean the body (Standard System tags)
+      body = stripSystemTags(body);
+
+      return { body, attachment };
+  }
+
   // === [[NEW]] NARRATIVE TRANSLATION LAYER ===
   // Translates technical logs into plain-English status messages
   function translateLogToNarrative(log: LogEntry): string {
@@ -136,7 +161,7 @@
         if (log.message.includes('write_file')) return "Generating output file...";
         return "Executing tool...";
     }
-    if (log.category === 'THOUGHT') {
+    if (log.category === 'REASONING') {
         return "Reasoning about next steps...";
     }
     if (log.role === 'ORCHESTRATOR' || log.role === 'PLANNER' || log.role === 'ARCHITECT') {
@@ -152,7 +177,7 @@
   let lastNarrative = $derived.by(() => {
     const reversed = [...$logs].reverse();
     const active = reversed.find(l => l.category === 'TOOL_CALL' && !l.isComplete)
-                || reversed.find(l => l.category === 'THOUGHT');
+                || reversed.find(l => l.category === 'REASONING');
     return active ? translateLogToNarrative(active) : "System Idle";
   });
 </script>
@@ -219,15 +244,23 @@
                 {:else}
                   <!-- Static Text + Artifacts -->
                   {@const fileList = extractAllFilenames(log.message)}
-                  
-                  <!-- [[FIXED]]: Use the robust cleaning function -->
-                  <SmartText text={stripSystemTags(log.message)} />
-                  
+                  {@const { body, attachment } = processMessageContent(log.message)}
+
+                  <!-- 1. Main Message Body -->
+                  {#if body}
+                      <SmartText text={body} />
+                  {/if}
+
+                  <!-- 2. Context Attachments (Web Search, Tool Results) -->
+                  {#if attachment}
+                      <ContextAttachmentCard rawData={attachment} />
+                  {/if}
+
+                  <!-- 3. Artifact Cards (Generated Files) -->
                   {#if fileList.length > 0}
-                     <!-- Single Card, Array of Files -->
-                     <ArtifactCard 
-                        filenames={fileList} 
-                        runId={$runtimeStore.runId || ''} 
+                     <ArtifactCard
+                        filenames={fileList}
+                        runId={$runtimeStore.runId || ''}
                      />
                   {/if}
                 {/if}

@@ -397,17 +397,36 @@ async fn handle_runtime_stream(
             Ok(event) = bus_rx.recv() => {
                 // Only forward events for THIS run
                 if event.run_id == run_id {
-                    // Filter for intermediate logs
-                    if let crate::events::EventType::IntermediateLog = event.event_type {
+                    // Event whitelist: Forward time-critical events for real-time UI updates
+                    // (Other events are still available via state polling)
+                    let should_forward = matches!(
+                        event.event_type,
+                        crate::events::EventType::IntermediateLog |
+                        crate::events::EventType::SystemIntervention |
+                        crate::events::EventType::AgentStarted |
+                        crate::events::EventType::AgentCompleted |
+                        crate::events::EventType::AgentFailed
+                    );
+
+                    if should_forward {
+                        let event_type_name = match event.event_type {
+                            crate::events::EventType::IntermediateLog => "log_event",
+                            crate::events::EventType::SystemIntervention => "intervention_event",
+                            crate::events::EventType::AgentStarted => "agent_started",
+                            crate::events::EventType::AgentCompleted => "agent_completed",
+                            crate::events::EventType::AgentFailed => "agent_failed",
+                            _ => "unknown_event",
+                        };
+
                         let ws_msg = json!({
-                            "type": "log_event",
+                            "type": event_type_name,
                             "agent_id": event.agent_id,
                             "payload": event.payload,
                             "timestamp": event.timestamp
                         });
 
                         if sender.send(Message::Text(ws_msg.to_string())).await.is_err() {
-                            tracing::info!("Failed to send log event, client disconnected");
+                            tracing::info!("Failed to send event, client disconnected");
                             break;
                         }
                     }
