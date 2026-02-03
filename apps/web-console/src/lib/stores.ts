@@ -6,7 +6,7 @@
 
 import { writable, get } from 'svelte/store';
 import { getWebSocketURL, USE_MOCK, type WorkflowConfig } from './api'; // Import USE_MOCK
-import { MockWebSocket, mockResumeRun, mockStopRun } from './mock-api'; 
+import { MockWebSocket, mockResumeRun, mockStopRun, activeSocket } from './mock-api'; 
 import { DagLayoutEngine } from './layout-engine'; // Import Layout Engine
 import { TEMPLATES, type GraphTemplate } from './templates'; // [[NEW]] Import Templates
 
@@ -505,7 +505,7 @@ export function deselectNode() {
 // Change type to union to allow MockSocket
 let ws: WebSocket | MockWebSocket | null = null;
 
-export function connectRuntimeWebSocket(runId: string) {
+export function connectRuntimeWebSocket(runId: string, manualMode: boolean = false, topology?: { nodes: string[]; edges: Array<{ from: string; to: string }> }) {
   if (ws) {
     ws.close();
   }
@@ -515,8 +515,8 @@ export function connectRuntimeWebSocket(runId: string) {
 
   // ** MOCK SWITCHING **
   if (USE_MOCK) {
-    addLog('SYSTEM', 'Initializing MOCK runtime environment...', 'DEBUG');
-    ws = new MockWebSocket(url);
+    addLog('SYSTEM', `Initializing MOCK environment (Manual: ${manualMode})...`, 'DEBUG');
+    ws = new MockWebSocket(url, manualMode, topology);
   } else {
     ws = new WebSocket(url);
   }
@@ -784,4 +784,88 @@ function syncState(state: any, signatures: Record<string, string> = {}, topology
 
 function escapeHtml(unsafe: string) {
     return unsafe.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+}
+
+// === SIMULATION CONTROL FUNCTIONS ===
+
+function getCurrentTopology(): { nodes: string[]; edges: Array<{ from: string; to: string }> } {
+    const nodes = get(agentNodes);
+    const edges = get(pipelineEdges);
+
+    return {
+        nodes: nodes.map(n => n.id),
+        edges: edges.map(e => ({ from: e.from, to: e.to }))
+    };
+}
+
+function initSimulation() {
+    const simId = `sim-${Date.now()}`;
+    const topology = getCurrentTopology();
+
+    // Reset UI State
+    logs.set([]);
+    runtimeStore.set({ status: 'IDLE', runId: simId });
+
+    // Connect in Manual Mode with current topology
+    connectRuntimeWebSocket(simId, true, topology);
+    addLog('SIMULATOR', 'Debug session initialized with current pipeline topology.', 'READY');
+}
+
+export function stepSimulation() {
+    // Auto-initialize if needed
+    if (!activeSocket) {
+        initSimulation();
+        // Give it a moment to initialize, then step
+        setTimeout(() => {
+            if (activeSocket) activeSocket.nextStep();
+        }, 100);
+    } else {
+        activeSocket.nextStep();
+    }
+}
+
+let autoRunTimer: any = null;
+
+export function runSimulation() {
+    // Auto-initialize if needed
+    if (!activeSocket) {
+        initSimulation();
+        // Give it a moment to initialize
+        setTimeout(() => autoStepLoop(), 100);
+    } else {
+        autoStepLoop();
+    }
+}
+
+function autoStepLoop() {
+    if (!activeSocket) return;
+
+    activeSocket.nextStep();
+
+    // Schedule next step (with delay for visual feedback)
+    autoRunTimer = setTimeout(() => {
+        // Check if simulation is complete
+        const state = get(runtimeStore);
+        if (state.status === 'COMPLETED' || state.status === 'FAILED') {
+            clearTimeout(autoRunTimer);
+            return;
+        }
+        autoStepLoop();
+    }, 800); // 800ms delay between steps for visibility
+}
+
+export function resetSimulation() {
+    // Clear auto-run timer if active
+    if (autoRunTimer) {
+        clearTimeout(autoRunTimer);
+        autoRunTimer = null;
+    }
+
+    if (ws) {
+        ws.close();
+        ws = null;
+    }
+    logs.set([]);
+    runtimeStore.set({ status: 'IDLE', runId: null });
+    addLog('SIMULATOR', 'Context cleared.', 'RESET');
 }

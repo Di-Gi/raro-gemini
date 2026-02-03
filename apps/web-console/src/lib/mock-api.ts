@@ -91,7 +91,8 @@ The analysis confirms that the latency regression is caused by "Cold Expert" swi
 };
 
 // --- Singleton for Controlling the Active Simulation ---
-let activeSocket: MockWebSocket | null = null;
+// Export for external control (Simulation debugger)
+export let activeSocket: MockWebSocket | null = null;
 
 // --- API Methods ---
 
@@ -361,11 +362,15 @@ export class MockWebSocket {
     onmessage: ((event: { data: string }) => void) | null = null;
     onclose: ((e: { code: number; reason: string; wasClean: boolean }) => void) | null = null;
     onerror: ((err: any) => void) | null = null;
-    
+
     private steps: SimulationStep[] = [];
     private currentStep = 0;
     private timer: any;
     private isPaused = false;
+
+    // Manual Mode Control
+    public manualMode: boolean = false;
+    private stepResolve: (() => void) | null = null;
 
     // Current State Trackers
     private topology: TopologySnapshot;
@@ -375,13 +380,15 @@ export class MockWebSocket {
     private signatures: Record<string, string> = {};
     private totalTokens = 0;
 
-    constructor(url: string) {
+    constructor(url: string, manualMode: boolean = false, initialTopology?: TopologySnapshot) {
         this.url = url;
+        this.manualMode = manualMode;
         activeSocket = this; // Register singleton
-        
+
         SESSION_ARTIFACTS = {};
-        
-        this.topology = {
+
+        // Use provided topology or fall back to default
+        this.topology = initialTopology || {
             nodes: ['n1', 'n2', 'n3', 'n4'],
             edges: [
                 { from: 'n1', to: 'n2' },
@@ -397,6 +404,20 @@ export class MockWebSocket {
             if (this.onopen) this.onopen();
             this.runLoop();
         }, 500);
+    }
+
+    // Manual Mode: Step through simulation one event at a time
+    public nextStep() {
+        if (this.stepResolve) {
+            console.log('[MOCK WS] Stepping...');
+            const resolve = this.stepResolve;
+            this.stepResolve = null;
+            resolve(); // Release the lock in runLoop
+        } else if (!this.isPaused && !this.manualMode) {
+            console.warn('[MOCK WS] Simulation is running automatically. Pause it first.');
+        } else {
+            console.log('[MOCK WS] No pending steps or simulation finished.');
+        }
     }
 
     // Called by the external mockResumeRun API
@@ -449,80 +470,104 @@ export class MockWebSocket {
     }
 
     private planSimulation() {
+        // Map actual topology nodes to simulation roles
+        const nodes = this.topology.nodes;
+        if (nodes.length === 0) {
+            console.warn('[MOCK WS] Empty topology, cannot simulate');
+            return;
+        }
+
+        // Use actual node IDs from the current topology
+        const orchestrator = nodes[0];  // First node acts as orchestrator
+        const worker1 = nodes[1] || nodes[0];  // Second node (or first if only one exists)
+        const worker2 = nodes[2] || nodes[0];  // Third node (or first if < 3 nodes)
+        const synthesis = nodes[nodes.length - 1];  // Last node acts as synthesis
+
+        // Build SESSION_ARTIFACTS mapping with actual node IDs
+        SESSION_ARTIFACTS[orchestrator] = STATIC_ARTIFACTS['n1'];
+        if (nodes.length > 2) SESSION_ARTIFACTS[worker2] = STATIC_ARTIFACTS['n3'];
+        if (nodes.length > 3) SESSION_ARTIFACTS[synthesis] = STATIC_ARTIFACTS['n4'];
+
         // 1. Start State
         this.addStep(500, 'RUNNING');
 
-        // 2. Orchestrator (n1) - Thinking logic
+        // 2. Orchestrator - Thinking logic
         this.addStep(200, undefined, () => {
-             this.activeAgents.push('n1');
-             this.emitLog('n1', 'THOUGHT', 'Analyzing workflow requirements...', 'PLANNING');
+             this.activeAgents.push(orchestrator);
+             this.emitLog(orchestrator, 'THOUGHT', 'Analyzing workflow requirements...', 'PLANNING');
         });
-        this.simulateAgentExecution('n1', 1500, 450);
+        this.simulateAgentExecution(orchestrator, 1500, 450);
 
-        // 3. Start Parallel Execution
-        this.addStep(200, undefined, () => {
-             this.activeAgents.push('n2', 'n3');
-        });
+        // 3. Start Parallel Execution (if we have multiple nodes)
+        if (nodes.length > 1) {
+            this.addStep(200, undefined, () => {
+                const parallelNodes = nodes.slice(1, Math.min(3, nodes.length));
+                this.activeAgents.push(...parallelNodes);
+            });
+        }
 
-        // --- AGENT n3: PYTHON TOOL USER ---
-        // Simulating the Tool Loop from llm.py
-        this.addStep(800, undefined, () => {
-            this.emitLog('n3', 'THOUGHT', 'I need to calculate variance using pandas.', 'REASONING');
-        });
+        // --- WORKER 2: PYTHON TOOL USER (if exists) ---
+        if (nodes.length > 2) {
+            this.addStep(800, undefined, () => {
+                this.emitLog(worker2, 'THOUGHT', 'I need to calculate variance using pandas.', 'REASONING');
+            });
 
-        // 3a. Call Tool
-        this.addStep(400, undefined, () => {
-            // "IO_REQ" + "TOOL_CALL" triggers blue spinner in ToolExecutionCard
-            this.emitLog('n3', 'TOOL_CALL', 'execute_python({"code": "import pandas as pd\\ndf = pd.read_csv(\'data.csv\')..."})', 'IO_REQ');
-        });
+            // Tool Call
+            this.addStep(400, undefined, () => {
+                this.emitLog(worker2, 'TOOL_CALL', 'execute_python({"code": "import pandas as pd\\ndf = pd.read_csv(\'data.csv\')..."})', 'IO_REQ');
+            });
 
-        // 3b. Tool Result (Success)
-        this.addStep(1500, undefined, () => {
-             // "IO_OK" + "TOOL_RESULT" triggers green check in ToolExecutionCard
-             // UPDATED: Include both files in the log message to trigger the UI ArtifactCards
-             this.emitLog('n3', 'TOOL_RESULT', 'Files generated: [\'latency_variance_analysis.png\', \'fictional_data.json\']\nStandard Output: Done.', 'IO_OK');
-        });
-        
-        // Complete n3
-        this.simulateAgentCompletion('n3', 500, 800, false);
+            // Tool Result (Success)
+            this.addStep(1500, undefined, () => {
+                 this.emitLog(worker2, 'TOOL_RESULT', 'Files generated: [\'latency_variance_analysis.png\', \'fictional_data.json\']\nStandard Output: Done.', 'IO_OK');
+            });
 
-        // --- AGENT n2: DELEGATOR + ERROR SIMULATION ---
-        this.addStep(500, undefined, () => {
-             // Simulate a failed tool call first to test the Error Card
-             this.emitLog('n2', 'TOOL_CALL', 'web_search({"query": "internal_docs_v2"})', 'IO_REQ');
-        });
+            // Complete worker2
+            this.simulateAgentCompletion(worker2, 500, 800, false);
+        }
 
-        this.addStep(1200, undefined, () => {
-            // "IO_ERR" + "TOOL_RESULT" triggers red Error Card with traceback support
-            this.emitLog('n2', 'TOOL_RESULT', 'Error: Connection Timeout\nTraceback (most recent call last):\n  File "lib/search.py", line 40\n    raise TimeoutError("Gateway 504")', 'IO_ERR');
-        });
+        // --- WORKER 1: DELEGATOR + ERROR SIMULATION (if exists) ---
+        if (nodes.length > 1) {
+            this.addStep(500, undefined, () => {
+                 this.emitLog(worker1, 'TOOL_CALL', 'web_search({"query": "internal_docs_v2"})', 'IO_REQ');
+            });
 
-        this.addStep(800, undefined, () => {
-            this.emitLog('n2', 'THOUGHT', 'Search failed. Attempting dynamic delegation strategy.', 'RECOVERY');
-        });
+            this.addStep(1200, undefined, () => {
+                this.emitLog(worker1, 'TOOL_RESULT', 'Error: Connection Timeout\nTraceback (most recent call last):\n  File "lib/search.py", line 40\n    raise TimeoutError("Gateway 504")', 'IO_ERR');
+            });
 
-        // n2 does its dynamic delegation thing
-        this.processDynamicChain('n2', 'n4'); 
+            this.addStep(800, undefined, () => {
+                this.emitLog(worker1, 'THOUGHT', 'Search failed. Attempting dynamic delegation strategy.', 'RECOVERY');
+            });
+
+            // Dynamic delegation (only if we have a synthesis node)
+            if (nodes.length > 3) {
+                this.processDynamicChain(worker1, synthesis);
+            } else {
+                this.simulateAgentCompletion(worker1, 1500, 600, false);
+            }
+        }
 
         // === INSERT SYSTEM INTERVENTION HERE ===
-        // We simulate a pause just before the final synthesis node (n4) starts.
+        // We simulate a pause just before the final synthesis node starts.
         this.addStep(0, 'AWAITING_APPROVAL', () => {
             // Emit the specific log that triggers the ApprovalCard in OutputPane
             // message="SAFETY_PATTERN_TRIGGERED", metadata="INTERVENTION"
             this.emitLog('CORTEX', 'INFO', 'SAFETY_PATTERN_TRIGGERED', 'INTERVENTION');
-        }); 
-        
-        // 4. Synthesis (n4) runs (After approval)
-        this.simulateAgentExecution('n4', 3000, 2500);
+        });
+
+        // 4. Synthesis runs (After approval) - only if we have enough nodes
+        if (nodes.length > 3) {
+            this.simulateAgentExecution(synthesis, 3000, 2500);
+        }
 
         // 5. Completion
         this.addStep(1000, 'COMPLETED');
     }
 
     private processDynamicChain(currentId: string, finalDependentId: string) {
-        const isRoot = currentId === 'n2';
-        // Force delegation for n2 to show feature
-        const shouldDelegate = isRoot; 
+        // Always delegate when this method is called (demonstrates dynamic topology feature)
+        const shouldDelegate = true; 
         
         if (shouldDelegate) {
             const newAgentId = `${currentId}_sub_A`;
@@ -597,8 +642,8 @@ export class MockWebSocket {
                 artifact_id: `mock-art-${id}`
             };
 
-            // n3 uses execute_python to generate artifacts
-            if (id === 'n3') {
+            // Third node in topology uses execute_python to generate artifacts
+            if (this.topology.nodes.length > 2 && id === this.topology.nodes[2]) {
                 invocation.tools_used = ['execute_python'];
             }
 
@@ -631,14 +676,25 @@ export class MockWebSocket {
         });
     }
 
-    private runLoop() {
+    private async runLoop() {
         if (this.currentStep >= this.steps.length) {
-            this.close();
+            this.emitLog('KERNEL', 'INFO', 'Simulation Sequence Complete.', 'END');
+            if (!this.manualMode) {
+                this.close();
+            }
             return;
         }
 
         const step = this.steps[this.currentStep];
-        
+
+        // === MANUAL MODE GATE ===
+        if (this.manualMode) {
+            // Wait for nextStep() to be called
+            await new Promise<void>((resolve) => {
+                this.stepResolve = resolve;
+            });
+        }
+
         // 1. EXECUTE ACTION (Mutates this.activeAgents, this.topology, etc.)
         if (step.action) {
             step.action();
@@ -671,15 +727,20 @@ export class MockWebSocket {
         if (dynamicState.status === 'AWAITING_APPROVAL') {
             console.log('[MOCK WS] Simulation paused for approval.');
             this.isPaused = true;
-            this.currentStep++; 
+            this.currentStep++;
             return; // EXIT LOOP
         }
 
-        // 5. Schedule next step
-        this.timer = setTimeout(() => {
-            this.currentStep++;
-            this.runLoop();
-        }, step.delay);
+        // 5. Schedule next step (Auto mode uses timer, Manual mode loops immediately)
+        this.currentStep++;
+
+        if (this.manualMode) {
+            this.runLoop(); // Recursive call, will hit await Promise gate
+        } else {
+            this.timer = setTimeout(() => {
+                this.runLoop();
+            }, step.delay);
+        }
     }
 }
 

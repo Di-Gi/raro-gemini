@@ -15,7 +15,10 @@
     createNode,
     deleteNode,
     renameNode,
-    applyTemplate  // [[NEW]] Import Template Action
+    applyTemplate,  // [[NEW]] Import Template Action
+    stepSimulation,  // [[NEW]] Import Simulation Controls
+    runSimulation,
+    resetSimulation
   } from '$lib/stores'
   import {
     startRun,
@@ -40,10 +43,6 @@
   let isSubmitting = $state(false)
   let isInputFocused = $state(false)
   let tempId = $state('')
-
-  let connectionFrom = $state('')
-  let connectionTo = $state('')
-  let nodeToDelete = $state('')
 
   let isAwaitingApproval = $derived($runtimeStore.status === 'AWAITING_APPROVAL' || $runtimeStore.status === 'PAUSED')
 
@@ -239,44 +238,11 @@
       }
   }
 
-  function handleAddConnection() {
-    if (!connectionFrom || !connectionTo) {
-      addLog('GRAPH', 'Please select both source and target nodes', 'WARN')
-      return
-    }
-    addConnection(connectionFrom, connectionTo)
-    addLog('GRAPH', `Connection added: ${connectionFrom} → ${connectionTo}`, 'OK')
-    connectionFrom = ''
-    connectionTo = ''
-  }
-
-  function handleRemoveConnection() {
-    if (!connectionFrom || !connectionTo) {
-      addLog('GRAPH', 'Please select both source and target nodes', 'WARN')
-      return
-    }
-    removeConnection(connectionFrom, connectionTo)
-    addLog('GRAPH', `Connection removed: ${connectionFrom} ⨯ ${connectionTo}`, 'OK')
-    connectionFrom = ''
-    connectionTo = ''
-  }
-
   function handleCreateNode() {
     const centerX = 50
     const centerY = 50
     createNode(centerX, centerY)
     addLog('GRAPH', 'New node created at center', 'OK')
-  }
-
-  function handleDeleteNode() {
-    if (!nodeToDelete) {
-      addLog('GRAPH', 'Please select a node to delete', 'WARN')
-      return
-    }
-    const nodeLabel = $agentNodes.find(n => n.id === nodeToDelete)?.label || nodeToDelete
-    deleteNode(nodeToDelete)
-    addLog('GRAPH', `Node deleted: ${nodeLabel}`, 'OK')
-    nodeToDelete = ''
   }
 </script>
 
@@ -523,72 +489,85 @@
         </div>
       </div>
     {:else if activePane === 'pipeline'}
-      <!-- ... Pipeline Pane (Unchanged) ... -->
-      <div id="pane-pipeline" class="deck-pane compact-pane">
-        <div class="pipeline-compact">
-          <div class="control-col">
-            <div class="compact-section">
-              <div class="section-mini-header">CONNECTIONS</div>
-              <div class="compact-row">
-                <select class="input-mini" bind:value={connectionFrom}>
-                  <option value="">From...</option>
-                  {#each $agentNodes as node}
-                    <option value={node.id}>{node.label}</option>
-                  {/each}
-                </select>
-                <span class="arrow-sep">→</span>
-                <select class="input-mini" bind:value={connectionTo}>
-                  <option value="">To...</option>
-                  {#each $agentNodes as node}
-                    <option value={node.id}>{node.label}</option>
-                  {/each}
-                </select>
-              </div>
-              <div class="btn-row">
-                <button class="btn-mini add-btn" onclick={handleAddConnection} title="Add Connection">+</button>
-                <button class="btn-mini remove-btn" onclick={handleRemoveConnection} title="Remove Connection">−</button>
-              </div>
-            </div>
+      <div id="pane-pipeline" class="deck-pane">
+        <div class="deck-pane-wrapper">
 
-            <div class="compact-section">
-              <div class="section-mini-header">NODES</div>
-              <div class="btn-row">
-                <button class="btn-mini create-btn" onclick={handleCreateNode} title="Create Node">+ New</button>
-              </div>
-              <div class="compact-row" style="margin-top: 6px;">
-                <select class="input-mini" bind:value={nodeToDelete} style="flex: 1;">
-                  <option value="">Select to delete...</option>
-                  {#each $agentNodes as node}
-                    <option value={node.id}>{node.label}</option>
-                  {/each}
-                </select>
-                <button class="btn-mini delete-btn" onclick={handleDeleteNode} disabled={!nodeToDelete} title="Delete Node">⊗</button>
-              </div>
+          <!-- SIDEBAR: Node Management -->
+          <div class="sidebar">
+            <div class="section-header">NODES [{$agentNodes.length}]</div>
+            <div class="node-list">
+              {#each $agentNodes as node}
+                <div class="node-item">
+                  <span>{node.label.toUpperCase()}</span>
+                  <span class="del-btn" onclick={() => { deleteNode(node.id); addLog('GRAPH', `Node deleted: ${node.label}`, 'OK'); }}>×</span>
+                </div>
+              {/each}
             </div>
+            <button class="add-node-btn" onclick={handleCreateNode}>+ ADD NODE</button>
           </div>
 
-          <div class="topology-col">
-            <div class="compact-section">
-              <div class="section-mini-header">TOPOLOGY</div>
-              <div class="topo-stats">
-                <div class="topo-stat">
-                  <span class="topo-num">{$agentNodes.length}</span>
-                  <span class="topo-label">Nodes</span>
-                </div>
-                <div class="topo-stat">
-                  <span class="topo-num">{$pipelineEdges.length}</span>
-                  <span class="topo-label">Edges</span>
-                </div>
-              </div>
-              <div class="edge-list">
-                {#each $pipelineEdges.slice(0, 6) as edge}
-                  <div class="edge-micro">
-                    {($agentNodes.find(n => n.id === edge.from)?.label || edge.from).substring(0, 8)} → {($agentNodes.find(n => n.id === edge.to)?.label || edge.to).substring(0, 8)}
+          <!-- MATRIX AREA -->
+          <div class="matrix-wrapper">
+            <div class="matrix-scroll">
+              <div
+                class="patch-grid"
+                style="grid-template-columns: 90px repeat({$agentNodes.length}, 28px);"
+              >
+
+                <!-- CORNER -->
+                <div class="corner-cell">
+                  <div class="corner-hint">
+                    SRC<br/>▼<br/>TGT ▶
                   </div>
+                </div>
+
+                <!-- COLUMN HEADERS (Targets) -->
+                {#each $agentNodes as target}
+                  <div class="col-header"><span class="v-text">{target.label.toUpperCase()}</span></div>
                 {/each}
-                {#if $pipelineEdges.length > 6}
-                  <div class="edge-micro more">+{$pipelineEdges.length - 6} more</div>
-                {/if}
+
+                <!-- ROWS -->
+                {#each $agentNodes as source, rowIdx}
+                  <!-- ROW HEADER (Source) -->
+                  <div class="row-header">{source.label.toUpperCase()}</div>
+
+                  <!-- CELLS -->
+                  {#each $agentNodes as target, colIdx}
+                    {@const isSelf = source.id === target.id}
+                    {@const isConnected = $pipelineEdges.some(e => e.from === source.id && e.to === target.id)}
+                    <div
+                      class="cell {isSelf ? 'disabled' : ''} {isConnected ? 'active' : ''}"
+                      onclick={() => {
+                        if (isSelf) return;
+                        if (isConnected) {
+                          removeConnection(source.id, target.id);
+                          addLog('GRAPH', `Connection removed: ${source.label} ⨯ ${target.label}`, 'OK');
+                        } else {
+                          addConnection(source.id, target.id);
+                          addLog('GRAPH', `Connection added: ${source.label} → ${target.label}`, 'OK');
+                        }
+                      }}
+                      role="button"
+                      tabindex={isSelf ? -1 : 0}
+                      onkeydown={(e) => {
+                        if (e.key === 'Enter' && !isSelf) {
+                          if (isConnected) {
+                            removeConnection(source.id, target.id);
+                            addLog('GRAPH', `Connection removed: ${source.label} ⨯ ${target.label}`, 'OK');
+                          } else {
+                            addConnection(source.id, target.id);
+                            addLog('GRAPH', `Connection added: ${source.label} → ${target.label}`, 'OK');
+                          }
+                        }
+                      }}
+                    >
+                      {#if !isSelf}
+                        <div class="led"></div>
+                      {/if}
+                    </div>
+                  {/each}
+                {/each}
+
               </div>
             </div>
           </div>
@@ -597,13 +576,27 @@
       </div>
     {:else if activePane === 'sim'}
       <div id="pane-sim" class="deck-pane">
-        <div style="display:flex; gap:10px; margin-bottom:15px;">
-          <button class="input-std action-btn" onclick={() => addLog('SYSTEM', 'Simulating step 1...')}>▶ STEP EXECUTION</button>
-          <button class="input-std action-btn" onclick={() => addLog('SYSTEM', 'Resetting context...')}>↺ RESET CONTEXT</button>
+        <div class="sim-controls">
+          <button class="input-std action-btn primary" onclick={stepSimulation}>
+            ▶ STEP
+          </button>
+          <button class="input-std action-btn auto" onclick={runSimulation}>
+            ▶▶ RUN AUTO
+          </button>
+          <button class="input-std action-btn warn" onclick={resetSimulation}>
+            ↺ RESET
+          </button>
         </div>
+
+        <!-- Live Telemetry Display -->
         <div class="sim-terminal">
-          &gt; Ready for test vector injection...<br />
-          &gt; Agents loaded: {$agentNodes.length}
+          <div class="term-line">&gt; SYSTEM_STATUS: {$runtimeStore.status}</div>
+          <div class="term-line">&gt; ACTIVE_AGENTS: {$agentNodes.filter(n => n.status === 'running').length}</div>
+          <div class="term-line">&gt; GRAPH_NODES: {$agentNodes.length}</div>
+          {#if $runtimeStore.runId}
+            <div class="term-line highlight">&gt; SESSION_ID: {$runtimeStore.runId}</div>
+          {/if}
+          <div class="term-cursor">_</div>
         </div>
       </div>
     {:else if activePane === 'stats'}
@@ -717,7 +710,23 @@
   .action-btn { width: auto; cursor: pointer; background: var(--paper-ink); color: var(--paper-bg); border: 1px solid var(--paper-ink); }
   .action-btn:hover { background: var(--paper-bg); color: var(--paper-ink); }
   
+  /* Simulation Pane Styles */
+  .sim-controls { display: flex; flex-direction: row; gap: 10px; margin-bottom: 16px; }
+
+  .action-btn.warn { border-color: #d32f2f; color: #d32f2f; background: transparent; }
+  .action-btn.warn:hover { background: #d32f2f; color: var(--paper-bg); }
+
+  .action-btn.primary { border-color: var(--arctic-cyan); color: var(--arctic-cyan); background: rgba(0, 240, 255, 0.05); font-weight: 900; }
+  .action-btn.primary:hover { background: var(--arctic-cyan); color: #000; }
+
+  .action-btn.auto { border-color: var(--alert-amber); color: var(--alert-amber); background: rgba(255, 179, 0, 0.05); font-weight: 700; }
+  .action-btn.auto:hover { background: var(--alert-amber); color: #000; }
+
   .sim-terminal { font-family: var(--font-code); font-size: 11px; color: var(--paper-ink); background: var(--paper-bg); border: 1px solid var(--paper-line); padding: 10px; height: 100px; overflow-y: auto; }
+  .term-line { margin-bottom: 4px; }
+  .term-line.highlight { color: var(--arctic-cyan); }
+  .term-cursor { animation: blink 1s infinite; }
+  @keyframes blink { 0%, 50% { opacity: 1; } 51%, 100% { opacity: 0; } }
 
   .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
   .stat-card { border: 1px solid var(--paper-line); background: var(--paper-bg); padding: 12px; text-align: center; }
@@ -735,34 +744,57 @@
   .loader { width: 16px; height: 16px; border: 2px solid var(--paper-line); border-bottom-color: transparent; border-radius: 50%; display: inline-block; box-sizing: border-box; animation: rotation 1s linear infinite; }
   @keyframes rotation { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
 
-  /* Compact Pipeline Styles */
-  .compact-pane { padding: 12px !important; }
-  .pipeline-compact { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; height: 100%; }
-  .control-col, .topology-col { display: flex; flex-direction: column; gap: 10px; }
-  .compact-section { background: var(--paper-surface-dim); border: 1px solid var(--paper-line); padding: 10px; }
-  .section-mini-header { font-size: 8px; font-weight: 700; color: var(--paper-line); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid var(--paper-line); }
-  .compact-row { display: flex; align-items: center; gap: 6px; }
-  .arrow-sep { color: var(--paper-line); font-size: 12px; font-weight: 600; flex-shrink: 0; }
-  .input-mini { flex: 1; padding: 6px 8px; border: 1px solid var(--paper-line); background: var(--paper-bg); font-family: var(--font-code); font-size: 10px; color: var(--paper-ink); outline: none; height: 28px; }
-  .input-mini:focus { border-color: var(--paper-ink); }
-  .btn-row { display: flex; gap: 6px; margin-top: 6px; }
-  .btn-mini { flex: 1; padding: 6px 10px; border: 1px solid; font-family: var(--font-code); font-size: 10px; font-weight: 600; cursor: pointer; transition: all 0.15s; height: 28px; display: flex; align-items: center; justify-content: center; }
-  .add-btn { background: var(--paper-bg); color: #00C853; border-color: #00C853; }
-  .add-btn:hover:not(:disabled) { background: #00C853; color: var(--paper-bg); }
-  .remove-btn { background: var(--paper-bg); color: #FF6F00; border-color: #FF6F00; }
-  .remove-btn:hover:not(:disabled) { background: #FF6F00; color: var(--paper-bg); }
-  .create-btn { background: var(--paper-bg); color: var(--arctic-cyan); border-color: var(--arctic-cyan); }
-  .create-btn:hover:not(:disabled) { background: var(--arctic-cyan); color: var(--paper-bg); }
-  .delete-btn { background: var(--paper-bg); color: #d32f2f; border-color: #d32f2f; flex: 0 0 32px; }
-  .delete-btn:hover:not(:disabled) { background: #d32f2f; color: var(--paper-bg); }
-  .delete-btn:disabled { opacity: 0.35; cursor: not-allowed; }
-  .topo-stats { display: flex; gap: 12px; margin-bottom: 8px; padding: 8px; background: var(--paper-bg); border: 1px solid var(--paper-line); }
-  .topo-stat { display: flex; flex-direction: column; align-items: center; flex: 1; }
-  .topo-num { font-size: 16px; font-weight: 700; color: var(--paper-ink); font-family: var(--font-code); }
-  .topo-label { font-size: 8px; color: var(--paper-line); text-transform: uppercase; margin-top: 2px; }
-  .edge-list { background: var(--paper-bg); border: 1px solid var(--paper-line); padding: 6px; max-height: 110px; overflow-y: auto; }
-  .edge-micro { font-family: var(--font-code); font-size: 9px; color: var(--paper-ink); padding: 3px 6px; margin-bottom: 3px; background: var(--paper-surface); border-left: 2px solid var(--paper-line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .edge-micro.more { color: var(--paper-line); font-style: italic; border-left-color: transparent; text-align: center; }
+  /* Patch Bay Matrix Styles */
+  #pane-pipeline { padding: 0 !important; overflow: hidden; }
+  .deck-pane-wrapper { display: flex; height: 100%; overflow: hidden; }
+
+  /* LEFT COL: ACTIONS & LIST */
+  .sidebar { width: 200px; border-right: 1px solid var(--paper-line); padding: 12px; display: flex; flex-direction: column; gap: 12px; background: var(--paper-surface); flex-shrink: 0; }
+  .section-header { font-size: 10px; font-weight: 700; color: var(--paper-line); text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid var(--paper-line); padding-bottom: 4px; margin-bottom: 4px; }
+  .node-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+  .node-item { display: flex; align-items: center; justify-content: space-between; background: var(--paper-surface-dim); border: 1px solid var(--paper-line); padding: 6px 8px; font-size: 10px; color: var(--paper-ink); cursor: default; transition: border-color 0.2s; }
+  .node-item:hover { border-color: var(--paper-ink); }
+  .node-item .del-btn { opacity: 0.3; cursor: pointer; font-size: 16px; line-height: 1; transition: opacity 0.2s, color 0.2s; }
+  .node-item .del-btn:hover { opacity: 1; color: #d32f2f; }
+  .add-node-btn { background: transparent; border: 1px dashed var(--paper-line); color: var(--paper-line); padding: 8px; font-size: 10px; cursor: pointer; text-align: center; text-transform: uppercase; transition: all 0.2s; font-family: var(--font-code); font-weight: 600; }
+  .add-node-btn:hover { border-color: var(--arctic-cyan); color: var(--arctic-cyan); }
+
+  /* RIGHT COL: THE PATCH BAY (MATRIX) */
+  .matrix-wrapper { flex: 1; display: flex; flex-direction: column; overflow: hidden; position: relative; }
+  .matrix-scroll { overflow: auto; padding: 10px 12px; scrollbar-width: thin; scrollbar-color: var(--paper-line) var(--paper-bg); }
+
+  /* THE GRID */
+  .patch-grid { display: grid; gap: 1px; }
+
+  /* CORNER (Empty) */
+  .corner-cell { grid-column: 1; grid-row: 1; border-bottom: 1px solid var(--paper-line); border-right: 1px solid var(--paper-line); background: var(--paper-bg); z-index: 20; position: sticky; top: 0; left: 0; height: 50px; }
+  .corner-hint { position: absolute; bottom: 2px; right: 4px; font-size: 7px; color: var(--paper-line); text-align: right; line-height: 1.1; }
+
+  /* COLUMN HEADERS (Targets) */
+  .col-header { grid-row: 1; height: 50px; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 6px; position: sticky; top: 0; background: var(--paper-bg); z-index: 10; border-bottom: 1px solid var(--paper-line); }
+  .v-text { writing-mode: vertical-rl; transform: rotate(180deg); font-size: 8px; color: var(--paper-line); font-weight: 700; white-space: nowrap; letter-spacing: 0.5px; cursor: default; }
+
+  /* ROW HEADERS (Sources) */
+  .row-header { grid-column: 1; display: flex; align-items: center; justify-content: flex-end; padding-right: 8px; font-size: 8px; color: var(--paper-line); font-weight: 700; position: sticky; left: 0; background: var(--paper-bg); z-index: 10; border-right: 1px solid var(--paper-line); text-transform: uppercase; }
+
+  /* THE CELL */
+  .cell { width: 28px; height: 28px; background: var(--paper-surface-dim); border: 1px solid var(--paper-line); cursor: pointer; position: relative; display: flex; align-items: center; justify-content: center; transition: all 0.1s; outline: none; }
+  .cell:hover:not(.disabled) { border-color: var(--paper-ink); background: var(--paper-surface); }
+  .cell:focus-visible:not(.disabled) { border-color: var(--arctic-cyan); box-shadow: 0 0 0 2px rgba(0, 240, 255, 0.2); }
+
+  /* Disabled (Self-Loop) */
+  .cell.disabled { background: repeating-linear-gradient( 45deg, var(--paper-bg), var(--paper-bg) 2px, var(--paper-line) 2px, var(--paper-line) 3px ); cursor: not-allowed; opacity: 0.3; }
+  .cell.disabled:hover { border-color: var(--paper-line); }
+
+  /* Active (Connected) */
+  .cell.active { background: rgba(0, 240, 255, 0.1); border-color: var(--arctic-cyan); box-shadow: inset 0 0 8px rgba(0, 240, 255, 0.2); }
+
+  /* The "LED" inside the cell */
+  .led { width: 6px; height: 6px; background: var(--paper-line); border-radius: 50%; transition: all 0.2s; }
+  .cell.active .led { background: var(--arctic-cyan); box-shadow: 0 0 6px var(--arctic-cyan); }
+
+  /* Hover Guides */
+  .cell:not(.disabled):hover::after { content: ''; position: absolute; top: 0; left: 0; right: 0; bottom: 0; border: 1px solid var(--paper-ink); pointer-events: none; }
   .directive-port-config { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--paper-line); }
   .port-toggle { padding: 6px 14px; border: 1px solid; font-family: var(--font-code); font-size: 10px; font-weight: 700; cursor: pointer; transition: all 0.2s; letter-spacing: 0.5px; }
   .port-toggle.port-open { background: var(--paper-bg); color: var(--arctic-lilac, #00E5FF); border-color: var(--arctic-cyan, #00E5FF); box-shadow: 0 0 8px rgba(0, 229, 255, 0.3); }
