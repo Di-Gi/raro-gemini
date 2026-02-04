@@ -38,13 +38,20 @@ impl DAG {
         Ok(())
     }
 
-    /// Add an edge from source to target
+    /// Add an edge from source to target (Idempotent)
     pub fn add_edge(&mut self, from: String, to: String) -> Result<(), DAGError> {
         if !self.nodes.contains(&from) {
             return Err(DAGError::InvalidNode(from));
         }
         if !self.nodes.contains(&to) {
             return Err(DAGError::InvalidNode(to));
+        }
+
+        // Idempotency Check: Don't add if already exists
+        if let Some(targets) = self.edges.get(&from) {
+            if targets.contains(&to) {
+                return Ok(());
+            }
         }
 
         // Check for cycle before adding
@@ -65,6 +72,14 @@ impl DAG {
             }
         }
         Err(DAGError::EdgeNotFound(from.to_string(), to.to_string()))
+    }
+
+    /// Clear all incoming edges for a specific node.
+    /// Essential for "Update" operations where dependencies might change.
+    pub fn clear_incoming_edges(&mut self, node_id: &str) {
+        for targets in self.edges.values_mut() {
+            targets.retain(|target| target != node_id);
+        }
     }
 
     /// Get all direct children (dependents) of a node
@@ -207,5 +222,80 @@ mod tests {
         let result = dag.add_edge("b".to_string(), "a".to_string());
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_add_edge_idempotency() {
+        let mut dag = DAG::new();
+        dag.add_node("a".to_string()).unwrap();
+        dag.add_node("b".to_string()).unwrap();
+
+        // Add same edge twice
+        dag.add_edge("a".to_string(), "b".to_string()).unwrap();
+        dag.add_edge("a".to_string(), "b".to_string()).unwrap();
+
+        // Should only have one edge
+        let edges = dag.export_edges();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0], ("a".to_string(), "b".to_string()));
+    }
+
+    #[test]
+    fn test_clear_incoming_edges() {
+        let mut dag = DAG::new();
+        dag.add_node("a".to_string()).unwrap();
+        dag.add_node("b".to_string()).unwrap();
+        dag.add_node("c".to_string()).unwrap();
+        dag.add_node("d".to_string()).unwrap();
+
+        // Create edges: a->c, b->c, c->d
+        dag.add_edge("a".to_string(), "c".to_string()).unwrap();
+        dag.add_edge("b".to_string(), "c".to_string()).unwrap();
+        dag.add_edge("c".to_string(), "d".to_string()).unwrap();
+
+        // Clear all incoming edges to 'c' (a->c and b->c should be removed)
+        dag.clear_incoming_edges("c");
+
+        let edges = dag.export_edges();
+        // Only c->d should remain
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0], ("c".to_string(), "d".to_string()));
+
+        // Verify c has no dependencies now
+        let deps = dag.get_dependencies("c");
+        assert_eq!(deps.len(), 0);
+    }
+
+    #[test]
+    fn test_delegation_update_pattern() {
+        let mut dag = DAG::new();
+
+        // Initial setup: parent -> pending_node -> child
+        dag.add_node("parent".to_string()).unwrap();
+        dag.add_node("pending_node".to_string()).unwrap();
+        dag.add_node("child".to_string()).unwrap();
+
+        dag.add_edge("parent".to_string(), "pending_node".to_string()).unwrap();
+        dag.add_edge("pending_node".to_string(), "child".to_string()).unwrap();
+
+        // Simulate UPDATE operation (agent wants to change dependencies)
+        // Step 1: Clear old incoming edges
+        dag.clear_incoming_edges("pending_node");
+
+        // Step 2: Add new dependencies (now depends on child instead)
+        // This would normally fail due to cycle, but let's test a valid rewiring
+        // Add a new intermediate node
+        dag.add_node("intermediate".to_string()).unwrap();
+        dag.add_edge("parent".to_string(), "intermediate".to_string()).unwrap();
+        dag.add_edge("intermediate".to_string(), "pending_node".to_string()).unwrap();
+
+        // Verify the rewiring worked
+        let deps = dag.get_dependencies("pending_node");
+        assert_eq!(deps.len(), 1);
+        assert_eq!(deps[0], "intermediate");
+
+        // Verify topology is still valid
+        let order = dag.topological_sort().unwrap();
+        assert_eq!(order.len(), 4);
     }
 }

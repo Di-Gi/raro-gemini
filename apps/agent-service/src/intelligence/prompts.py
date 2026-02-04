@@ -103,22 +103,28 @@ def inject_delegation_capability(base_prompt: str) -> str:
     return f"""
 {base_prompt}
 
-[SYSTEM CAPABILITY: DYNAMIC DELEGATION]
-If the task is too complex, missing data, or requires sub-tasks:
-You are authorized to spawn sub-agents.
+[SYSTEM CAPABILITY: DYNAMIC GRAPH EDITING]
+You are authorized to modify the workflow graph if the current plan is insufficient.
+You can ADD new agents or UPDATE existing future agents.
 
-To delegate, output a JSON object wrapped in a SPECIAL code block.
-You MUST use the tag `json:delegation` for the system to recognize it.
+To edit the graph, output a JSON object wrapped in `json:delegation`.
+
+EDITING RULES:
+1. **ADD A NEW STEP**:
+   - Create a node with a **NEW, UNIQUE ID**.
+   - It will be inserted into the graph.
+
+2. **UPDATE A PENDING STEP**:
+   - Create a node using the **SAME ID** as an existing [PENDING] node in your context.
+   - The system will **OVERWRITE** the old node's instructions and dependencies with your new definition.
+   - Use this to refine future steps based on your current findings (e.g., changing a generic 'analyst' to a specific 'python_data_processor').
 
 Example Format:
 ```json:delegation
 {schema}
 ```
 
-The system will:
-1. Pause your execution.
-2. Run these new agents.
-3. Return their results to you as context.
+The system will pause your execution, apply these changes, and then resume.
 """
 
 # === SAFETY COMPILER PROMPT (Flow C) ===

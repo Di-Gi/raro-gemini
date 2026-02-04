@@ -514,7 +514,9 @@ export function connectRuntimeWebSocket(runId: string, manualMode: boolean = fal
   console.log('[WS] Connecting to:', url);
 
   // ** MOCK SWITCHING **
-  if (USE_MOCK) {
+  // Force MockWebSocket if we are in manual simulation mode OR if the global mock flag is on.
+  // The Simulation pane relies on client-side logic found only in MockWebSocket.
+  if (USE_MOCK || manualMode) {
     addLog('SYSTEM', `Initializing MOCK environment (Manual: ${manualMode})...`, 'DEBUG');
     ws = new MockWebSocket(url, manualMode, topology);
   } else {
