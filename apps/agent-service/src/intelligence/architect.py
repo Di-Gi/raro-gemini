@@ -50,12 +50,31 @@ class ArchitectEngine:
             raw_text = response.text or "{}"
             data = json.loads(raw_text)
 
-            # Defensive Coercion: Ensure roles match the Enum
+            # === SECURE IDENTITY COERCION ===
+            valid_prefixes = ["research_", "analyze_", "coder_", "writer_", "master_"]
+
             if "agents" in data:
-                valid_roles = [role.value for role in AgentRole]
                 for agent in data["agents"]:
+                    aid = agent.get("id", "").lower()
+                    prompt_text = agent.get("prompt", "").lower()
+
+                    # 1. Enforcement: If no valid prefix, detect intent and force one
+                    if not any(aid.startswith(p) for p in valid_prefixes):
+                        original_id = aid
+                        if any(k in prompt_text or k in aid for k in ["search", "find", "web", "lookup"]):
+                            agent["id"] = f"research_{aid}"
+                        elif any(k in prompt_text or k in aid for k in ["code", "script", "file", "save", "python"]):
+                            agent["id"] = f"coder_{aid}"
+                        elif any(k in prompt_text or k in aid for k in ["plot", "calc", "math", "viz", "analyze"]):
+                            agent["id"] = f"analyze_{aid}"
+                        else:
+                            agent["id"] = f"analyze_{aid}" # Secure default
+
+                        logger.warning(f"ID COERCION: '{original_id}' -> '{agent['id']}'")
+
+                    # 2. Role Coercion (Ensure Enum safety)
+                    valid_roles = [role.value for role in AgentRole]
                     if agent.get("role") not in valid_roles:
-                        logger.warning(f"Coercing invalid role '{agent.get('role')}' to 'worker' for agent {agent.get('id')}")
                         agent["role"] = AgentRole.WORKER.value
 
             manifest = WorkflowManifest(**data)

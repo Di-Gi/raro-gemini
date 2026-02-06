@@ -1169,46 +1169,47 @@ impl RARORuntime {
             full_file_paths.extend(dynamic_file_mounts);
         }
 
-        let mut tools = agent_config.tools.clone();
+        // === AUTHORITATIVE IDENTITY PROVISIONING ===
+        // The Kernel ignores the tools requested by the Architect and provisions
+        // tools based solely on the agent's identity prefix. This is the "Air-Gap"
+        // between the LLM's imagination and the hardware's capability.
 
-        // === SMART BASELINE: Only read/list are universal ===
-        // write_file is now a privileged capability
-        let baseline_tools = vec!["read_file", "list_files"];
-        for baseline in baseline_tools {
-            if !tools.contains(&baseline.to_string()) {
-                tools.push(baseline.to_string());
-            }
+        let mut tools = Vec::new();
+
+        // 1. UNIVERSAL BASELINE (Read-Only)
+        tools.push("read_file".to_string());
+        tools.push("list_files".to_string());
+
+        // 2. AUTHORITATIVE IDENTITY PROVISIONING
+        let id_lower = agent_id.to_lowercase();
+
+        // Research Class
+        if id_lower.starts_with("research_") {
+            tools.push("web_search".to_string());
         }
 
-        // === PRIVILEGED WRITE ACCESS ===
-        // Only give write capability if:
-        // 1. It's explicitly in the config (Architect asked for it)
-        // 2. OR The agent ID contains "writer", "coder", "save", "generate"
-        // 3. OR The role is Orchestrator (often needs to save plans)
-        let is_privileged_writer = agent_config.role == crate::models::AgentRole::Orchestrator ||
-                                   agent_id.contains("writer") ||
-                                   agent_id.contains("coder") ||
-                                   agent_id.contains("save") ||
-                                   agent_id.contains("generate") ||
-                                   tools.contains(&"write_file".to_string());
-
-        if is_privileged_writer {
-            if !tools.contains(&"write_file".to_string()) {
-                tools.push("write_file".to_string());
-                tracing::debug!("Agent {}: Granted write_file (privileged writer)", agent_id);
-            }
-            // Writers often need python for formatting/PDFs
+        // Logic/Math Class
+        if id_lower.starts_with("analyze_") || id_lower.starts_with("coder_") {
             if !tools.contains(&"execute_python".to_string()) {
                 tools.push("execute_python".to_string());
-                tracing::debug!("Agent {}: Added execute_python (writer capability)", agent_id);
             }
-        } else {
-            // Ensure non-writers CANNOT write, even if they hallucinate the capability
-            tools.retain(|t| t != "write_file");
-            tracing::debug!("Agent {}: write_file restricted (not a privileged writer)", agent_id);
         }
 
-        // Dynamic artifacts require python for processing
+        // Output/I-O Class
+        if id_lower.starts_with("coder_") || id_lower.starts_with("writer_") {
+            tools.push("write_file".to_string());
+        }
+
+        // Admin Class
+        if id_lower.starts_with("master_") {
+            for t in ["web_search", "execute_python", "write_file"] {
+                if !tools.contains(&t.to_string()) {
+                    tools.push(t.to_string());
+                }
+            }
+        }
+
+        // Dynamic artifacts require python for processing (override for special case)
         if has_dynamic_artifacts && !tools.contains(&"execute_python".to_string()) {
             tools.push("execute_python".to_string());
             tracing::info!(
@@ -1217,6 +1218,8 @@ impl RARORuntime {
                 dynamic_artifact_count
             );
         }
+
+        tracing::info!("Authoritatively provisioned tools for {}: {:?}", agent_id, tools);
 
         let graph_view = self.generate_graph_context(
             run_id,

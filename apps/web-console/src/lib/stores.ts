@@ -133,6 +133,14 @@ function triggerGraphFlash() {
     setTimeout(() => graphFlash.set(false), 1000); // Flash for 1 second
 }
 
+function generateId() {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+        return crypto.randomUUID();
+    }
+    // Fallback for non-HTTPS (raw IP) environments
+    return Math.random().toString(36).substring(2) + Date.now().toString(36);
+}
+
 // === ACTIONS ===
 
 // [[NEW]] Template Applicator
@@ -312,10 +320,11 @@ export function overwriteGraphFromManifest(manifest: WorkflowConfig) {
 
 // HITL (Human-in-the-Loop) Actions
 export async function resumeRun(runId: string) {
-    if (USE_MOCK) {
+    const isSim = USE_MOCK || runId.startsWith('sim-');
+
+    if (isSim) {
         runtimeStore.update(s => ({ ...s, status: 'RUNNING' }));
         addLog('KERNEL', 'Mock: Resuming execution...', 'SYS');
-        // CHANGE: Actually trigger the mock engine
         await mockResumeRun(runId);
         return;
     }
@@ -335,10 +344,11 @@ export async function resumeRun(runId: string) {
 }
 
 export async function stopRun(runId: string) {
-    if (USE_MOCK) {
+    const isSim = USE_MOCK || runId.startsWith('sim-');
+
+    if (isSim) {
         runtimeStore.update(s => ({ ...s, status: 'FAILED' }));
         addLog('KERNEL', 'Mock: Run terminated by operator', 'SYS');
-        // CHANGE: Actually trigger the mock engine
         await mockStopRun(runId);
         return;
     }
@@ -467,7 +477,7 @@ export function addLog(
 
     // 3. Standard Insertion
     return [...currentLogs, {
-      id: customId || crypto.randomUUID(),
+      id: customId || generateId(),
       timestamp: new Date().toISOString(),
       role,
       message,

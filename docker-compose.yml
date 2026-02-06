@@ -112,7 +112,7 @@ services:
 
   # 4. THE FACE: Svelte Web Console
   # Reactive UI for visualization and control.
-  web:
+  web-console:
     build:
       context: ./apps/web-console
       dockerfile: Dockerfile.dev  # Use dev Dockerfile with hot reload
@@ -180,6 +180,8 @@ services:
       - web-console
       - kernel
       - agents
+    networks:
+      - raro-net
 
 networks:
   raro-net:

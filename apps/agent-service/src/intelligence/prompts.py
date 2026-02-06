@@ -8,6 +8,15 @@ try:
 except ImportError:
     get_tool_definitions_for_prompt = lambda x: "[]"
 
+# === IDENTITY REGISTRY ===
+AGENT_IDENTITY_POOL = {
+    "research_": "For gathering external info. Required for internet access. [Grants: web_search]",
+    "analyze_":  "For data processing and math. Required for calculations. [Grants: execute_python]",
+    "coder_":    "For building files and apps. [Grants: execute_python, write_file]",
+    "writer_":   "For report generation and logic synthesis. [Grants: write_file]",
+    "master_":   "Orchestrator class. Administrative access. [Grants: ALL TOOLS + Delegation]"
+}
+
 def get_schema_instruction(model_class) -> str:
     """
     Extracts a clean JSON schema from a Pydantic model to inject into prompts.
@@ -22,59 +31,35 @@ def get_schema_instruction(model_class) -> str:
 # === ARCHITECT PROMPT (Flow A) ===
 def render_architect_prompt(user_query: str) -> str:
     schema = get_schema_instruction(WorkflowManifest)
+    pool_str = "\n".join([f"- {k}: {v}" for k, v in AGENT_IDENTITY_POOL.items()])
+
     return f"""
 ROLE: System Architect
-GOAL: Design a multi-agent Directed Acyclic Graph (DAG) to solve the user's request.
+GOAL: Design a multi-agent Directed Acyclic Graph (DAG) for: "{user_query}"
 
-USER REQUEST: "{user_query}"
+[IDENTITY CONTRACT] (CRITICAL)
+You do not assign tools. You assign identities. Capabilities are provisioned by the Kernel based solely on the ID prefix.
+Every agent 'id' you create MUST start with a prefix from this pool:
 
-INSTRUCTIONS:
-1. Break the request into atomic steps.
-2. For each agent, you must use one of these STRUCTURAL ROLES:
-   - 'worker': For standard tasks (Research, Analysis, Coding).
-   - 'orchestrator': Only for complex sub-management.
-   - 'observer': For monitoring/logging.
-3. Use the 'id' field to define the functional role (e.g., 'web_researcher', 'data_analyst').
-4. Define dependencies (e.g., 'data_analyst' depends_on ['web_researcher']).
-5. Select model: 'gemini-2.5-flash' (speed) or 'gemini-2.5-flash-lite' (reasoning).
-6. TOOL ASSIGNMENT RULES (CRITICAL):
-   Available Tools: ['execute_python', 'web_search', 'read_file', 'write_file', 'list_files']
+{pool_str}
 
-   ASSIGNMENT GUIDELINES:
-   - 'execute_python': REQUIRED for ANY agent that needs to:
-     * Create files (images, graphs, PDFs, CSV, JSON)
-     * Perform calculations or data analysis
-     * Process or transform data
-     * Generate visualizations
-     When in doubt, INCLUDE this tool - it's the most versatile.
+ASSIGNMENT RULES:
+1. 'research_': MUST use if the agent needs to search the web or verify facts.
+2. 'analyze_': MUST use for math, visualization (matplotlib), or processing data via Python.
+3. 'coder_': MUST use if the agent needs to write scripts AND save them as files.
+4. 'writer_': Use for summarizing or creating Markdown reports without using Python.
+5. 'master_': Use only for the root orchestrator or complex sub-managers.
 
-   - 'web_search': REQUIRED for agents that need:
-     * Real-time information or current events
-     * Fact verification
-     * Research from the internet
-
-   - 'read_file', 'write_file', 'list_files':
-     * Baseline tools are auto-assigned by the system
-     * You CAN explicitly include them, but it's optional
-
-   - IMPORTANT: Be GENEROUS with tool assignments. If an agent MIGHT need a tool, assign it.
-     Better to over-assign than under-assign (prevents UNEXPECTED_TOOL_CALL errors).
-
-7. PROMPT CONSTRUCTION:
-   - For agents with 'execute_python', write prompts like: "Write and EXECUTE Python code to..."
-   - Do NOT ask agents to "output code" or "describe the approach"
-   - Ask for RESULTS, not explanations
-
-8. STRICT OUTPUT PROTOCOL:
-   - Agents MUST NOT output Python code in Markdown blocks (```python).
-   - Agents MUST use the 'execute_python' tool for all logic.
-   - The pipeline relies on the *Tool Result* to pass data to the next agent. Markdown text is ignored by the compiler.
+PROMPT CONSTRUCTION:
+- For agents with 'analyze_' or 'coder_', write prompts like: "Use your Python sandbox to..."
+- For agents with 'research_', write prompts like: "Search for..."
+- Focus on outcomes. Markdown text is ignored by the execution engine; only Tool Results persist data.
 
 OUTPUT REQUIREMENT:
 You must output PURE JSON matching this schema:
 {schema}
 
-IMPORTANT: The 'role' field MUST be exactly 'worker', 'orchestrator', or 'observer'.
+IMPORTANT: Ensure IDs are descriptive and unique, e.g., 'research_market_trends', 'analyze_latency_variance'.
 """
 #
 # def render_architect_prompt(user_query: str) -> str:
@@ -104,27 +89,17 @@ def inject_delegation_capability(base_prompt: str) -> str:
 {base_prompt}
 
 [SYSTEM CAPABILITY: DYNAMIC GRAPH EDITING]
-You are authorized to modify the workflow graph if the current plan is insufficient.
-You can ADD new agents or UPDATE existing future agents.
-
+You are authorized to modify the workflow graph.
 To edit the graph, output a JSON object wrapped in `json:delegation`.
 
-EDITING RULES:
-1. **ADD A NEW STEP**:
-   - Create a node with a **NEW, UNIQUE ID**.
-   - It will be inserted into the graph.
-
-2. **UPDATE A PENDING STEP**:
-   - Create a node using the **SAME ID** as an existing [PENDING] node in your context.
-   - The system will **OVERWRITE** the old node's instructions and dependencies with your new definition.
-   - Use this to refine future steps based on your current findings (e.g., changing a generic 'analyst' to a specific 'python_data_processor').
+NEW NODE RULES:
+- You must follow the [IDENTITY CONTRACT]. New node IDs must start with 'research_', 'analyze_', 'coder_', or 'writer_'.
+- You cannot spawn 'master_' nodes.
 
 Example Format:
 ```json:delegation
 {schema}
 ```
-
-The system will pause your execution, apply these changes, and then resume.
 """
 
 # === SAFETY COMPILER PROMPT (Flow C) ===
