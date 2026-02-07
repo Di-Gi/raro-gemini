@@ -4,7 +4,7 @@
 // Dependencies: std::fs, std::path
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::io;
 use std::io::Write;
 use serde::{Serialize, Deserialize};
@@ -38,9 +38,32 @@ pub struct ArtifactFile {
 pub struct WorkspaceInitializer;
 
 impl WorkspaceInitializer {
+    // === 1. LAYERED PATH RESOLUTION ===
+    /// Resolves a filename by checking Private Storage first, then Public Library.
+    fn resolve_library_path(client_id: &str, filename: &str) -> Option<PathBuf> {
+        // Sanitize input
+        let safe_name = Path::new(filename).file_name()?;
+
+        // Path A: User Private Storage
+        let private_path = PathBuf::from(format!("{}/library/{}/{}", STORAGE_ROOT, client_id, safe_name.to_string_lossy()));
+        if private_path.exists() {
+            return Some(private_path);
+        }
+
+        // Path B: Public Shared Storage
+        let public_path = PathBuf::from(format!("{}/library/public/{}", STORAGE_ROOT, safe_name.to_string_lossy()));
+        if public_path.exists() {
+            return Some(public_path);
+        }
+
+        None
+    }
+
+    // === 2. INITIALIZE SESSION ===
     /// Initializes a new session workspace for a given run_id.
     /// Creates directory structure and copies requested files from the library.
-    pub fn init_run_session(run_id: &str, library_files: Vec<String>) -> io::Result<()> {
+    /// Updated signature to accept client_id for scoped file resolution.
+    pub fn init_run_session(run_id: &str, library_files: Vec<String>, client_id: &str) -> io::Result<()> {
         let session_path = format!("{}/sessions/{}", STORAGE_ROOT, run_id);
         let input_path = format!("{}/input", session_path);
         let output_path = format!("{}/output", session_path);
@@ -48,52 +71,77 @@ impl WorkspaceInitializer {
         // 1. Create Directories (Idempotent)
         fs::create_dir_all(&input_path)?;
         fs::create_dir_all(&output_path)?;
-        
-        tracing::info!("Created workspace for run {}: {}", run_id, session_path);
 
-        // 2. Copy requested files from Library -> Session Input
+        tracing::info!("Initializing workspace for run {} (Client: {})", run_id, client_id);
+
+        // 2. Copy requested files from Library -> Session Input using layered resolver
         for filename in library_files {
-            let src = format!("{}/library/{}", STORAGE_ROOT, filename);
             let dest = format!("{}/{}", input_path, filename);
-            
-            if Path::new(&src).exists() {
-                // We copy to ensure the run is an isolated snapshot
-                // Changes in session don't affect library
-                match fs::copy(&src, &dest) {
-                    Ok(_) => tracing::info!("Attached file {} to run {}", filename, run_id),
+
+            // Use the layered resolver
+            if let Some(src_path) = Self::resolve_library_path(client_id, &filename) {
+                match fs::copy(&src_path, &dest) {
+                    Ok(_) => tracing::info!("Attached {:?} to run {}", src_path, run_id),
                     Err(e) => tracing::error!("Failed to copy {}: {}", filename, e),
                 }
             } else {
-                tracing::warn!("Requested file {} not found in library", filename);
-                // We log warning but don't fail the run; agent might handle missing file gracefully
+                tracing::warn!("File '{}' not found in Private or Public library for client {}", filename, client_id);
             }
         }
 
         Ok(())
     }
     
-    /// Securely saves a byte buffer to the Library folder.
-    pub async fn save_to_library(filename: &str, data: &[u8]) -> io::Result<()> {
-        // 1. Sanitize Filename (Basic)
+    // === 3. SCOPED UPLOAD ===
+    /// Securely saves a byte buffer to the client-scoped Library folder.
+    pub async fn save_to_library(client_id: &str, filename: &str, data: &[u8]) -> io::Result<()> {
         let safe_name = Path::new(filename).file_name()
             .ok_or(io::Error::new(io::ErrorKind::InvalidInput, "Invalid filename"))?
             .to_string_lossy();
 
-        if safe_name.contains("..") || safe_name.starts_with("/") {
-             return Err(io::Error::new(io::ErrorKind::PermissionDenied, "Invalid path"));
+        if safe_name.contains("..") {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "Invalid path"));
         }
 
-        // 2. Ensure Library Dir Exists
-        let lib_path = format!("{}/library", STORAGE_ROOT);
-        fs::create_dir_all(&lib_path)?;
+        // Save SPECIFICALLY to the client's folder
+        let user_lib_path = format!("{}/library/{}", STORAGE_ROOT, client_id);
+        fs::create_dir_all(&user_lib_path)?;
 
-        // 3. Write File
-        let target_path = format!("{}/{}", lib_path, safe_name);
+        let target_path = format!("{}/{}", user_lib_path, safe_name);
         let mut file = fs::File::create(&target_path)?;
         file.write_all(data)?;
-        
-        tracing::info!("Uploaded file to library: {}", target_path);
+
+        tracing::info!("File uploaded to private scope ({}): {}", client_id, target_path);
         Ok(())
+    }
+
+    // === 4. LISTING ===
+    /// Lists all files accessible to a client (private + public merged)
+    pub async fn list_scoped_files(client_id: &str) -> io::Result<Vec<String>> {
+        let mut file_set = std::collections::HashSet::new();
+
+        // Helper to read a dir and insert into set
+        let mut read_dir = |path: String| {
+            if let Ok(entries) = fs::read_dir(path) {
+                for entry in entries.flatten() {
+                    if let Ok(name) = entry.file_name().into_string() {
+                        if !name.starts_with('.') {
+                            file_set.insert(name);
+                        }
+                    }
+                }
+            }
+        };
+
+        // 1. Read Public
+        read_dir(format!("{}/library/public", STORAGE_ROOT));
+
+        // 2. Read Private (overwrites duplicates in set, effectively merging)
+        read_dir(format!("{}/library/{}", STORAGE_ROOT, client_id));
+
+        let mut files: Vec<String> = file_set.into_iter().collect();
+        files.sort();
+        Ok(files)
     }
 
     /// Optional: Cleanup routine for old sessions (commented until used)

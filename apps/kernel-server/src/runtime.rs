@@ -245,7 +245,7 @@ impl RARORuntime {
 
     // === EXECUTION LOGIC ===
 
-    pub fn start_workflow(self: &Arc<Self>, config: WorkflowConfig) -> Result<String, String> {
+    pub fn start_workflow(self: &Arc<Self>, config: WorkflowConfig, client_id: &str) -> Result<String, String> {
         // Validate workflow structure
         let mut dag = DAG::new();
         // Add all nodes
@@ -273,9 +273,13 @@ impl RARORuntime {
         // === RFS INITIALIZATION ===
         // Create the session folder and copy files
 
-        if let Err(e) = fs_manager::WorkspaceInitializer::init_run_session(&run_id, config.attached_files.clone()) {
-             tracing::error!("Failed to initialize workspace for {}: {}", run_id, e);
-             return Err(format!("FileSystem Initialization Error: {}", e));
+        if let Err(e) = fs_manager::WorkspaceInitializer::init_run_session(
+            &run_id,
+            config.attached_files.clone(),
+            client_id // <--- PASS DOWN
+        ) {
+             tracing::error!("Workspace init failed: {}", e);
+             return Err(format!("FS Error: {}", e));
         }
         // Store workflow and DAG
 

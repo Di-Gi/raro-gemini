@@ -11,6 +11,7 @@ mod observability;
 mod events;
 mod registry;
 mod fs_manager; // Register new module
+mod security; // Session identity extractor
 
 use axum::{
     Router,
@@ -161,7 +162,8 @@ async fn main() {
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods([Method::GET, Method::POST, Method::DELETE])
-        .allow_headers(Any);
+        .allow_headers(Any)
+        .expose_headers(Any); // Allow custom headers like X-RARO-CLIENT-ID
 
     // Build router
     let app = Router::new()

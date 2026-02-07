@@ -1,6 +1,36 @@
 // [[RARO]]/apps/web-console/src/lib/api.ts
 import { mockStartRun, mockGetArtifact, mockResumeRun, mockStopRun, mockGetLibraryFiles, getMockGeneratedFile } from './mock-api';
 
+// --- 1. SESSION IDENTITY LOGIC ---
+const STORAGE_KEY = 'raro_session_id';
+
+function getClientId(): string {
+    if (typeof localStorage === 'undefined') return 'cli-mode'; // SSR safety
+    let id = localStorage.getItem(STORAGE_KEY);
+    if (!id) {
+        id = crypto.randomUUID();
+        localStorage.setItem(STORAGE_KEY, id);
+        console.log('[RARO] New Session Identity Created:', id);
+    }
+    return id;
+}
+
+const SESSION_ID = getClientId();
+
+// --- 2. AUTHENTICATED FETCH WRAPPER ---
+async function secureFetch(url: string, options: RequestInit = {}): Promise<Response> {
+    const headers = new Headers(options.headers || {});
+
+    // Inject the Session ID
+    headers.set('X-RARO-CLIENT-ID', SESSION_ID);
+
+    // Ensure JSON content type if not set (convenience)
+    if (!headers.has('Content-Type') && !(options.body instanceof FormData)) {
+        headers.set('Content-Type', 'application/json');
+    }
+
+    return fetch(url, { ...options, headers });
+}
 
 const KERNEL_API = import.meta.env.VITE_KERNEL_URL || '/api';
 const AGENT_API = import.meta.env.VITE_AGENT_URL || '/agent-api';
@@ -42,11 +72,8 @@ export async function startRun(config: WorkflowConfig): Promise<{ success: boole
   }
 
   try {
-    const res = await fetch(`${KERNEL_API}/runtime/start`, {
+    const res = await secureFetch(`${KERNEL_API}/runtime/start`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
       body: JSON.stringify(config),
     });
 
@@ -182,7 +209,7 @@ export async function getLibraryFiles(): Promise<string[]> {
     }
 
     try {
-        const res = await fetch(`${KERNEL_API}/runtime/library`);
+        const res = await secureFetch(`${KERNEL_API}/runtime/library`);
         if (!res.ok) throw new Error('Failed to fetch library');
         const data = await res.json();
         return data.files || [];
@@ -202,9 +229,9 @@ export async function uploadFile(file: File): Promise<string> {
     formData.append('file', file);
 
     try {
-        const res = await fetch(`${KERNEL_API}/runtime/library/upload`, {
+        const res = await secureFetch(`${KERNEL_API}/runtime/library/upload`, {
             method: 'POST',
-            body: formData, // Fetch automatically sets Content-Type to multipart/form-data
+            body: formData, // secureFetch handles the auth header, browser sets Content-Type for FormData
         });
 
         if (!res.ok) {
@@ -246,7 +273,7 @@ export async function getAllArtifacts(): Promise<ArtifactMetadata[]> {
     }
 
     try {
-        const res = await fetch(`${KERNEL_API}/runtime/artifacts`);
+        const res = await secureFetch(`${KERNEL_API}/runtime/artifacts`);
         if (!res.ok) throw new Error('Failed to fetch artifacts');
         const data = await res.json();
         return data.artifacts.map((a: any) => a.metadata);
@@ -280,7 +307,7 @@ export async function deleteArtifactRun(runId: string): Promise<void> {
     }
 
     try {
-        const res = await fetch(`${KERNEL_API}/runtime/artifacts/${runId}`, {
+        const res = await secureFetch(`${KERNEL_API}/runtime/artifacts/${runId}`, {
             method: 'DELETE'
         });
         if (!res.ok) throw new Error('Failed to delete artifact run');
@@ -297,7 +324,7 @@ export async function promoteArtifactToLibrary(runId: string, filename: string):
     }
 
     try {
-        const res = await fetch(`${KERNEL_API}/runtime/artifacts/${runId}/files/${filename}/promote`, {
+        const res = await secureFetch(`${KERNEL_API}/runtime/artifacts/${runId}/files/${filename}/promote`, {
             method: 'POST'
         });
         if (!res.ok) throw new Error('Failed to promote artifact');

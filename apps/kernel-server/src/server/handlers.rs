@@ -19,6 +19,7 @@ use redis::AsyncCommands;
 use crate::models::*;
 use crate::runtime::{RARORuntime, InvocationPayload};
 use crate::fs_manager::{WorkspaceInitializer, ArtifactMetadata}; // Import the manager and metadata
+use crate::security::ClientSession; // Import extractor
 
 use tokio::fs; // For listing library files
 
@@ -84,81 +85,47 @@ pub async fn serve_session_file(
 
 // === NEW HANDLER: LIST LIBRARY FILES ===
 // GET /runtime/library
-pub async fn list_library_files() -> Result<Json<serde_json::Value>, StatusCode> {
-    // Hardcoded path to the library volume
-    let path = "/app/storage/library";
-    // Check if directory exists, if not, create it
-    if !std::path::Path::new(path).exists() {
-        tracing::info!("Library directory missing. Creating: {}", path);
-        fs::create_dir_all(path).await.map_err(|e| {
-            tracing::error!("Failed to create library dir: {}", e);
+pub async fn list_library_files(
+    ClientSession(client_id): ClientSession // <--- Auto-extracted
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let files = WorkspaceInitializer::list_scoped_files(&client_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to list files for client {}: {}", client_id, e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-    }
-    // Read dir
-    let mut entries = fs::read_dir(path).await.map_err(|e| {
-        tracing::error!("Failed to read library dir: {}", e);
-        // If dir doesn't exist, try to create it silently or return empty
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
 
-    let mut files = Vec::new();
-
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        if let Ok(file_type) = entry.file_type().await {
-            if file_type.is_file() {
-                if let Ok(name) = entry.file_name().into_string() {
-                    // Filter out hidden files like .keep
-                    if !name.starts_with('.') {
-                        files.push(name);
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(Json(serde_json::json!({
-        "files": files
-    })))
+    Ok(Json(serde_json::json!({ "files": files })))
 }
 
 // === NEW HANDLER: UPLOAD FILE ===
 // POST /runtime/library/upload
 pub async fn upload_library_file(
+    ClientSession(client_id): ClientSession, // <--- Auto-extracted
     mut multipart: Multipart
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     while let Some(field) = multipart.next_field().await.map_err(|_| StatusCode::BAD_REQUEST)? {
-        let name = field.file_name().unwrap_or("unknown_file").to_string();
-        
-        // Read the bytes
-        let data = field.bytes().await.map_err(|e| {
-            tracing::error!("Failed to read upload bytes: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+        let name = field.file_name().unwrap_or("unknown").to_string();
+        let data = field.bytes().await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-        // Save using fs_manager
-        if let Err(e) = WorkspaceInitializer::save_to_library(&name, &data).await {
-            tracing::error!("Failed to write file to disk: {}", e);
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
+        // Pass client_id to save function
+        WorkspaceInitializer::save_to_library(&client_id, &name, &data)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     }
 
-    Ok(Json(serde_json::json!({
-        "success": true,
-        "message": "Upload complete"
-    })))
+    Ok(Json(serde_json::json!({ "success": true })))
 }
 
+// POST /runtime/start
 pub async fn start_workflow(
     State(runtime): State<Arc<RARORuntime>>,
+    ClientSession(client_id): ClientSession, // <--- Capture who is starting the run
     Json(config): Json<WorkflowConfig>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
-    // start_workflow now spawns the task internally and returns the run_id immediately
-    match runtime.start_workflow(config) {
-        Ok(run_id) => Ok(Json(json!({
-            "success": true,
-            "run_id": run_id
-        }))),
+    // Pass client_id to runtime
+    match runtime.start_workflow(config, &client_id) {
+        Ok(run_id) => Ok(Json(json!({ "success": true, "run_id": run_id }))),
         Err(e) => {
             tracing::error!("Failed to start workflow: {}", e);
             Err(StatusCode::BAD_REQUEST)
@@ -545,8 +512,9 @@ pub async fn delete_artifact_run(
 }
 
 /// POST /runtime/artifacts/:run_id/files/:filename/promote
-/// Promotes an artifact to permanent library storage
+/// Promotes an artifact to permanent library storage (scoped to client)
 pub async fn promote_artifact_to_library(
+    ClientSession(client_id): ClientSession, // <--- Auto-extracted
     Path((run_id, filename)): Path<(String, String)>,
 ) -> Result<StatusCode, StatusCode> {
     // Sanitize filename
@@ -555,21 +523,28 @@ pub async fn promote_artifact_to_library(
     }
 
     let src = format!("/app/storage/artifacts/{}/{}", run_id, filename);
-    let dst = format!("/app/storage/library/{}", filename);
 
     // Check if source exists
     if !std::path::Path::new(&src).exists() {
         return Err(StatusCode::NOT_FOUND);
     }
 
-    // Copy to library
-    tokio::fs::copy(&src, &dst)
+    // Read the file
+    let data = tokio::fs::read(&src)
         .await
         .map_err(|e| {
-            tracing::error!("Failed to promote artifact {} to library: {}", filename, e);
+            tracing::error!("Failed to read artifact {} for promotion: {}", filename, e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    tracing::info!("Promoted artifact {} from run {} to library", filename, run_id);
+    // Save to client-scoped library using fs_manager
+    WorkspaceInitializer::save_to_library(&client_id, &filename, &data)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to promote artifact {} to client {} library: {}", filename, client_id, e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    tracing::info!("Promoted artifact {} from run {} to client {} library", filename, run_id, client_id);
     Ok(StatusCode::CREATED)
 }

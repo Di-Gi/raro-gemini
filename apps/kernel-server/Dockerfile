@@ -13,8 +13,13 @@ FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y ca-certificates curl openssl && rm -rf /var/lib/apt/lists/*
 
+# Copy entrypoint script
+COPY scripts/entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
 COPY --from=builder /usr/src/raro/target/release/raro-kernel /usr/local/bin/
 
 EXPOSE 3000
 
+ENTRYPOINT ["entrypoint.sh"]
 CMD ["raro-kernel"]
