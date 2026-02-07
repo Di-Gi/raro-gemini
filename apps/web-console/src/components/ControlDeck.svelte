@@ -328,6 +328,7 @@
         >×</div>
       {:else}
         <div
+            id="nav-tab-overview"
             class="nav-item {activePane === 'overview' ? 'active' : ''}"
             role="button"
             tabindex="0"
@@ -335,6 +336,7 @@
             onkeydown={(e) => e.key === 'Enter' && handlePaneSelect('overview')}
         >Overview</div>
         <div
+            id="nav-tab-pipeline"
             class="nav-item {activePane === 'pipeline' ? 'active' : ''}"
             role="button"
             tabindex="0"
@@ -342,6 +344,7 @@
             onkeydown={(e) => e.key === 'Enter' && handlePaneSelect('pipeline')}
         >Pipeline</div>
         <div
+            id="nav-tab-sim"
             class="nav-item {activePane === 'sim' ? 'active' : ''}"
             role="button"
             tabindex="0"
@@ -349,6 +352,7 @@
             onkeydown={(e) => e.key === 'Enter' && handlePaneSelect('sim')}
         >Simulation</div>
         <div
+            id="nav-tab-stats"
             class="nav-item {activePane === 'stats' ? 'active' : ''}"
             role="button"
             tabindex="0"
@@ -694,7 +698,7 @@
           <button class="input-std action-btn primary" onclick={stepSimulation}>
             ▶ STEP
           </button>
-          <button class="input-std action-btn auto" onclick={runSimulation}>
+          <button id="btn-sim-auto" class="input-std action-btn auto" onclick={runSimulation}>
             ▶▶ RUN AUTO
           </button>
           <button class="input-std action-btn warn" onclick={resetSimulation}>

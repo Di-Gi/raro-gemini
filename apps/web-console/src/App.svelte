@@ -11,13 +11,17 @@
   import Hero from '$components/Hero.svelte'
   import SettingsRail from '$components/SettingsRail.svelte'
   import EnvironmentRail from '$components/EnvironmentRail.svelte'
-  import { addLog, themeStore } from '$lib/stores'
+  import CalibrationLayer from '$components/CalibrationLayer.svelte'
+  import {
+      addLog, themeStore,
+      checkCalibrationStatus, calibrationActive // Import Calibration Store
+  } from '$lib/stores'
 
   let expanded = $state(false)
   let appState = $state<'HERO' | 'CONSOLE'>('HERO')
-  
+
   // DEBUG STATE: Toggle with Alt + S
-  let slowMotion = $state(false); 
+  let slowMotion = $state(false);
 
   function togglePipeline() {
     expanded = !expanded
@@ -28,6 +32,8 @@
     setTimeout(() => {
         addLog('KERNEL', 'RARO Runtime Environment v0.1.0.', 'SYSTEM_BOOT')
         setTimeout(() => addLog('SYSTEM', 'Connection established. Status: IDLE.', 'NET_OK'), 300)
+        // Trigger check AFTER entering console
+        checkCalibrationStatus();
     }, 500)
   }
 
@@ -53,7 +59,13 @@
     {#if appState === 'HERO'}
       <Hero onenter={enterConsole} />
     {:else}
-      <!-- 
+
+      <!-- Mount Calibration Layer if Active -->
+      {#if $calibrationActive}
+          <CalibrationLayer />
+      {/if}
+
+      <!--
         WORKSPACE LAYOUT
         SettingsRail is absolute positioned (right), chassis is centered.
       -->

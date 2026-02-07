@@ -113,6 +113,40 @@ export function toggleTheme() {
     themeStore.update(current => current === 'ARCHIVAL' ? 'PHOSPHOR' : 'ARCHIVAL');
 }
 
+// === CALIBRATION STATE ===
+export const calibrationActive = writable<boolean>(false);
+
+export function checkCalibrationStatus() {
+    // Check local storage for the flag
+    if (typeof localStorage === 'undefined') return; // SSR safety
+
+    const hasCalibrated = localStorage.getItem('raro_calibrated');
+
+    // Check if we are in a fresh session (no logs, no run ID) to prevent
+    // calibration triggering mid-workflow on a refresh if storage was cleared
+    const isFreshState = get(runtimeStore).status === 'IDLE';
+
+    if (!hasCalibrated && isFreshState) {
+        calibrationActive.set(true);
+    }
+}
+
+export function completeCalibration() {
+    if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('raro_calibrated', 'true');
+    }
+    calibrationActive.set(false);
+}
+
+export function reinitializeConsole() {
+    // Clear existing logs and restore initial boot messages
+    logs.set([]);
+    addLog('KERNEL', 'RARO Runtime Environment v0.1.0.', 'SYSTEM_BOOT');
+    setTimeout(() => {
+        addLog('SYSTEM', 'Connection established. Status: IDLE.', 'NET_OK');
+    }, 300);
+}
+
 // === RFS STORES ===
 // The list of all files available in /storage/library
 export const libraryFiles = writable<string[]>([]);
@@ -837,6 +871,12 @@ function escapeHtml(unsafe: string) {
 
 // === SIMULATION CONTROL FUNCTIONS ===
 
+// Store original topology snapshot for restoration after simulation
+let originalTopologySnapshot: {
+    nodes: AgentNode[];
+    edges: PipelineEdge[];
+} | null = null;
+
 function getCurrentTopology(): { nodes: string[]; edges: Array<{ from: string; to: string }> } {
     const nodes = get(agentNodes);
     const edges = get(pipelineEdges);
@@ -850,6 +890,12 @@ function getCurrentTopology(): { nodes: string[]; edges: Array<{ from: string; t
 function initSimulation() {
     const simId = `sim-${Date.now()}`;
     const topology = getCurrentTopology();
+
+    // Capture original state for restoration (deep clone)
+    originalTopologySnapshot = {
+        nodes: JSON.parse(JSON.stringify(get(agentNodes))),
+        edges: JSON.parse(JSON.stringify(get(pipelineEdges)))
+    };
 
     // Reset UI State
     logs.set([]);
@@ -914,6 +960,41 @@ export function resetSimulation() {
         ws.close();
         ws = null;
     }
+
+    // Restore original topology if we have a snapshot
+    if (originalTopologySnapshot) {
+        // Reset all node statuses to 'idle'
+        const restoredNodes = originalTopologySnapshot.nodes.map(node => ({
+            ...node,
+            status: 'idle' as const
+        }));
+
+        // Reset all edge states
+        const restoredEdges = originalTopologySnapshot.edges.map(edge => ({
+            ...edge,
+            active: false,
+            finalized: false,
+            pulseAnimation: false,
+            signatureHash: undefined
+        }));
+
+        agentNodes.set(restoredNodes);
+        pipelineEdges.set(restoredEdges);
+
+        // Clear the snapshot after restoration
+        originalTopologySnapshot = null;
+    } else {
+        // Fallback: If no snapshot exists, just reset statuses of current nodes
+        agentNodes.update(nodes => nodes.map(n => ({ ...n, status: 'idle' as const })));
+        pipelineEdges.update(edges => edges.map(e => ({
+            ...e,
+            active: false,
+            finalized: false,
+            pulseAnimation: false,
+            signatureHash: undefined
+        })));
+    }
+
     logs.set([]);
     runtimeStore.set({ status: 'IDLE', runId: null });
     addLog('SIMULATOR', 'Context cleared.', 'RESET');

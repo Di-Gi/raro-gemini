@@ -21,5 +21,5 @@ COPY --from=builder /usr/src/raro/target/release/raro-kernel /usr/local/bin/
 
 EXPOSE 3000
 
-ENTRYPOINT ["entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["raro-kernel"]
