@@ -1230,39 +1230,45 @@ impl RARORuntime {
             full_file_paths.extend(dynamic_file_mounts);
         }
 
-        // === AUTHORITATIVE IDENTITY PROVISIONING ===
-        // The Kernel ignores the tools requested by the Architect and provisions
-        // tools based solely on the agent's identity prefix. This is the "Air-Gap"
-        // between the LLM's imagination and the hardware's capability.
+        // === AUTHORITATIVE IDENTITY PROVISIONING (MERGE & VALIDATE) ===
+        // STRATEGY: Start with user configuration, then enforce identity mandates
+        // This allows manual additions while preventing capability removal
 
-        let mut tools = Vec::new();
+        // 1. Start with tools defined in the Configuration (from UI/Architect)
+        let mut tools = agent_config.tools.clone();
 
-        // 1. UNIVERSAL BASELINE (Read-Only)
-        tools.push("read_file".to_string());
-        tools.push("list_files".to_string());
+        // 2. UNIVERSAL BASELINE (Always ensure these exist)
+        if !tools.contains(&"read_file".to_string()) { tools.push("read_file".to_string()); }
+        if !tools.contains(&"list_files".to_string()) { tools.push("list_files".to_string()); }
 
-        // 2. AUTHORITATIVE IDENTITY PROVISIONING
         let id_lower = agent_id.to_lowercase();
 
-        // Research Class
-        if id_lower.starts_with("research_") {
-            tools.push("web_search".to_string());
+        // 3. MANDATORY IDENTITY GRANTS (Enforce identity contract)
+        // Even if user removed them in UI, identity demands them.
+
+        // Research Class (Broader matching: research_, researcher, web_)
+        if id_lower.contains("research") || id_lower.starts_with("web_") {
+            if !tools.contains(&"web_search".to_string()) {
+                tools.push("web_search".to_string());
+            }
         }
 
-        // Logic/Math Class
-        if id_lower.starts_with("analyze_") || id_lower.starts_with("coder_") {
+        // Logic/Math Class (analyze_, analyst, coder, math)
+        if id_lower.contains("analy") || id_lower.contains("code") || id_lower.contains("math") {
             if !tools.contains(&"execute_python".to_string()) {
                 tools.push("execute_python".to_string());
             }
         }
 
-        // Output/I-O Class
-        if id_lower.starts_with("coder_") || id_lower.starts_with("writer_") {
-            tools.push("write_file".to_string());
+        // Output/I-O Class (writer, coder, logger)
+        if id_lower.contains("code") || id_lower.contains("writ") {
+            if !tools.contains(&"write_file".to_string()) {
+                tools.push("write_file".to_string());
+            }
         }
 
-        // Admin Class
-        if id_lower.starts_with("master_") {
+        // Admin Class (master_, orchestrator)
+        if id_lower.starts_with("master_") || id_lower.starts_with("orchestrator") {
             for t in ["web_search", "execute_python", "write_file"] {
                 if !tools.contains(&t.to_string()) {
                     tools.push(t.to_string());
@@ -1270,17 +1276,13 @@ impl RARORuntime {
             }
         }
 
-        // Dynamic artifacts require python for processing (override for special case)
+        // Dynamic artifacts require python (Special Case)
         if has_dynamic_artifacts && !tools.contains(&"execute_python".to_string()) {
             tools.push("execute_python".to_string());
-            tracing::info!(
-                "Agent {}: Added 'execute_python' tool (has {} dynamic artifacts to process)",
-                agent_id,
-                dynamic_artifact_count
-            );
+            tracing::info!("Agent {}: Provisioned 'execute_python' for dynamic artifact handling", agent_id);
         }
 
-        tracing::info!("Authoritatively provisioned tools for {}: {:?}", agent_id, tools);
+        tracing::info!("Final provisioned tools for {}: {:?}", agent_id, tools);
 
         let graph_view = self.generate_graph_context(
             run_id,

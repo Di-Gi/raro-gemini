@@ -40,6 +40,7 @@ export interface AgentNode {
   role: 'orchestrator' | 'worker' | 'observer';
   acceptsDirective: boolean;  // Can this node receive operator directives?
   allowDelegation: boolean;   // Can this node spawn sub-agents?
+  tools: string[];            // Active tools provisioned to this agent
 }
 
 export interface PipelineEdge {
@@ -49,6 +50,39 @@ export interface PipelineEdge {
   finalized: boolean; // True = Solid Line (Completed)
   pulseAnimation: boolean;
   signatureHash?: string;
+}
+
+// === IDENTITY UTILITY HELPER (ROBUST) ===
+// Made robust against casing and underscores
+// Uses broader matching to prevent "Intent Crash" from naming variations
+export function deriveToolsFromId(id: string): string[] {
+    const tools = new Set<string>();
+    const lowerId = id.toLowerCase();
+
+    // 1. Base Identity Grants (Broader matching)
+    // Research: "research_", "researcher", "web_searcher"
+    if (lowerId.includes('research') || lowerId.includes('web')) {
+        tools.add('web_search');
+    }
+
+    // Analysis/Code: "analyze_", "analyst", "coder", "python"
+    if (lowerId.includes('analy') || lowerId.includes('code') || lowerId.includes('math')) {
+        tools.add('execute_python');
+    }
+
+    // IO: "writer", "coder", "logger"
+    if (lowerId.includes('writ') || lowerId.includes('code') || lowerId.includes('log')) {
+        tools.add('write_file');
+    }
+
+    // 2. Master Grant (orchestrator or master)
+    if (lowerId.startsWith('master') || lowerId.startsWith('orch')) {
+        tools.add('web_search');
+        tools.add('execute_python');
+        tools.add('write_file');
+    }
+
+    return Array.from(tools);
 }
 
 interface TopologySnapshot {
@@ -208,7 +242,8 @@ export function createNode(x: number, y: number) {
             status: 'idle',
             role: 'worker',
             acceptsDirective: false,  // Default to false for new nodes
-            allowDelegation: false    // Default to false for new nodes
+            allowDelegation: false,   // Default to false for new nodes
+            tools: []                 // Start empty, user or ID will populate
         }];
     });
 }
@@ -280,7 +315,8 @@ export function loadWorkflowManifest(manifest: WorkflowConfig) {
       status: 'idle',
       role: agent.role,
       acceptsDirective: agent.accepts_directive || agent.role === 'orchestrator',  // Use backend flag or default to true for orchestrators
-      allowDelegation: agent.allow_delegation || false  // Use backend flag or default to false
+      allowDelegation: agent.allow_delegation || false,  // Use backend flag or default to false
+      tools: agent.tools || []  // Load tools from backend or default to empty
     };
   });
 
@@ -417,7 +453,8 @@ function syncTopology(topology: TopologySnapshot) {
                 status: 'running', // Usually spawned active
                 role: 'worker',
                 acceptsDirective: false,  // Dynamically spawned agents don't accept directives by default
-                allowDelegation: false    // Dynamically spawned agents don't delegate by default
+                allowDelegation: false,   // Dynamically spawned agents don't delegate by default
+                tools: deriveToolsFromId(nodeId)  // Auto-provision tools based on ID
             });
         }
     });

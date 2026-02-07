@@ -124,49 +124,53 @@ async def cleanup_runtime(run_id: str):
 
 @app.get("/agents/list")
 async def list_agents():
+    """
+    Returns a list of example agents with proper identity-based naming.
+    Agent IDs follow the identity contract for authoritative tool provisioning.
+    """
     return {
         "agents": [
             {
-                "id": "orchestrator",
+                "id": "master_orchestrator",
                 "role": "orchestrator",
-                "model": settings.MODEL_REASONING, 
+                "model": settings.MODEL_REASONING,
                 "description": "Main coordinator - breaks down tasks and routes to specialists",
-                "tools": ["plan_task", "route_agents", "synthesize_results"]
+                "tools": ["web_search", "execute_python", "write_file"]
             },
             {
-                "id": "researcher",
+                "id": "research_specialist",
                 "role": "worker",
                 "model": settings.MODEL_FAST,
-                "description": "Deep research and fact-finding",
-                "tools": ["search_papers", "extract_citations"]
+                "description": "Deep research and fact-finding via web search",
+                "tools": ["web_search"]
             },
             {
-                "id": "extractor",
+                "id": "analyze_extractor",
                 "role": "worker",
                 "model": settings.MODEL_FAST,
-                "description": "Multimodal content extraction from PDFs and videos",
-                "tools": ["extract_pdf", "parse_video", "extract_images"]
+                "description": "Data extraction and parsing using Python",
+                "tools": ["execute_python"]
             },
             {
-                "id": "analyst",
+                "id": "analyze_data",
                 "role": "worker",
                 "model": settings.MODEL_FAST,
-                "description": "Critical analysis and reasoning",
-                "tools": ["analyze_data", "compare_sources", "validate_claims"]
+                "description": "Critical analysis and data processing",
+                "tools": ["execute_python"]
             },
             {
-                "id": "synthesizer",
+                "id": "writer_synthesis",
                 "role": "worker",
                 "model": settings.MODEL_FAST,
-                "description": "Combines results from multiple agents into coherent output",
-                "tools": ["combine_results", "summarize", "format_report"]
+                "description": "Combines results into coherent reports and documents",
+                "tools": ["write_file"]
             },
             {
-                "id": "code_interpreter",
+                "id": "coder_python",
                 "role": "worker",
                 "model": settings.MODEL_FAST,
-                "description": "Executes Python code for data analysis",
-                "tools": ["execute_python", "plot_data", "run_analysis"]
+                "description": "Writes and executes Python code for complex logic",
+                "tools": ["execute_python", "write_file"]
             }
         ]
     }

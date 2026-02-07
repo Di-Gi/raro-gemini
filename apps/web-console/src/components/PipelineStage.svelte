@@ -13,6 +13,7 @@
     runtimeStore,
     planningMode,
     graphFlash,
+    deriveToolsFromId,  // [[NEW]] Import Identity Helper
     type PipelineEdge,
     type AgentNode
   } from '$lib/stores'
@@ -166,6 +167,30 @@
         if (!el) {
             el = document.createElement('div');
             el.id = domId;
+
+            // [[NEW]] Calculate Tool Badges
+            // AUTHORITATIVE: Always compute from identity first, then add any manual additions
+            const identityTools = deriveToolsFromId(node.id);
+            const storedTools = node.tools || [];
+            // Merge identity baseline with stored tools (identity takes precedence)
+            const allTools = Array.from(new Set([...identityTools, ...storedTools]));
+
+            // Helper to map tool names to short codes
+            const getToolCode = (t: string) => {
+                if (t === 'execute_python') return 'PY';
+                if (t === 'web_search') return 'WEB';
+                if (t === 'write_file') return 'IO';
+                return null;
+            };
+
+            // Generate HTML
+            const toolBadgesHTML = allTools
+                .map(t => {
+                    const code = getToolCode(t);
+                    return code ? `<span class="tool-pill ${code.toLowerCase()}">${code}</span>` : '';
+                })
+                .join('');
+
             // Inner HTML: Military/Arctic Aesthetic
             el.innerHTML = `
               <div class="reticle tl"></div>
@@ -182,6 +207,7 @@
                   <div class="unit-main">
                       <div class="unit-role">${node.role.toUpperCase()}</div>
                       <div class="unit-label">${node.label}</div>
+                      <div class="unit-badges">${toolBadgesHTML}</div>
                   </div>
                   <div class="unit-footer">
                       <span class="coord-text"></span>
@@ -189,7 +215,7 @@
               </div>
               <div class="isotope-core"></div>
             `;
-            
+
             el.onclick = (e) => {
               if (!expanded) return;
               e.stopPropagation();
@@ -200,13 +226,44 @@
 
         // UPDATE Attributes
         if (el.className !== className) el.className = className;
-        
+
         const targetLeft = `${getX(node)}px`;
         const targetTop = `${getY(node)}px`;
-        
+
         if (el.style.left !== targetLeft) el.style.left = targetLeft;
         if (el.style.top !== targetTop) el.style.top = targetTop;
         el.style.zIndex = node.status === 'running' ? '100' : '10';
+
+        // UPDATE Tool Badges (Dynamic)
+        // Recalculate tools from current node state
+        const identityTools = deriveToolsFromId(node.id);
+        const storedTools = node.tools || [];
+        const allTools = Array.from(new Set([...identityTools, ...storedTools]));
+        const toolsKey = allTools.sort().join(','); // Create a stable key for comparison
+
+        // Only update if tools changed
+        const currentToolsKey = el.dataset.toolsKey || '';
+        if (currentToolsKey !== toolsKey) {
+            const getToolCode = (t: string) => {
+                if (t === 'execute_python') return 'PY';
+                if (t === 'web_search') return 'WEB';
+                if (t === 'write_file') return 'IO';
+                return null;
+            };
+
+            const toolBadgesHTML = allTools
+                .map(t => {
+                    const code = getToolCode(t);
+                    return code ? `<span class="tool-pill ${code.toLowerCase()}">${code}</span>` : '';
+                })
+                .join('');
+
+            const badgesEl = el.querySelector('.unit-badges');
+            if (badgesEl) {
+                badgesEl.innerHTML = toolBadgesHTML;
+                el.dataset.toolsKey = toolsKey; // Store current state
+            }
+        }
 
         // Update Coordinates Text (Only if needed)
         const coordEl = el.querySelector('.coord-text');
@@ -475,11 +532,39 @@
 
   :global(.unit-main) { padding: 8px; display: flex; flex-direction: column; gap: 2px; }
   :global(.unit-role) { font-family: var(--font-code); font-size: 7px; color: var(--tac-dim); text-transform: uppercase; }
-  :global(.unit-label) { 
-      font-family: var(--font-code); font-size: 10px; font-weight: 700; 
+  :global(.unit-label) {
+      font-family: var(--font-code); font-size: 10px; font-weight: 700;
       color: var(--tac-white); text-transform: uppercase; letter-spacing: 0.5px;
   }
-  
+
+  /* [[NEW]] Tool Pill Badges */
+  :global(.unit-badges) {
+      display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap;
+  }
+
+  :global(.tool-pill) {
+      font-family: var(--font-code); font-size: 7px; font-weight: 700;
+      padding: 1px 4px; border-radius: 2px;
+      border: 1px solid;
+  }
+
+  /* Variant Styles */
+  :global(.tool-pill.py) {
+      border-color: #FFB300; color: #FFB300; background: rgba(255, 179, 0, 0.1);
+  }
+  :global(.tool-pill.web) {
+      border-color: #00F0FF; color: #00F0FF; background: rgba(0, 240, 255, 0.1);
+  }
+  :global(.tool-pill.io) {
+      border-color: #E0E0E0; color: #E0E0E0; background: rgba(255, 255, 255, 0.1);
+  }
+
+  /* Adjust Expanded Node Height */
+  #pipeline-stage.expanded :global(.tactical-unit) {
+      height: auto;
+      min-height: 60px;
+  }
+
   :global(.unit-footer) {
       padding: 2px 8px; display: flex; gap: 8px; border-top: 1px solid var(--tac-border);
       background: #020202;

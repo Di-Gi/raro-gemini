@@ -15,6 +15,7 @@
     createNode,
     deleteNode,
     renameNode,
+    deriveToolsFromId,  // [[NEW]] Import Identity Helper
     applyTemplate,  // [[NEW]] Import Template Action
     stepSimulation,  // [[NEW]] Import Simulation Controls
     runSimulation,
@@ -39,7 +40,10 @@
   let currentPrompt = $state('')
   let currentAcceptsDirective = $state(false)
   let currentAllowDelegation = $state(false)
+  let currentTools = $state<string[]>([])  // Manual tool additions (beyond identity baseline)
+  let identityTools = $state<string[]>([])  // Derived from ID prefix (read-only)
   let thinkingBudget = $state(5)
+  let isUpdating = $state(false)  // Flag to prevent reactive loops
   let isSubmitting = $state(false)
   let isInputFocused = $state(false)
   let tempId = $state('')
@@ -52,20 +56,39 @@
     }
   });
 
+  // Track the last loaded node ID to prevent unnecessary reloads
+  let lastLoadedNodeId = $state<string | null>(null);
+
   $effect(() => {
+    // Skip if we're in the middle of an update to prevent loops
+    if (isUpdating) return;
+
     if ($selectedNode && expanded) {
-      const node = $agentNodes.find((n) => n.id === $selectedNode)
-      if (node) {
-        currentModel = node.model
-        currentPrompt = node.prompt
-        currentAcceptsDirective = node.acceptsDirective
-        currentAllowDelegation = node.allowDelegation
+      // Only reload if we're selecting a different node
+      if (lastLoadedNodeId !== $selectedNode) {
+        const node = $agentNodes.find((n) => n.id === $selectedNode)
+        if (node) {
+          currentModel = node.model
+          currentPrompt = node.prompt
+          currentAcceptsDirective = node.acceptsDirective
+          currentAllowDelegation = node.allowDelegation
+
+          // Compute authoritative identity tools
+          identityTools = deriveToolsFromId(node.id)
+
+          // Manual tools are stored ones minus the identity baseline
+          const stored = node.tools || []
+          currentTools = stored.filter(t => !identityTools.includes(t))
+
+          lastLoadedNodeId = $selectedNode
+        }
       }
       if (activePane !== 'node-config') {
         activePane = 'node-config'
       }
     } else if (!$selectedNode && activePane === 'node-config') {
       activePane = 'overview'
+      lastLoadedNodeId = null
     } else if (!expanded && activePane !== 'input' && !isAwaitingApproval) {
       activePane = 'input'
     }
@@ -140,7 +163,7 @@
                 id: n.id,
                 role: n.role,
                 model: n.model,
-                tools: [],
+                tools: n.tools || [],  // [[NEW]] Pass tools from frontend
                 input_schema: {},
                 output_schema: {},
                 cache_policy: 'ephemeral',
@@ -203,13 +226,25 @@
   }
 
   function saveNodeConfig() {
-      if (!$selectedNode) return;
+      if (!$selectedNode || isUpdating) return;
+      isUpdating = true;
       agentNodes.update(nodes => nodes.map(n => {
           if (n.id === $selectedNode) {
-              return { ...n, model: currentModel, prompt: currentPrompt, acceptsDirective: currentAcceptsDirective, allowDelegation: currentAllowDelegation }
+              // Merge identity baseline with manual additions
+              const allTools = Array.from(new Set([...identityTools, ...currentTools]))
+              return {
+                  ...n,
+                  model: currentModel,
+                  prompt: currentPrompt,
+                  acceptsDirective: currentAcceptsDirective,
+                  allowDelegation: currentAllowDelegation,
+                  tools: allTools  // Save merged tool set
+              }
           }
           return n;
       }));
+      // Reset flag after a small delay to allow reactive cycle to complete
+      setTimeout(() => { isUpdating = false; }, 0);
   }
 
   function handleKey(e: KeyboardEvent) {
@@ -226,10 +261,41 @@
 
     if (success) {
       addLog('SYSTEM', `Node renamed: ${cleanId}`, 'OK');
+
+      // Recalculate identity tools based on new ID
+      identityTools = deriveToolsFromId(cleanId);
+      // Manual tools remain unchanged
+      saveNodeConfig();
     } else {
       tempId = $selectedNode;
       addLog('SYSTEM', `Rename failed: ID exists or invalid`, 'WARN');
     }
+  }
+
+  // [[NEW]] Tool Toggle Handler
+  function toggleTool(tool: string) {
+    // If it's an identity-granted tool, it cannot be removed
+    if (identityTools.includes(tool)) {
+      return; // Locked by identity
+    }
+
+    // Toggle manual additions only
+    if (currentTools.includes(tool)) {
+      currentTools = currentTools.filter(t => t !== tool);
+    } else {
+      currentTools = [...currentTools, tool];
+    }
+    saveNodeConfig();
+  }
+
+  // Helper to check if a tool is active (either identity or manual)
+  function isToolActive(tool: string): boolean {
+    return identityTools.includes(tool) || currentTools.includes(tool);
+  }
+
+  // Helper to check if a tool is locked by identity
+  function isToolLocked(tool: string): boolean {
+    return identityTools.includes(tool);
   }
 
   function handleIdKey(e: KeyboardEvent) {
@@ -425,6 +491,54 @@
             </div>
           </div>
         {/if}
+
+        <!-- [[NEW]] CAPABILITY PROVISIONING PANEL -->
+        <div class="form-group tool-config">
+          <label>Capability Provisioning</label>
+          <div class="tool-grid">
+            <!-- PYTHON SANDBOX -->
+            <button
+              class="tool-btn {isToolActive('execute_python') ? 'active' : ''} {isToolLocked('execute_python') ? 'locked' : ''}"
+              onclick={() => toggleTool('execute_python')}
+              title={isToolLocked('execute_python') ? 'Granted by identity prefix' : 'Click to toggle'}
+            >
+              <span class="tool-icon">🐍</span>
+              <span class="tool-label">PYTHON_SANDBOX</span>
+              {#if isToolLocked('execute_python')}
+                <span class="lock-indicator">🔒</span>
+              {/if}
+            </button>
+
+            <!-- WEB SEARCH -->
+            <button
+              class="tool-btn {isToolActive('web_search') ? 'active' : ''} {isToolLocked('web_search') ? 'locked' : ''}"
+              onclick={() => toggleTool('web_search')}
+              title={isToolLocked('web_search') ? 'Granted by identity prefix' : 'Click to toggle'}
+            >
+              <span class="tool-icon">🌐</span>
+              <span class="tool-label">WEB_UPLINK</span>
+              {#if isToolLocked('web_search')}
+                <span class="lock-indicator">🔒</span>
+              {/if}
+            </button>
+
+            <!-- FILE WRITE -->
+            <button
+              class="tool-btn {isToolActive('write_file') ? 'active' : ''} {isToolLocked('write_file') ? 'locked' : ''}"
+              onclick={() => toggleTool('write_file')}
+              title={isToolLocked('write_file') ? 'Granted by identity prefix' : 'Click to toggle'}
+            >
+              <span class="tool-icon">💾</span>
+              <span class="tool-label">FS_WRITE</span>
+              {#if isToolLocked('write_file')}
+                <span class="lock-indicator">🔒</span>
+              {/if}
+            </button>
+          </div>
+          <div class="tool-hint">
+            🔒 = Granted by identity prefix. Read/List access granted to all nodes.
+          </div>
+        </div>
 
         <div class="form-group directive-port-config">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
@@ -795,6 +909,43 @@
 
   /* Hover Guides */
   .cell:not(.disabled):hover::after { content: ''; position: absolute; top: 0; left: 0; right: 0; bottom: 0; border: 1px solid var(--paper-ink); pointer-events: none; }
+  /* [[NEW]] Tool Configuration Styles */
+  .tool-config { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--paper-line); }
+  .tool-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
+  .tool-btn {
+    background: var(--paper-bg); border: 1px solid var(--paper-line);
+    padding: 10px 4px; display: flex; flex-direction: column; align-items: center; gap: 4px;
+    cursor: pointer; border-radius: 2px; transition: all 0.2s; opacity: 0.7;
+    position: relative;
+  }
+  .tool-btn:hover:not(.locked) { opacity: 1; border-color: var(--paper-ink); }
+  .tool-btn.active {
+    background: var(--paper-surface-dim);
+    border-color: var(--arctic-cyan);
+    color: var(--paper-ink);
+    opacity: 1;
+    box-shadow: inset 0 0 8px rgba(0, 240, 255, 0.1);
+  }
+  .tool-btn.locked {
+    cursor: default;
+    border-color: var(--alert-amber);
+    background: rgba(255, 179, 0, 0.05);
+  }
+  .tool-btn.locked.active {
+    border-color: var(--alert-amber);
+    box-shadow: inset 0 0 8px rgba(255, 179, 0, 0.15);
+  }
+  .tool-icon { font-size: 16px; }
+  .tool-label { font-family: var(--font-code); font-size: 8px; font-weight: 700; }
+  .lock-indicator {
+    font-size: 10px;
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    opacity: 0.7;
+  }
+  .tool-hint { font-size: 9px; color: var(--paper-line); margin-top: 6px; font-style: italic; }
+
   .directive-port-config { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--paper-line); }
   .port-toggle { padding: 6px 14px; border: 1px solid; font-family: var(--font-code); font-size: 10px; font-weight: 700; cursor: pointer; transition: all 0.2s; letter-spacing: 0.5px; }
   .port-toggle.port-open { background: var(--paper-bg); color: var(--arctic-lilac, #00E5FF); border-color: var(--arctic-cyan, #00E5FF); box-shadow: 0 0 8px rgba(0, 229, 255, 0.3); }

@@ -18,50 +18,50 @@ export const TEMPLATES: Record<string, GraphTemplate> = {
         key: 'STANDARD',
         label: 'GENERALIST',
         nodes: [
-            { id: 'orchestrator', label: 'ORCHESTRATOR', x: 20, y: 50, model: 'reasoning', prompt: 'Analyze the user request and determine optimal sub-tasks.', status: 'idle', role: 'orchestrator', acceptsDirective: true, allowDelegation: true },
-            { id: 'retrieval', label: 'RETRIEVAL', x: 50, y: 30, model: 'fast', prompt: 'Search knowledge base for relevant context.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false },
-            { id: 'code_interpreter', label: 'CODE_INTERP', x: 50, y: 70, model: 'fast', prompt: 'Execute Python analysis on provided data.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false },
-            { id: 'synthesis', label: 'SYNTHESIS', x: 80, y: 50, model: 'thinking', prompt: 'Synthesize all findings into a final report.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false }
+            { id: 'master_orchestrator', label: 'ORCHESTRATOR', x: 20, y: 50, model: 'reasoning', prompt: 'Analyze the user request and determine optimal sub-tasks.', status: 'idle', role: 'orchestrator', acceptsDirective: true, allowDelegation: true, tools: ['web_search', 'execute_python', 'write_file'] },
+            { id: 'research_retrieval', label: 'RETRIEVAL', x: 50, y: 30, model: 'fast', prompt: 'Search knowledge base and web for relevant context.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false, tools: ['web_search'] },
+            { id: 'analyze_interpreter', label: 'CODE_INTERP', x: 50, y: 70, model: 'fast', prompt: 'Execute Python analysis on provided data.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false, tools: ['execute_python'] },
+            { id: 'writer_synthesis', label: 'SYNTHESIS', x: 80, y: 50, model: 'thinking', prompt: 'Synthesize all findings into a final report.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false, tools: ['write_file'] }
         ],
         edges: [
-            { from: 'orchestrator', to: 'retrieval', active: false, finalized: false, pulseAnimation: false },
-            { from: 'orchestrator', to: 'code_interpreter', active: false, finalized: false, pulseAnimation: false },
-            { from: 'retrieval', to: 'synthesis', active: false, finalized: false, pulseAnimation: false },
-            { from: 'code_interpreter', to: 'synthesis', active: false, finalized: false, pulseAnimation: false }
+            { from: 'master_orchestrator', to: 'research_retrieval', active: false, finalized: false, pulseAnimation: false },
+            { from: 'master_orchestrator', to: 'analyze_interpreter', active: false, finalized: false, pulseAnimation: false },
+            { from: 'research_retrieval', to: 'writer_synthesis', active: false, finalized: false, pulseAnimation: false },
+            { from: 'analyze_interpreter', to: 'writer_synthesis', active: false, finalized: false, pulseAnimation: false }
         ]
     },
     RESEARCH: {
         key: 'RESEARCH',
         label: 'DEEP RESEARCH',
         nodes: [
-            { id: 'planner', label: 'PLANNER', x: 15, y: 50, model: 'reasoning', prompt: 'Break down the research topic into search queries.', status: 'idle', role: 'orchestrator', acceptsDirective: true, allowDelegation: true },
-            { id: 'web_searcher', label: 'WEB_SEARCH', x: 45, y: 30, model: 'fast', prompt: 'Search the web for latest information.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false },
-            { id: 'fact_checker', label: 'VALIDATOR', x: 45, y: 70, model: 'fast', prompt: 'Verify claims against reputable sources.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false },
-            { id: 'analyst', label: 'ANALYST', x: 70, y: 50, model: 'reasoning', prompt: 'Analyze gathered data for patterns.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false },
-            { id: 'writer', label: 'WRITER', x: 90, y: 50, model: 'thinking', prompt: 'Write a comprehensive research report.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false }
+            { id: 'master_planner', label: 'PLANNER', x: 15, y: 50, model: 'reasoning', prompt: 'Break down the research topic into search queries.', status: 'idle', role: 'orchestrator', acceptsDirective: true, allowDelegation: true, tools: ['web_search', 'execute_python', 'write_file'] },
+            { id: 'research_web', label: 'WEB_SEARCH', x: 45, y: 30, model: 'fast', prompt: 'Search the web for latest information.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false, tools: ['web_search'] },
+            { id: 'research_validator', label: 'VALIDATOR', x: 45, y: 70, model: 'fast', prompt: 'Verify claims against reputable sources.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false, tools: ['web_search'] },
+            { id: 'analyze_data', label: 'ANALYST', x: 70, y: 50, model: 'reasoning', prompt: 'Analyze gathered data for patterns and insights.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false, tools: ['execute_python'] },
+            { id: 'writer_report', label: 'WRITER', x: 90, y: 50, model: 'thinking', prompt: 'Write a comprehensive research report.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false, tools: ['write_file'] }
         ],
         edges: [
-            { from: 'planner', to: 'web_searcher', active: false, finalized: false, pulseAnimation: false },
-            { from: 'planner', to: 'fact_checker', active: false, finalized: false, pulseAnimation: false },
-            { from: 'web_searcher', to: 'analyst', active: false, finalized: false, pulseAnimation: false },
-            { from: 'fact_checker', to: 'analyst', active: false, finalized: false, pulseAnimation: false },
-            { from: 'analyst', to: 'writer', active: false, finalized: false, pulseAnimation: false }
+            { from: 'master_planner', to: 'research_web', active: false, finalized: false, pulseAnimation: false },
+            { from: 'master_planner', to: 'research_validator', active: false, finalized: false, pulseAnimation: false },
+            { from: 'research_web', to: 'analyze_data', active: false, finalized: false, pulseAnimation: false },
+            { from: 'research_validator', to: 'analyze_data', active: false, finalized: false, pulseAnimation: false },
+            { from: 'analyze_data', to: 'writer_report', active: false, finalized: false, pulseAnimation: false }
         ]
     },
     DEV: {
         key: 'DEV',
         label: 'DEV STUDIO',
         nodes: [
-            { id: 'architect', label: 'ARCHITECT', x: 20, y: 50, model: 'reasoning', prompt: 'Design the software architecture and file structure.', status: 'idle', role: 'orchestrator', acceptsDirective: true, allowDelegation: true },
-            { id: 'coder', label: 'PYTHON_DEV', x: 50, y: 30, model: 'fast', prompt: 'Implement the solution in Python.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false },
-            { id: 'reviewer', label: 'CODE_REVIEW', x: 50, y: 70, model: 'reasoning', prompt: 'Review code for bugs and security issues.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false },
-            { id: 'runner', label: 'TEST_RUNNER', x: 80, y: 50, model: 'fast', prompt: 'Execute the code and capture output.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false }
+            { id: 'master_architect', label: 'ARCHITECT', x: 20, y: 50, model: 'reasoning', prompt: 'Design the software architecture and file structure.', status: 'idle', role: 'orchestrator', acceptsDirective: true, allowDelegation: true, tools: ['web_search', 'execute_python', 'write_file'] },
+            { id: 'coder_python', label: 'PYTHON_DEV', x: 50, y: 30, model: 'fast', prompt: 'Implement the solution in Python.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false, tools: ['execute_python', 'write_file'] },
+            { id: 'analyze_review', label: 'CODE_REVIEW', x: 50, y: 70, model: 'reasoning', prompt: 'Review code for bugs and security issues.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false, tools: ['execute_python'] },
+            { id: 'analyze_test', label: 'TEST_RUNNER', x: 80, y: 50, model: 'fast', prompt: 'Execute the code and capture output.', status: 'idle', role: 'worker', acceptsDirective: false, allowDelegation: false, tools: ['execute_python'] }
         ],
         edges: [
-            { from: 'architect', to: 'coder', active: false, finalized: false, pulseAnimation: false },
-            { from: 'architect', to: 'reviewer', active: false, finalized: false, pulseAnimation: false },
-            { from: 'coder', to: 'runner', active: false, finalized: false, pulseAnimation: false },
-            { from: 'reviewer', to: 'runner', active: false, finalized: false, pulseAnimation: false }
+            { from: 'master_architect', to: 'coder_python', active: false, finalized: false, pulseAnimation: false },
+            { from: 'master_architect', to: 'analyze_review', active: false, finalized: false, pulseAnimation: false },
+            { from: 'coder_python', to: 'analyze_test', active: false, finalized: false, pulseAnimation: false },
+            { from: 'analyze_review', to: 'analyze_test', active: false, finalized: false, pulseAnimation: false }
         ]
     }
 };
