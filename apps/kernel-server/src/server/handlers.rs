@@ -407,8 +407,10 @@ async fn handle_runtime_stream(
 
 /// GET /runtime/artifacts
 /// Lists all artifact runs with their metadata
-pub async fn list_all_artifacts() -> Result<Json<serde_json::Value>, StatusCode> {
-    let runs = WorkspaceInitializer::list_artifact_runs()
+pub async fn list_all_artifacts(
+    ClientSession(client_id): ClientSession
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let runs = WorkspaceInitializer::list_artifact_runs(&client_id)
         .await
         .map_err(|e| {
             tracing::error!("Failed to list artifact runs: {}", e);
@@ -418,7 +420,7 @@ pub async fn list_all_artifacts() -> Result<Json<serde_json::Value>, StatusCode>
     let mut artifacts = Vec::new();
 
     for run_id in runs {
-        if let Ok(metadata) = WorkspaceInitializer::get_artifact_metadata(&run_id).await {
+        if let Ok(metadata) = WorkspaceInitializer::get_artifact_metadata(&client_id, &run_id).await {
             artifacts.push(json!({
                 "run_id": run_id,
                 "metadata": metadata
@@ -432,9 +434,10 @@ pub async fn list_all_artifacts() -> Result<Json<serde_json::Value>, StatusCode>
 /// GET /runtime/artifacts/:run_id
 /// Gets metadata for a specific run's artifacts
 pub async fn get_run_artifacts(
+    ClientSession(client_id): ClientSession,
     Path(run_id): Path<String>,
 ) -> Result<Json<ArtifactMetadata>, StatusCode> {
-    WorkspaceInitializer::get_artifact_metadata(&run_id)
+    WorkspaceInitializer::get_artifact_metadata(&client_id, &run_id)
         .await
         .map(Json)
         .map_err(|e| {
@@ -446,6 +449,7 @@ pub async fn get_run_artifacts(
 /// GET /runtime/artifacts/:run_id/files/:filename
 /// Serves a specific artifact file from persistent storage
 pub async fn serve_artifact_file(
+    ClientSession(client_id): ClientSession,
     Path((run_id, filename)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, StatusCode> {
     // 1. Sanitize (prevent path traversal)
@@ -454,8 +458,8 @@ pub async fn serve_artifact_file(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    // 2. Construct path to artifacts storage
-    let file_path = format!("/app/storage/artifacts/{}/{}", run_id, filename);
+    // 2. Construct path to artifacts storage (scoped by client_id)
+    let file_path = format!("/app/storage/artifacts/{}/{}/{}", client_id, run_id, filename);
     let path = std::path::Path::new(&file_path);
 
     // 3. Verify existence
@@ -496,9 +500,10 @@ pub async fn serve_artifact_file(
 /// DELETE /runtime/artifacts/:run_id
 /// Deletes all artifacts for a specific run
 pub async fn delete_artifact_run(
+    ClientSession(client_id): ClientSession,
     Path(run_id): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
-    let path = format!("/app/storage/artifacts/{}", run_id);
+    let path = format!("/app/storage/artifacts/{}/{}", client_id, run_id);
 
     tokio::fs::remove_dir_all(&path)
         .await
@@ -507,7 +512,7 @@ pub async fn delete_artifact_run(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    tracing::info!("Deleted artifact run: {}", run_id);
+    tracing::info!("Deleted artifact run: {} for client: {}", run_id, client_id);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -522,10 +527,12 @@ pub async fn promote_artifact_to_library(
         return Err(StatusCode::FORBIDDEN);
     }
 
-    let src = format!("/app/storage/artifacts/{}/{}", run_id, filename);
+    // Use scoped path with client_id
+    let src = format!("/app/storage/artifacts/{}/{}/{}", client_id, run_id, filename);
 
     // Check if source exists
     if !std::path::Path::new(&src).exists() {
+        tracing::warn!("Artifact not found for promotion: {}", src);
         return Err(StatusCode::NOT_FOUND);
     }
 

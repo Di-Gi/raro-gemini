@@ -5,7 +5,7 @@
 
 <script lang="ts">
   import { getArtifactFileUrl, promoteArtifactToLibrary, type ArtifactFile, type ArtifactMetadata } from '$lib/api';
-  import { addLog } from '$lib/stores';
+  import { addLog, refreshLibrary, refreshArtifacts } from '$lib/stores';
 
   let {
     artifact,
@@ -38,6 +38,25 @@
     try {
       await promoteArtifactToLibrary(runMetadata.run_id, artifact.filename);
       addLog('SYSTEM', `Promoted ${artifact.filename} to library`, 'IO_OK');
+
+      // Refresh library (updates store immediately)
+      // Dispatch event for EnvironmentRail to refresh artifacts
+      // Small delay to ensure backend has completed the operation
+      setTimeout(async () => {
+        try {
+          await refreshLibrary();
+
+          // Notify EnvironmentRail to refresh its artifacts
+          window.dispatchEvent(new CustomEvent('raro:artifact_promoted', {
+            detail: { filename: artifact.filename }
+          }));
+
+          console.log('[ArtifactViewer] Library refreshed and event dispatched after promotion');
+        } catch (refreshErr) {
+          console.error('[ArtifactViewer] Failed to refresh after promotion:', refreshErr);
+          // Don't show error to user as the promotion itself succeeded
+        }
+      }, 200);
     } catch (err) {
       addLog('SYSTEM', `Failed to promote artifact: ${err}`, 'IO_ERR');
     } finally {

@@ -5,8 +5,8 @@
 
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { libraryFiles, attachedFiles, toggleAttachment, addLog, runtimeStore } from '$lib/stores';
-  import { getLibraryFiles, uploadFile, getAllArtifacts, deleteArtifactRun, getArtifactFileUrl, type ArtifactMetadata, type ArtifactFile } from '$lib/api';
+  import { libraryFiles, attachedFiles, toggleAttachment, addLog, runtimeStore, refreshLibrary, refreshArtifacts, refreshAll } from '$lib/stores';
+  import { uploadFile, deleteArtifactRun, getArtifactFileUrl, type ArtifactMetadata, type ArtifactFile } from '$lib/api';
   import Spinner from './sub/Spinner.svelte';
   import ArtifactViewer from './ArtifactViewer.svelte';
 
@@ -37,7 +37,7 @@
 
   // Initial Load
   onMount(() => {
-    refreshAll();
+    handleRefreshAll();
 
     // Subscribe to runtime status changes
     const unsubscribe = runtimeStore.subscribe((state) => {
@@ -49,8 +49,17 @@
       lastRuntimeStatus = state.status;
     });
 
+    // Listen for artifact promotion events
+    const handleArtifactPromoted = (e: CustomEvent) => {
+      console.log('[EnvironmentRail] Artifact promoted, refreshing artifacts...', e.detail);
+      silentRefreshArtifacts();
+    };
+
+    window.addEventListener('raro:artifact_promoted', handleArtifactPromoted as EventListener);
+
     return () => {
       unsubscribe();
+      window.removeEventListener('raro:artifact_promoted', handleArtifactPromoted as EventListener);
       if (refreshDebounceTimer) {
         clearTimeout(refreshDebounceTimer);
       }
@@ -75,25 +84,23 @@
     }
   }
 
-  async function refreshAll() {
-    await Promise.all([refreshLibrary(), refreshArtifacts()]);
-  }
-
-  async function refreshLibrary() {
+  // Use centralized refresh functions from stores
+  async function handleRefreshAll() {
     isRefreshing = true;
     try {
-      const files = await getLibraryFiles();
-      libraryFiles.set(files);
+      const { artifacts: freshArtifacts } = await refreshAll();
+      artifacts = freshArtifacts;
+      lastRefreshTime = Date.now();
     } catch (err) {
-      console.error(err);
+      console.error('Failed to refresh environment:', err);
     } finally {
       isRefreshing = false;
     }
   }
 
-  async function refreshArtifacts() {
+  async function handleRefreshArtifacts() {
     try {
-      artifacts = await getAllArtifacts();
+      artifacts = await refreshArtifacts();
       lastRefreshTime = Date.now();
     } catch (err) {
       console.error('Failed to fetch artifacts:', err);
@@ -102,7 +109,7 @@
 
   async function silentRefreshArtifacts() {
     try {
-      const newArtifacts = await getAllArtifacts();
+      const newArtifacts = await refreshArtifacts();
 
       // Delta detection: Only update if there are actual changes
       const hasChanges = detectArtifactChanges(artifacts, newArtifacts);
@@ -153,7 +160,7 @@
   }
 
   function handleRefresh() {
-    refreshAll();
+    handleRefreshAll();
     addLog('SYSTEM', 'Environment refreshed.', 'IO_OK');
   }
 
@@ -169,6 +176,7 @@
     try {
       await uploadFile(file);
       addLog('SYSTEM', 'Upload complete.', 'IO_OK');
+      // Use centralized refresh function
       await refreshLibrary();
     } catch (err) {
       addLog('SYSTEM', `Upload failed: ${err}`, 'IO_ERR');

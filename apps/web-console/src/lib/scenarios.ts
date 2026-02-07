@@ -21,12 +21,12 @@ export const SCENARIOS: MissionScenario[] = [
     {
         id: 'financial_audit',
         title: 'Deep Financial Audit',
-        description: 'Analyze raw CSV data, detect anomalies using Python, and generate a PDF executive summary.',
+        description: 'Analyze telemetry and financials to detect margin anomalies.',
         icon: '📊',
         templateKey: 'STANDARD',
-        directive: "Analyze the 'raw_telemetry_dump.csv'. Identify the top 3 anomalies based on variance. Generate a matplotlib chart of the findings, and write a 'financial_report.md' summarizing the risk factors.",
+        directive: "Read 'raw_telemetry_dump.csv' and 'financials_Q4.csv'. Correlate the 'CRITICAL' latency spikes in telemetry with the profit margin drop in Q3. Generate a matplotlib chart showing the impact and save as 'anomaly_report.png'.",
         difficulty: 'MEDIUM',
-        suggestedFiles: ['raw_telemetry_dump.csv']
+        suggestedFiles: ['raw_telemetry_dump.csv', 'financials_Q4.csv']
     },
     {
         id: 'market_research',
@@ -41,10 +41,10 @@ export const SCENARIOS: MissionScenario[] = [
     {
         id: 'code_migration',
         title: 'Legacy Code Refactor',
-        description: 'Ingest a legacy Python script, map the dependency graph, and rewrite it using modern patterns.',
+        description: 'Ingest a legacy script and refactor for performance.',
         icon: '💻',
         templateKey: 'DEV',
-        directive: "Read 'legacy_script.py'. Map the control flow. Refactor the 'process_data' function to use Pandas instead of raw loops. Output the new code to 'modern_script.py' and run a test validation.",
+        directive: "Read 'legacy_script.py'. Refactor the process_data function to be more efficient using a list comprehension. Test the new logic and save as 'refactored_script.py'.",
         difficulty: 'EASY',
         suggestedFiles: ['legacy_script.py']
     }

@@ -156,6 +156,7 @@ impl WorkspaceInitializer {
 
     /// Promotes agent-generated file from session output to persistent artifacts storage
     pub async fn promote_artifact_to_storage(
+        client_id: &str,
         run_id: &str,
         workflow_id: &str,
         agent_id: &str,
@@ -165,8 +166,8 @@ impl WorkspaceInitializer {
         // 1. Source: Session output
         let src_path = format!("{}/sessions/{}/output/{}", STORAGE_ROOT, run_id, filename);
 
-        // 2. Destination: Artifacts directory (organized by run)
-        let artifacts_dir = format!("{}/artifacts/{}", STORAGE_ROOT, run_id);
+        // 2. Destination: Artifacts directory (organized by client and run)
+        let artifacts_dir = format!("{}/artifacts/{}/{}", STORAGE_ROOT, client_id, run_id);
         fs::create_dir_all(&artifacts_dir)?;
 
         let dest_path = format!("{}/{}", artifacts_dir, filename);
@@ -238,9 +239,9 @@ impl WorkspaceInitializer {
         .to_string()
     }
 
-    /// List all artifact runs
-    pub async fn list_artifact_runs() -> io::Result<Vec<String>> {
-        let artifacts_root = format!("{}/artifacts", STORAGE_ROOT);
+    /// List all artifact runs for a specific client
+    pub async fn list_artifact_runs(client_id: &str) -> io::Result<Vec<String>> {
+        let artifacts_root = format!("{}/artifacts/{}", STORAGE_ROOT, client_id);
         if !Path::new(&artifacts_root).exists() {
             return Ok(Vec::new());
         }
@@ -262,8 +263,8 @@ impl WorkspaceInitializer {
     }
 
     /// Get metadata for a specific run's artifacts
-    pub async fn get_artifact_metadata(run_id: &str) -> io::Result<ArtifactMetadata> {
-        let path = format!("{}/artifacts/{}/metadata.json", STORAGE_ROOT, run_id);
+    pub async fn get_artifact_metadata(client_id: &str, run_id: &str) -> io::Result<ArtifactMetadata> {
+        let path = format!("{}/artifacts/{}/{}/metadata.json", STORAGE_ROOT, client_id, run_id);
         let data = fs::read_to_string(&path)?;
         serde_json::from_str(&data)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))

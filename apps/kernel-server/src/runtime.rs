@@ -290,6 +290,7 @@ impl RARORuntime {
         let state = RuntimeState {
             run_id: run_id.clone(),
             workflow_id: workflow_id.clone(),
+            client_id: client_id.to_string(),
             status: RuntimeStatus::Running,
             active_agents: Vec::new(),
             completed_agents: Vec::new(),
@@ -603,8 +604,8 @@ impl RARORuntime {
                         let artifact_id = if let Some(output_data) = &res.output {
                             // File Promotion Logic
                             if let Some(files_array) = output_data.get("files_generated").and_then(|v| v.as_array()) {
-                                let workflow_id = self.runtime_states.get(&run_id)
-                                    .map(|s| s.workflow_id.clone())
+                                let (workflow_id, client_id) = self.runtime_states.get(&run_id)
+                                    .map(|s| (s.workflow_id.clone(), s.client_id.clone()))
                                     .unwrap_or_default();
 
                                 let user_directive = {
@@ -618,6 +619,7 @@ impl RARORuntime {
 
                                 for file_val in files_array {
                                     if let Some(filename) = file_val.as_str() {
+                                        let cid = client_id.clone();
                                         let rid = run_id.clone();
                                         let wid = workflow_id.clone();
                                         let aid = agent_id.clone();
@@ -626,7 +628,7 @@ impl RARORuntime {
 
                                         tokio::spawn(async move {
                                             match fs_manager::WorkspaceInitializer::promote_artifact_to_storage(
-                                                &rid, &wid, &aid, &fname, &directive
+                                                &cid, &rid, &wid, &aid, &fname, &directive
                                             ).await {
                                                 Ok(_) => tracing::info!("✓ Artifact '{}' promoted to persistent storage", fname),
                                                 Err(e) => tracing::error!("✗ Failed to promote artifact '{}': {}", fname, e),

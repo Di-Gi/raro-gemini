@@ -168,6 +168,7 @@ pub enum InvocationStatus {
 pub struct RuntimeState {
     pub run_id: String,
     pub workflow_id: String,
+    pub client_id: String,
     pub status: RuntimeStatus,
     pub active_agents: Vec<String>,
     pub completed_agents: Vec<String>,

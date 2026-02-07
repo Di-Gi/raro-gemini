@@ -147,6 +147,69 @@ export function reinitializeConsole() {
     }, 300);
 }
 
+// === ENVIRONMENT REFRESH FUNCTIONS ===
+// Centralized refresh logic for Library and Artifacts
+// Used by both EnvironmentRail and ArtifactViewer
+
+/**
+ * Refresh library files and update store
+ */
+export async function refreshLibrary(): Promise<string[]> {
+    try {
+        const { getLibraryFiles } = await import('./api');
+        const files = await getLibraryFiles();
+        libraryFiles.set(files);
+        return files;
+    } catch (err) {
+        console.error('[stores] Failed to refresh library:', err);
+        throw err;
+    }
+}
+
+/**
+ * Refresh artifacts (returns data without updating a store)
+ * Components can handle the data as needed
+ */
+export async function refreshArtifacts(): Promise<any[]> {
+    try {
+        const { getAllArtifacts } = await import('./api');
+        const artifacts = await getAllArtifacts();
+        return artifacts;
+    } catch (err) {
+        console.error('[stores] Failed to refresh artifacts:', err);
+        throw err;
+    }
+}
+
+/**
+ * Refresh both library and artifacts
+ */
+export async function refreshAll(): Promise<{ files: string[]; artifacts: any[] }> {
+    const [files, artifacts] = await Promise.all([
+        refreshLibrary(),
+        refreshArtifacts()
+    ]);
+    return { files, artifacts };
+}
+
+/**
+ * Legacy function - kept for compatibility
+ * @deprecated Use refreshAll() instead
+ */
+export async function refreshEnvironment() {
+    try {
+        const { files, artifacts } = await refreshAll();
+
+        // Dispatch a custom event so non-store logic (like Artifact lists in Rail) can react
+        window.dispatchEvent(new CustomEvent('raro:env_updated', {
+            detail: { files, artifacts }
+        }));
+    } catch (e) {
+        console.warn('[RARO] Silent refresh failed:', e);
+    }
+}
+
+
 // === RFS STORES ===
 // The list of all files available in /storage/library
 export const libraryFiles = writable<string[]>([]);
@@ -648,7 +711,7 @@ export function connectRuntimeWebSocket(runId: string, manualMode: boolean = fal
         }
       }
 
-      // [[NEW]] Intermediate log events
+        // Intermediate log events
           else if (data.type === 'log_event') {
             const agentId = data.agent_id ? data.agent_id.toUpperCase() : 'SYSTEM';
             const p = data.payload;
