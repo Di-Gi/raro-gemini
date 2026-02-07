@@ -518,7 +518,33 @@ impl RARORuntime {
             // 6. Handle Result & Potential Delegation
             match response {
                 Ok(res) => {
-                    if res.success {
+                    // === POST-FLIGHT: PROTOCOL VALIDATOR & SEMANTIC CHECK ===
+                    let text = res.output.as_ref()
+                        .and_then(|o| o.get("result"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+
+                    // 1. Analyze Signals
+                    let is_semantic_null = text.contains("[STATUS: NULL]");
+                    let is_bypassed = text.contains("[BYPASS:");
+
+                    // 2. Check Tool Evidence (Did the response include tool usage logs?)
+                    let used_python = text.contains("execute_python") || text.contains("Tool 'execute_python' Result");
+                    let used_search = text.contains("web_search") || text.contains("Tool 'web_search' Result");
+
+                    // 3. Protocol Validation Logic
+                    let mut protocol_violation = None;
+
+                    if !is_bypassed {
+                        if agent_id.starts_with("research_") && !used_search {
+                            protocol_violation = Some("Protocol Violation: 'research_' agent did not use web_search (Hallucination Risk).");
+                        } else if (agent_id.starts_with("analyze_") || agent_id.starts_with("coder_")) && !used_python {
+                            protocol_violation = Some("Protocol Violation: 'analyze_'/'coder_' agent did not use execute_python (Integrity Risk).");
+                        }
+                    }
+
+                    // 4. Circuit Breaker Decision
+                    if res.success && !is_semantic_null && protocol_violation.is_none() {
                         // [[CONTEXT CACHING PERSISTENCE]]
                         // If the agent returned a cache ID (either created new or refreshed),
                         // update the runtime store so subsequent agents reuse it.
@@ -643,15 +669,33 @@ impl RARORuntime {
                             serde_json::json!({"agent_id": agent_id, "tokens_used": res.tokens_used}),
                         ));
                     } else {
-                        let error = res.error.unwrap_or_else(|| "Unknown error".to_string());
+                        // === CIRCUIT BREAKER: FAILURE / PAUSE LOGIC ===
+                        let pause_reason = if is_semantic_null {
+                            format!("Agent '{}' reported a Semantic Null (found no data).", agent_id)
+                        } else if let Some(violation) = protocol_violation {
+                            violation.to_string()
+                        } else {
+                            res.error.unwrap_or_else(|| "Unknown Execution Error".to_string())
+                        };
+
+                        tracing::error!("Circuit Breaker Triggered for {}: {}", agent_id, pause_reason);
+
+                        // A. Pause the Run
+                        self.request_approval(&run_id, Some(&agent_id), &pause_reason).await;
+
+                        // B. Emit Event for Cortex/UI
                         self.emit_event(RuntimeEvent::new(
                             &run_id,
-                            EventType::AgentFailed,
+                            EventType::AgentFailed, // This triggers the Config Pattern
                             Some(agent_id.clone()),
-                            serde_json::json!({"agent_id": agent_id, "error": error}),
+                            serde_json::json!({
+                                "error": pause_reason,
+                                "recovery_hint": "Check Prompt or Data Sources"
+                            }),
                         ));
-                        self.fail_run(&run_id, &agent_id, &error).await;
-                        self.trigger_remote_cleanup(&run_id).await;
+
+                        // C. Break Execution Loop
+                        break;
                     }
                 }
                 Err(e) => {
@@ -1135,6 +1179,23 @@ impl RARORuntime {
             } else {
                 tracing::warn!("Redis client unavailable. Context fetching skipped.");
             }
+        }
+
+        // === PRE-FLIGHT: CONTEXT DROUGHT PREVENTION ===
+        // Check if upstream agents provided any usable data
+        let has_null_signal = context_prompt_appendix.contains("[STATUS: NULL]");
+        let has_files = !dynamic_file_mounts.is_empty();
+        let is_root_node = agent_config.depends_on.is_empty();
+
+        // If we depend on others, and they gave us nothing but NULLs or empty text, pause.
+        if !is_root_node && (context_prompt_appendix.trim().is_empty() || (has_null_signal && !has_files)) {
+            let drought_msg = format!("Pre-Execution Halt: Agent '{}' is facing a Context Drought. Upstream nodes provided no usable data.", agent_id);
+            tracing::warn!("{}", drought_msg);
+
+            // Trigger the Circuit Breaker
+            self.request_approval(run_id, Some(agent_id), &drought_msg).await;
+
+            return Err("Halted: Contextual Data Drought".to_string());
         }
 
         let mut final_prompt = agent_config.prompt.clone();

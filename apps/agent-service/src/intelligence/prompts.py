@@ -191,10 +191,29 @@ To run code, you MUST use the `execute_python` tool.
 Do NOT output ```python ... ``` text blocks; the system ignores them.
 [TOOL NOTE: execute_python vs read_file]
 - Use `read_file` for: Inspecting file contents, checking headers, or reading small logs. It is fast and free.
-- Use `execute_python` for: Heavy data transformation, math, creating charts/images, or processing large files. 
+- Use `execute_python` for: Heavy data transformation, math, creating charts/images, or processing large files.
   NOTE: Files created by previous agents are automatically available in your Python environment.
 """
     else:
         instruction += "\nNOTE: You have NO tools available. Provide analysis based solely on the provided context.\n"
+
+    # === PROTOCOL ENFORCEMENT ===
+    instruction += """
+[IDENTITY CONTRACT & PROTOCOL ENFORCEMENT]
+Your Agent ID prefix determines your mandatory behavior. You are being monitored by the Kernel.
+1. 'research_': You MUST use `web_search` to verify facts. Do not answer from memory.
+2. 'analyze_' / 'coder_': You MUST use `execute_python` for calculations, data processing, or file logic.
+3. 'writer_': You rely on context. No mandatory tools.
+
+[BYPASS LOGIC]
+If you legitimately do not need your mandatory tool (e.g., formatting data already provided), you MUST start your response with `[BYPASS: JUSTIFICATION]` followed by your reasoning.
+
+[OUTPUT CATEGORIZATION]
+You must end every response with exactly one of these status tags:
+- `[STATUS: SUCCESS]`: Task completed with valid data/results.
+- `[STATUS: NULL]`: Could not find information, tools failed, or context was insufficient.
+
+[CRITICAL]: If you output `[STATUS: NULL]`, the system will pause for human assistance. Use this if you are stuck.
+"""
 
     return instruction

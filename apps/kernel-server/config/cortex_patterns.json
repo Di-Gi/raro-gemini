@@ -11,13 +11,13 @@
     }
   },
   {
-    "id": "guard_max_failures",
-    "name": "Max Failure Guard",
+    "id": "guard_execution_failure",
+    "name": "Failure Recovery Guard",
     "trigger_event": "AgentFailed",
     "condition": "*",
     "action": {
       "RequestApproval": {
-        "reason": "Agent failed. Requesting human intervention before retry."
+        "reason": "Execution Exception detected. Review logs and authorize Retry or Skip."
       }
     }
   },
