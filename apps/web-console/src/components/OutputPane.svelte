@@ -1,12 +1,16 @@
 <!-- [[RARO]]/apps/web-console/src/components/OutputPane.svelte -->
 <script lang="ts">
-  import { logs, updateLog, runtimeStore, type LogEntry } from '$lib/stores'
+  import {
+    logs, updateLog, runtimeStore, agentNodes, // <-- Import agentNodes
+    type LogEntry
+  } from '$lib/stores'
   import Typewriter from './sub/Typewriter.svelte'
   import SmartText from './sub/SmartText.svelte'
   import ApprovalCard from './sub/ApprovalCard.svelte'
   import ArtifactCard from './sub/ArtifactCard.svelte'
   import ToolExecutionCard from './sub/ToolExecutionCard.svelte'
   import ContextAttachmentCard from './sub/ContextAttachmentCard.svelte'
+  import GhostCard from './sub/GhostCard.svelte' // <-- Import the new component
   import { tick } from 'svelte';
 
   // Refs & Scroll Logic
@@ -43,6 +47,39 @@
     }
     groups.push(currentGroup);
     return groups;
+  });
+
+  // === GHOST LOGIC ===
+  // Find agents that are marked 'running' in the graph but have no active logs
+  let activeGhosts = $derived.by(() => {
+    // 1. Get currently running agents from topology
+    const runningAgents = $agentNodes.filter(n => n.status === 'running');
+
+    if (runningAgents.length === 0) return [];
+
+    // 2. Filter out agents that are already "talking" (have a recent log)
+    // We look at the very last log entry. If it belongs to this agent, they aren't a ghost.
+    const lastLog = $logs[$logs.length - 1];
+
+    return runningAgents.filter(agent => {
+        // Normalize IDs for comparison
+        const agentId = agent.id.toUpperCase(); // agentNodes IDs
+
+        // If the last log is from this agent, they are active, not ghosting.
+        // We also check if that log is incomplete (streaming).
+        if (lastLog && lastLog.role === agentId) {
+            return false;
+        }
+        return true;
+    });
+  });
+
+  // Update scroll trigger to account for ghosts appearing
+  $effect(() => {
+    const _g = activeGhosts; // Track dependency
+    tick().then(() => {
+      if (isPinnedToBottom) scrollToBottom('auto');
+    });
   });
 
   function handleScroll() {
@@ -196,7 +233,7 @@
 
     {#each groupedLogs as group (group.id)}
       <div class="log-group">
-        
+
         <!-- COLUMN 1: Agent Identity -->
         <div class="group-meta">
             <span class="group-role">{group.role}</span>
@@ -207,7 +244,7 @@
         <div class="group-body">
           {#each group.items as log (log.id)}
             <div class="log-item">
-              
+
               <!-- Inline Metadata Header -->
               {#if log.metadata && log.metadata !== 'INFO'}
                 <div class="item-meta-header">
@@ -228,19 +265,19 @@
                     toolResult={log.toolResult}
                     toolStatus={log.toolStatus}
                   />
-                
+
                 {:else if log.metadata === 'INTERVENTION'}
                   <ApprovalCard
                     reason={log.message === 'SAFETY_PATTERN_TRIGGERED' ? "System Policy Violation" : log.message}
                     runId={$runtimeStore.runId || ''}
                   />
-                
+
                 {:else if log.isAnimated}
                   <Typewriter
                     text={log.message}
                     onComplete={() => handleTypewriterComplete(log.id)}
                   />
-                
+
                 {:else}
                   <!-- Static Text + Artifacts -->
                   {@const fileList = extractAllFilenames(log.message)}
@@ -270,6 +307,12 @@
         </div>
 
       </div>
+    {/each}
+
+    <!-- === GHOST LAYER === -->
+    <!-- These render AFTER the last log, simulating the "next" entry -->
+    {#each activeGhosts as agent (agent.id)}
+        <GhostCard agentId={agent.id.toUpperCase()} />
     {/each}
 
   </div>
