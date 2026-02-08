@@ -457,7 +457,7 @@ export async function resumeRun(runId: string) {
 
     if (isSim) {
         runtimeStore.update(s => ({ ...s, status: 'RUNNING' }));
-        addLog('KERNEL', 'Mock: Resuming execution...', 'SYS');
+        addLog('KERNEL', 'Resuming execution...', 'SYS');
         await mockResumeRun(runId);
         return;
     }
@@ -481,7 +481,7 @@ export async function stopRun(runId: string) {
 
     if (isSim) {
         runtimeStore.update(s => ({ ...s, status: 'FAILED' }));
-        addLog('KERNEL', 'Mock: Run terminated by operator', 'SYS');
+        addLog('KERNEL', 'Run terminated by operator', 'SYS');
         await mockStopRun(runId);
         return;
     }
