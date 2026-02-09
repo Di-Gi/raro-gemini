@@ -11,6 +11,7 @@ storage/
 hackathon/
 guidance/
 backups/
+*.bak
 # Python
 __pycache__/
 *.py[cod]
