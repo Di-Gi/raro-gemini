@@ -358,6 +358,7 @@ export function getMockGeneratedFile(filename: string): string | null {
 
 export class MockWebSocket {
     url: string;
+    runId: string;
     onopen: (() => void) | null = null;
     onmessage: ((event: { data: string }) => void) | null = null;
     onclose: ((e: { code: number; reason: string; wasClean: boolean }) => void) | null = null;
@@ -384,6 +385,11 @@ export class MockWebSocket {
         this.url = url;
         this.manualMode = manualMode;
         activeSocket = this; // Register singleton
+
+        // Extract runId from WebSocket URL
+        // Handles both ws://domain/ws/runtime/{id} and mock://runtime/{id}
+        const segments = url.split('/');
+        this.runId = segments[segments.length - 1] || 'mock-run-unknown';
 
         SESSION_ARTIFACTS = {};
 
@@ -784,6 +790,7 @@ Delegating parallel execution to ${newAgentIdA} and ${newAgentIdB}...`;
         // 2. CONSTRUCT DYNAMIC STATE
         // We ignore the empty placeholders in `step.state` and build from class properties
         const dynamicState = {
+            run_id: this.runId,
             status: step.state.status === 'RUNNING' ? 'RUNNING' : step.state.status,
             active_agents: [...this.activeAgents],
             completed_agents: [...this.completedAgents],

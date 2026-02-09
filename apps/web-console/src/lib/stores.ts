@@ -278,7 +278,7 @@ function triggerGraphFlash() {
     setTimeout(() => graphFlash.set(false), 1000); // Flash for 1 second
 }
 
-function generateId() {
+export function generateId() {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) {
         return crypto.randomUUID();
     }
@@ -866,6 +866,10 @@ function syncState(state: any, signatures: Record<string, string> = {}, topology
 
     // 5. Sync Logs
     if (state.invocations && Array.isArray(state.invocations)) {
+        // Defensive Run ID Resolution
+        // Prefer ID from state update, fallback to store, fallback to placeholder
+        const effectiveRunId = state.run_id || get(runtimeStore).runId || 'undefined_run_id';
+
         async function fetchAndPopulateArtifact(runId: string, inv: any) {
             const agentLabel = (inv.agent_id || 'UNKNOWN').toUpperCase();
             try {
@@ -936,10 +940,10 @@ function syncState(state: any, signatures: Record<string, string> = {}, topology
                         );
 
                         if (existingLiveLog) {
-                            await fetchAndPopulateArtifact(state.run_id, inv);
+                            await fetchAndPopulateArtifact(effectiveRunId, inv);
                         } else {
                             addLog(agentLabel, 'Initiating output retrieval...', 'LOADING', false, inv.id);
-                            await fetchAndPopulateArtifact(state.run_id, inv);
+                            await fetchAndPopulateArtifact(effectiveRunId, inv);
                         }
                     } else {
                         addLog(agentLabel, 'Completed (No Output)', `TOKENS: ${inv.tokens_used}`, false, inv.id);

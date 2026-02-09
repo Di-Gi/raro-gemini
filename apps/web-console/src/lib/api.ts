@@ -1,14 +1,16 @@
 // [[RARO]]/apps/web-console/src/lib/api.ts
 import { mockStartRun, mockGetArtifact, mockResumeRun, mockStopRun, mockGetLibraryFiles, getMockGeneratedFile } from './mock-api';
+import { generateId } from './stores'
 
 // --- 1. SESSION IDENTITY LOGIC ---
 const STORAGE_KEY = 'raro_session_id';
+
 
 function getClientId(): string {
     if (typeof localStorage === 'undefined') return 'cli-mode'; // SSR safety
     let id = localStorage.getItem(STORAGE_KEY);
     if (!id) {
-        id = crypto.randomUUID();
+        id = generateId();
         localStorage.setItem(STORAGE_KEY, id);
         console.log('[RARO] New Session Identity Created:', id);
     }
@@ -100,13 +102,15 @@ export function getWebSocketURL(runId: string): string {
 }
 
 export async function getArtifact(runId: string, agentId: string): Promise<any> {
-  // ** MOCK INTERCEPTION **
-  if (USE_MOCK) {
+  // ** HYBRID MODE DETECTION **
+  // Intercept simulation IDs even if USE_MOCK is false globally
+  if (USE_MOCK || (runId && (runId.startsWith('sim-') || runId.startsWith('mock-')))) {
     return mockGetArtifact(runId, agentId);
   }
 
   try {
-    const res = await fetch(`${KERNEL_API}/runtime/${runId}/artifact/${agentId}`);
+    // Use secureFetch to pass X-RARO-CLIENT-ID header
+    const res = await secureFetch(`${KERNEL_API}/runtime/${runId}/artifact/${agentId}`);
 
     if (res.status === 404) {
       console.warn(`Artifact not found for agent ${agentId}`);
