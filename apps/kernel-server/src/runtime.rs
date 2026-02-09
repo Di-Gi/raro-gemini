@@ -512,9 +512,57 @@ impl RARORuntime {
 
             let payload_res = self.prepare_invocation_payload(&run_id, &agent_id).await;
             if let Err(e) = payload_res {
-                self.fail_run(&run_id, &agent_id, &e).await;
-                self.trigger_remote_cleanup(&run_id).await;
-                continue;
+                // Check if this is a soft failure (context drought) vs hard failure
+                let is_context_drought = e.contains("Context Drought") || e.contains("Contextual Data Drought");
+
+                if is_context_drought {
+                    // SOFT FAILURE: Already called request_approval in prepare_invocation_payload
+                    // Just record it and break to allow user intervention
+                    tracing::info!("Context Drought detected for {}. Execution paused for approval.", agent_id);
+
+                    {
+                        if let Some(mut state) = self.runtime_states.get_mut(&run_id) {
+                            state.active_agents.retain(|a| a != &agent_id);
+
+                            // Record the paused invocation
+                            state.invocations.push(AgentInvocation {
+                                id: Uuid::new_v4().to_string(),
+                                agent_id: agent_id.clone(),
+                                model_variant: ModelVariant::Fast,
+                                thought_signature: None,
+                                tools_used: vec![],
+                                tokens_used: 0,
+                                latency_ms: 0,
+                                status: InvocationStatus::Paused,
+                                timestamp: Utc::now().to_rfc3339(),
+                                artifact_id: None,
+                                error_message: Some(e.clone()),
+                            });
+                        }
+                        self.persist_state(&run_id).await;
+                    }
+
+                    // Emit event for UI notification (triggers approval card)
+                    self.emit_event(RuntimeEvent::new(
+                        &run_id,
+                        EventType::SystemIntervention,
+                        Some(agent_id.clone()),
+                        serde_json::json!({
+                            "reason": e,
+                            "agent_id": agent_id,
+                            "type": "context_drought",
+                            "recovery_hint": "Upstream agents provided insufficient data. Review and choose to Skip or Stop"
+                        }),
+                    ));
+
+                    // Break to suspend execution
+                    break;
+                } else {
+                    // HARD FAILURE: Preparation error (missing workflow, etc.)
+                    self.fail_run(&run_id, &agent_id, &e).await;
+                    self.trigger_remote_cleanup(&run_id).await;
+                    continue;
+                }
             }
             let payload = payload_res.unwrap();
 
@@ -533,9 +581,21 @@ impl RARORuntime {
                     let is_semantic_null = text.contains("[STATUS: NULL]");
                     let is_bypassed = text.contains("[BYPASS:");
 
-                    // 2. Check Tool Evidence (Did the response include tool usage logs?)
-                    let used_python = text.contains("execute_python") || text.contains("Tool 'execute_python' Result");
-                    let used_search = text.contains("web_search") || text.contains("Tool 'web_search' Result");
+                    // 2. Check Tool Evidence (Robust Check)
+                    // We check the explicit list from Python first, fall back to text scan
+                    let used_python = res.executed_tools.contains(&"execute_python".to_string())
+                                      || text.contains("execute_python")
+                                      || text.contains("Tool 'execute_python' Result");
+
+                    let used_search = res.executed_tools.contains(&"web_search".to_string())
+                                      || text.contains("web_search")
+                                      || text.contains("Tool 'web_search' Result");
+
+                    // [[FIX 1 START: Detect File Writing]]
+                    let used_write = res.executed_tools.contains(&"write_file".to_string())
+                                      || text.contains("write_file")
+                                      || text.contains("Tool 'write_file' Result");
+                    // [[FIX 1 END]]
 
                     // 3. Protocol Validation Logic
                     let mut protocol_violation = None;
@@ -543,12 +603,16 @@ impl RARORuntime {
                     if !is_bypassed {
                         if agent_id.starts_with("research_") && !used_search {
                             protocol_violation = Some("Protocol Violation: 'research_' agent did not use web_search (Hallucination Risk).");
-                        } else if (agent_id.starts_with("analyze_") || agent_id.starts_with("coder_")) && !used_python {
-                            protocol_violation = Some("Protocol Violation: 'analyze_'/'coder_' agent did not use execute_python (Integrity Risk).");
+                        } else if (agent_id.starts_with("analyze_") || agent_id.starts_with("coder_")) {
+                            // [[FIX 1 START: Allow write_file as a valid output action for analysts]]
+                            if !used_python && !used_write {
+                                protocol_violation = Some("Protocol Violation: 'analyze_'/'coder_' agent did not use execute_python or write_file (Integrity Risk).");
+                            }
+                            // [[FIX 1 END]]
                         }
                     }
 
-                    // 4. Circuit Breaker Decision
+                    // 4. Circuit Breaker Decision & Output Handling
                     if res.success && !is_semantic_null && protocol_violation.is_none() {
                         // [[CONTEXT CACHING PERSISTENCE]]
                         // If the agent returned a cache ID (either created new or refreshed),
@@ -567,7 +631,7 @@ impl RARORuntime {
 
                             // === FIX: SEPARATE LOCK SCOPES TO PREVENT DEADLOCK ===
                             // === FIX: DEADLOCK PREVENTION ===
-                            // Separate lock scopes. 
+                            // Separate lock scopes.
                             // 1. Acquire Read Lock to check permission, then DROP IT immediately.
                             let can_delegate = if let Some(state) = self.runtime_states.get(&run_id) {
                                 let wf_id = state.workflow_id.clone();
@@ -674,34 +738,76 @@ impl RARORuntime {
                             Some(agent_id.clone()),
                             serde_json::json!({"agent_id": agent_id, "tokens_used": res.tokens_used}),
                         ));
+
                     } else {
-                        // === CIRCUIT BREAKER: FAILURE / PAUSE LOGIC ===
-                        let pause_reason = if is_semantic_null {
-                            format!("Agent '{}' reported a Semantic Null (found no data).", agent_id)
+                        // === CIRCUIT BREAKER: PAUSE LOGIC (SOFT VS HARD FAILURES) ===
+                        let (pause_reason, is_fatal) = if is_semantic_null {
+                            (format!("Agent '{}' reported a Semantic Null (found no data). Verification required.", agent_id), false)
                         } else if let Some(violation) = protocol_violation {
-                            violation.to_string()
+                            (violation.to_string(), false)
                         } else {
-                            res.error.unwrap_or_else(|| "Unknown Execution Error".to_string())
+                            (res.error.unwrap_or_else(|| "Unknown Execution Error".to_string()), true)
                         };
 
-                        tracing::error!("Circuit Breaker Triggered for {}: {}", agent_id, pause_reason);
+                        tracing::warn!("Circuit Breaker Triggered for {}: {}", agent_id, pause_reason);
 
-                        // A. Pause the Run
-                        self.request_approval(&run_id, Some(&agent_id), &pause_reason).await;
+                        if is_fatal {
+                            // HARD FAILURE: Crash the run (Network errors, Panics)
+                            self.emit_event(RuntimeEvent::new(
+                                &run_id,
+                                EventType::AgentFailed,
+                                Some(agent_id.clone()),
+                                serde_json::json!({"error": pause_reason}),
+                            ));
+                            self.fail_run(&run_id, &agent_id, &pause_reason).await;
+                            self.trigger_remote_cleanup(&run_id).await;
+                            break;
+                        } else {
+                            // SOFT FAILURE: Pause for Human Intervention (Nulls, Policy Violations)
+                            // We do NOT mark as failed. We simply remove from active and request approval.
+                            // This allows the user to Resume (Retry) or Edit the state.
 
-                        // B. Emit Event for Cortex/UI
-                        self.emit_event(RuntimeEvent::new(
-                            &run_id,
-                            EventType::AgentFailed, // This triggers the Config Pattern
-                            Some(agent_id.clone()),
-                            serde_json::json!({
-                                "error": pause_reason,
-                                "recovery_hint": "Check Prompt or Data Sources"
-                            }),
-                        ));
+                            {
+                                if let Some(mut state) = self.runtime_states.get_mut(&run_id) {
+                                    state.active_agents.retain(|a| a != &agent_id);
 
-                        // C. Break Execution Loop
-                        break;
+                                    // Record the "Paused" invocation so it appears in logs
+                                    state.invocations.push(AgentInvocation {
+                                        id: Uuid::new_v4().to_string(),
+                                        agent_id: agent_id.clone(),
+                                        model_variant: ModelVariant::Fast,
+                                        thought_signature: None,
+                                        tools_used: payload.tools.clone(),
+                                        tokens_used: res.tokens_used,
+                                        latency_ms: res.latency_ms as u64,
+                                        status: InvocationStatus::Paused,
+                                        timestamp: Utc::now().to_rfc3339(),
+                                        artifact_id: None,
+                                        error_message: Some(pause_reason.clone()),
+                                    });
+                                }
+                                self.persist_state(&run_id).await;
+                            }
+
+                            // Emit event for UI notification (triggers approval card)
+                            self.emit_event(RuntimeEvent::new(
+                                &run_id,
+                                EventType::SystemIntervention,
+                                Some(agent_id.clone()),
+                                serde_json::json!({
+                                    "reason": pause_reason,
+                                    "agent_id": agent_id,
+                                    "type": "soft_failure",
+                                    "recovery_hint": "Review agent output and choose to Resume, Skip, or Stop"
+                                }),
+                            ));
+
+                            // Trigger the Pause (sets status to AwaitingApproval)
+                            self.request_approval(&run_id, Some(&agent_id), &pause_reason).await;
+
+                            // Break the loop to suspend execution until resumed
+                            break;
+                        }
                     }
                 }
                 Err(e) => {
@@ -722,9 +828,52 @@ impl RARORuntime {
     async fn handle_delegation(&self, run_id: &str, parent_id: &str, mut req: DelegationRequest) -> Result<(), String> {
         let state = self.runtime_states.get(run_id).ok_or("Run not found")?;
         let workflow_id = state.workflow_id.clone();
+
+        // Snapshot safe IDs to check status
+        let active_agents = state.active_agents.clone();
+        let completed_agents = state.completed_agents.clone();
         drop(state);  // Drop read lock
 
-        // 2. PRE-FETCH DEPENDENTS & SANITIZE IDs
+        // === STEP 1: PRUNING & ORPHAN CAPTURE ===
+        // Handle removals first to clear the graph
+        // [[CRITICAL FIX]] We must capture "orphans" of pruned nodes to reconnect them!
+        let mut orphaned_dependents: Vec<String> = Vec::new();
+
+        if !req.prune_nodes.is_empty() {
+            tracing::info!("Delegation PRUNE: Removing nodes {:?}", req.prune_nodes);
+
+            for node_to_remove in &req.prune_nodes {
+                // Safety Check: Cannot remove Active or Completed nodes
+                if active_agents.contains(node_to_remove) || completed_agents.contains(node_to_remove) {
+                    tracing::warn!("Agent {} tried to prune active/completed node {}. Ignoring.", parent_id, node_to_remove);
+                    continue;
+                }
+
+                // 1. Remove from DAG & Capture Orphans
+                if let Some(mut dag) = self.dag_store.get_mut(run_id) {
+                    // [[CRITICAL FIX]] Save children of the node we are about to delete
+                    // These nodes (e.g., 'writer_report') were waiting on 'analyze_data'.
+                    // If we delete 'analyze_data', they become orphans.
+                    // We must add them to the connection list for the NEW nodes.
+                    let children = dag.get_children(node_to_remove);
+                    orphaned_dependents.extend(children);
+
+                    if let Err(e) = dag.remove_node(node_to_remove) {
+                        tracing::warn!("Failed to prune node {}: {}", node_to_remove, e);
+                    }
+                }
+
+                // 2. Remove from Workflow Config (Metadata)
+                if let Some(mut workflow) = self.workflows.get_mut(&workflow_id) {
+                    if let Some(pos) = workflow.agents.iter().position(|a| a.id == *node_to_remove) {
+                        workflow.agents.remove(pos);
+                        tracing::info!("Pruned node '{}' from workflow config", node_to_remove);
+                    }
+                }
+            }
+        }
+
+        // === STEP 2: PRE-FETCH DEPENDENTS (Re-fetch after pruning) ===
         let (existing_dependents, existing_node_ids) = if let Some(dag) = self.dag_store.get(run_id) {
             (dag.get_children(parent_id), dag.export_nodes())
         } else {
@@ -785,6 +934,28 @@ impl RARORuntime {
             }).collect();
         }
 
+        // [[CRITICAL FIX START]]: Create a list of IDs being injected/updated
+        // We must NOT treat these as "downstream dependents" to avoid self-referential cycles.
+        let new_node_ids: Vec<String> = req.new_nodes.iter().map(|n| n.id.clone()).collect();
+
+        // [[CRITICAL FIX]]: MERGE ORPHANS into Downstream Dependents
+        // Combine parent's original children AND the children of the nodes we just pruned.
+        let mut all_downstream = existing_dependents.clone();
+        all_downstream.extend(orphaned_dependents);
+        // Dedup
+        all_downstream.sort();
+        all_downstream.dedup();
+
+        // Filter existing dependents to finding TRUE downstream nodes
+        // 1. Must not be a new node
+        // 2. Must not be a pruned node (dead link)
+        let downstream_dependents: Vec<String> = all_downstream
+            .into_iter()
+            .filter(|dep_id| !new_node_ids.contains(dep_id))
+            .filter(|dep_id| !req.prune_nodes.contains(dep_id)) // <--- ADD THIS to prevent linking to dead nodes
+            .collect();
+        // [[CRITICAL FIX END]]
+
         // 3. MUTATE WORKFLOW CONFIG
         if let Some(mut workflow) = self.workflows.get_mut(&workflow_id) {
             for node in &req.new_nodes {
@@ -792,7 +963,8 @@ impl RARORuntime {
             }
 
             if req.strategy == DelegationStrategy::Child {
-                for dep_id in &existing_dependents {
+                // Use the filtered list (downstream_dependents) instead of existing_dependents
+                for dep_id in &downstream_dependents {
                     if let Some(dep_agent) = workflow.agents.iter_mut().find(|a| a.id == *dep_id) {
                         dep_agent.depends_on.retain(|p| p != parent_id);
                         for new_node in &req.new_nodes {
@@ -810,49 +982,34 @@ impl RARORuntime {
 
         // 4. MUTATE DAG TOPOLOGY
         if let Some(mut dag) = self.dag_store.get_mut(run_id) {
-            
+
             for node in &req.new_nodes {
                 dag.add_node(node.id.clone()).map_err(|e| e.to_string())?;
 
-                // Add explicit edges from config
-                // This covers internal dependencies (B depends on A) inside the delegated cluster
                 for dep in &node.depends_on {
                     if let Err(e) = dag.add_edge(dep.clone(), node.id.clone()) {
-                        // If it's a new node dependency, it should work. 
-                        // If it's the parent, we handle it below explicitly, but adding here is fine if safe.
-                        // However, we must ensure we don't double add or cause issues if logic below handles parent.
-                        // For SAFETY: Let's trust the explicit parent logic below for the "Root" connection,
-                        // and use this loop only for internal or other external dependencies.
-                        // Actually, `dag.add_edge` is safe (idempotent logic usually handled or error if cycle).
-                        // Let's just log warning if it fails but continue for parent connection.
                         tracing::debug!("Adding dependency edge {} -> {}: {:?}", dep, node.id, e);
                     }
                 }
 
-                // If node has NO dependencies in the new set, attach to Parent (if Child strategy)
-                // Or if it explicitly depends on Parent (which we might have remapped?)
-                // Simplified Logic: If strategy is Child, we FORCE parent connection if not already present?
-                // Actually, the Architect/LLM usually adds parent to `depends_on`.
-                // If LLM output `depends_on: []`, we must attach to parent.
                 if node.depends_on.is_empty() || node.depends_on.contains(&parent_id.to_string()) {
                      let _ = dag.add_edge(parent_id.to_string(), node.id.clone());
                 }
 
-                // B. Connect New Nodes -> Existing Dependents (Splicing)
+                // B. Connect New Nodes -> TRUE Downstream Dependents
                 if req.strategy == DelegationStrategy::Child {
-                    for dep in &existing_dependents {
+                    for dep in &downstream_dependents {
                         dag.add_edge(node.id.clone(), dep.clone()).map_err(|e| e.to_string())?;
                     }
                 }
             }
 
-            // C. Remove Old Edges (Parent -> Dependents)
+            // C. Remove Old Edges (Parent -> TRUE Downstream Dependents)
             if req.strategy == DelegationStrategy::Child {
-                for dep in &existing_dependents {
+                for dep in &downstream_dependents {
                     let _ = dag.remove_edge(parent_id, dep);
                 }
             }
-            // Validate Cycle
 
             if let Err(e) = dag.topological_sort() {
                 tracing::error!("Delegation created a cycle: {:?}", e);
@@ -1204,11 +1361,6 @@ impl RARORuntime {
             return Err("Halted: Contextual Data Drought".to_string());
         }
 
-        let mut final_prompt = agent_config.prompt.clone();
-        if !context_prompt_appendix.is_empty() {
-            final_prompt.push_str(&context_prompt_appendix);
-        }
-
         let cached_content_id = self.get_cache_resource(run_id);
 
         let model_string = match &agent_config.model {
@@ -1290,6 +1442,31 @@ impl RARORuntime {
 
         tracing::info!("Final provisioned tools for {}: {:?}", agent_id, tools);
 
+        // === ARCHITECTURAL FIX: SEPARATE IDENTITY FROM CONTEXT ===
+
+        // 1. Prepare System Prompt (Identity Only - Pure Constitution)
+        // Do NOT append context here. Keep this immutable.
+        let mut final_prompt = agent_config.prompt.clone();
+
+        if tools.contains(&"write_file".to_string()) {
+            final_prompt.push_str("\n\n[SYSTEM NOTICE]: You have access to 'write_file'. When generating a file, DO NOT output the file content in your text response. Simply state 'Writing [filename]...' and then execute the tool immediately. Duplicating content in text and tool arguments is prohibited.");
+        }
+
+        // 2. Prepare User Directive (Task + Context - Dynamic Data)
+        // We prepend context to the directive so it appears in the USER message.
+        // This prevents system instruction leakage.
+        let mut final_user_directive = agent_config.user_directive.clone();
+
+        if !context_prompt_appendix.is_empty() {
+            // Prepend context before the directive so model sees data before command
+            final_user_directive = if !final_user_directive.is_empty() {
+                format!("{}\n\n[OPERATIONAL CONTEXT]\n{}", context_prompt_appendix, final_user_directive)
+            } else {
+                // If no directive, just pass the context
+                context_prompt_appendix
+            };
+        }
+
         let graph_view = self.generate_graph_context(
             run_id,
             agent_id,
@@ -1300,8 +1477,8 @@ impl RARORuntime {
             run_id: run_id.to_string(),
             agent_id: agent_id.to_string(),
             model: model_string,
-            prompt: final_prompt,
-            user_directive: agent_config.user_directive.clone(),  // Pass operator directive
+            prompt: final_prompt,              // Pure Identity (System Instruction)
+            user_directive: final_user_directive,  // Task + Context (User Message)
             input_data: serde_json::Value::Object(input_data_map),
             parent_signature,
             cached_content_id,
@@ -1320,19 +1497,68 @@ impl RARORuntime {
     }
     
     pub fn get_topology_snapshot(&self, run_id: &str) -> Option<serde_json::Value> {
-        if let Some(dag) = self.dag_store.get(run_id) {
-            let edges = dag.export_edges();
-            let nodes = dag.export_nodes();
-            
-            Some(serde_json::json!({
-                "nodes": nodes,
-                "edges": edges.into_iter().map(|(from, to)| {
-                    serde_json::json!({ "from": from, "to": to })
-                }).collect::<Vec<_>>()
-            }))
-        } else {
-            None
-        }
+        // 1. Get the DAG
+        let dag = self.dag_store.get(run_id)?;
+
+        // 2. Get the Workflow Config (where prompts/metadata live)
+        let workflow_id = self.runtime_states.get(run_id).map(|s| s.workflow_id.clone())?;
+        let workflow = self.workflows.get(&workflow_id)?;
+
+        let edges = dag.export_edges();
+        let node_ids = dag.export_nodes();
+
+        // 3. Enrich Nodes with Config Data
+        let enriched_nodes: Vec<serde_json::Value> = node_ids.iter().map(|node_id| {
+            // Find the config for this node
+            let config = workflow.agents.iter().find(|a| a.id == *node_id);
+
+            if let Some(c) = config {
+                serde_json::json!({
+                    "id": c.id,
+                    "label": c.id, // Or human readable name if available
+                    "prompt": c.prompt,
+                    "model": match c.model {
+                        ModelVariant::Fast => "fast",
+                        ModelVariant::Reasoning => "reasoning",
+                        ModelVariant::Thinking => "thinking",
+                        ModelVariant::Custom(ref s) => s.as_str(),
+                    },
+                    "role": match c.role {
+                        AgentRole::Orchestrator => "orchestrator",
+                        AgentRole::Worker => "worker",
+                        AgentRole::Observer => "observer",
+                    },
+                    "tools": c.tools,
+                    "accepts_directive": c.accepts_directive,
+                    "allow_delegation": c.allow_delegation,
+                    // If position is stored in config (from initial layout), pass it
+                    // Dynamic nodes usually lack this, handled by frontend layout engine
+                    "x": c.position.as_ref().map(|p| p.x).unwrap_or(0.0),
+                    "y": c.position.as_ref().map(|p| p.y).unwrap_or(0.0)
+                })
+            } else {
+                // Fallback for purely structural nodes (rare)
+                serde_json::json!({
+                    "id": node_id,
+                    "label": node_id,
+                    "prompt": "Dynamic Agent (Metadata Missing)",
+                    "model": "fast",
+                    "role": "worker",
+                    "tools": [],
+                    "accepts_directive": false,
+                    "allow_delegation": false,
+                    "x": 0.0,
+                    "y": 0.0
+                })
+            }
+        }).collect();
+
+        Some(serde_json::json!({
+            "nodes": enriched_nodes, // <--- Now returns rich objects, not just strings
+            "edges": edges.into_iter().map(|(from, to)| {
+                serde_json::json!({ "from": from, "to": to })
+            }).collect::<Vec<_>>()
+        }))
     }
 
     pub fn set_cache_resource(&self, run_id: &str, cached_content_id: String) -> Result<(), String> {

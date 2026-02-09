@@ -11,6 +11,7 @@
   let { onenter }: { onenter: () => void } = $props();
 
   // === STATE MACHINE ===
+  // NEW: Added 'TERMINAL_VIEW' as the initial state
   type SystemState = 'TERMINAL_VIEW' | 'IDLE' | 'CHARGING' | 'LOCKED' | 'BOOTING';
   let sysState = $state<SystemState>('TERMINAL_VIEW');
   
@@ -25,29 +26,32 @@
   onMount(() => {
     const cursorInterval = setInterval(() => cursorVisible = !cursorVisible, 500);
 
-    // === BOOT SEQUENCE ===
+    // === SCENE 1: THE COLD BOOT SEQUENCE ===
     const bootLogs = [
-      { t: 200, msg: "RARO_KERNEL v0.1.0-alpha" },
-      { t: 400, msg: ">> MOUNTING_RFS_VOLUME [/app/storage]... OK" },
-      { t: 600, msg: ">> INITIALIZING_CORTEX_PATTERNS... OK" },
-      { t: 800, msg: ">> CONNECTING_REDIS_BUS... OK" },
-      { t: 1000, msg: ">> GEMINI_3_ADAPTER... DETECTED" },
-      { t: 1400, msg: ">> DAEMON_READY. WAITING_FOR_HUD..." }
+        { t: 200, msg: "RARO_KERNEL v0.1.0-alpha" },
+        { t: 400, msg: ">> MOUNTING_RFS_VOLUME [/app/storage]... OK" },
+        { t: 600, msg: ">> INITIALIZING_CORTEX_PATTERNS... OK" },
+        { t: 800, msg: ">> CONNECTING_REDIS_BUS... OK" },
+        { t: 1000, msg: ">> GEMINI_3_ADAPTER... DETECTED" },
+        { t: 1400, msg: ">> DAEMON_READY. WAITING_FOR_HUD..." }
     ];
 
+    // Play the logs
     bootLogs.forEach(step => {
-      setTimeout(() => {
-        logs = [...logs, step.msg];
-        const el = document.getElementById('term-feed');
-        if(el) el.scrollTop = el.scrollHeight;
-      }, step.t);
+        setTimeout(() => {
+            logs = [...logs, step.msg];
+            // Auto-scroll
+            const el = document.getElementById('term-feed');
+            if(el) el.scrollTop = el.scrollHeight;
+        }, step.t);
     });
 
-    // === CAMERA ZOOM-OUT ===
+    // === THE ZOOM OUT TRIGGER ===
     setTimeout(() => {
-      sysState = 'IDLE';
-      setTimeout(() => logs = [...logs, ">> UI_LAYER_MOUNTED"], 800);
-    }, 2200);
+        sysState = 'IDLE'; // <--- This triggers the CSS transition
+        // Add final "System Ready" log after zoom
+        setTimeout(() => logs = [...logs, ">> UI_LAYER_MOUNTED"], 800);
+    }, 2200); // 2.2 seconds of raw terminal before zoom out
 
     return () => clearInterval(cursorInterval);
   });
@@ -134,16 +138,13 @@
   }
 </script>
 
-<div class="viewport" out:fade={{ duration: 600 }}>
+<div class="viewport {sysState === 'TERMINAL_VIEW' ? 'dark-mode' : ''}" out:fade={{ duration: 600 }}>
+  
+  <div class="noise-layer"></div>
 
-  <!-- <div class="noise-layer"></div> -->
-
-  <!-- CAMERA VIEWPORT -->
-  <div class="camera-viewport">
-    <div class="scene" class:camera-zoom={sysState === 'TERMINAL_VIEW'}>
-
-      <!-- THE MONOLITH (always in normal layout) -->
-      <div class="monolith-stack" class:hide-chrome={sysState === 'TERMINAL_VIEW'}>
+  <!-- THE MONOLITH -->
+  <!-- ADDED: 'zoomed-in' class based on state -->
+  <div class="monolith-stack {sysState === 'TERMINAL_VIEW' ? 'zoomed-in' : ''}">
     
     <div class="slab-shadow"></div>
 
@@ -287,9 +288,6 @@
     </div>
   </div>
 
-    </div> <!-- close scene -->
-  </div> <!-- close camera-viewport -->
-
 </div>
 
 <style>
@@ -300,34 +298,12 @@
     background: var(--paper-bg);
     position: absolute; top: 0; left: 0; z-index: 1000;
     overflow: hidden;
+    transition: background 400ms ease-out 150ms;
   }
 
-  .viewport:has(.camera-zoom) {
-    background: var(--digi-void);
-  }
-
-  /* === CAMERA SYSTEM === */
-  .camera-viewport {
-    width: 100%;
-    height: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    overflow: hidden;
-    position: relative;
-  }
-
-  .scene {
-    /* Smooth camera transition */
-    transition: transform 1.6s cubic-bezier(0.4, 0, 0.2, 1);
-    will-change: transform;
-  }
-
-  .scene.camera-zoom {
-    /* Zoom in on terminal (right side) and center it */
-    /* Scale up 2.5x and translate left to center the terminal */
-    transform: scale(2.5) translateX(-31%);
-    transform-origin: center center;
+  .viewport.dark-mode {
+    background: #09090b;
+    transition: background 0ms;
   }
 
   .noise-layer {
@@ -342,16 +318,37 @@
     width: 900px;
     max-width: 95vw;
     z-index: 1;
+    /* Transform origin on the right side where terminal lives in final layout */
+    transform-origin: 80% center;
+    /* Width snaps quickly, then scale zooms out smoothly */
+    transition:
+      width 150ms ease-out,
+      max-width 150ms ease-out,
+      transform 1400ms cubic-bezier(0.4, 0.0, 0.2, 1) 150ms;
+  }
+
+  /* ZOOMED IN STATE (Initial) */
+  .monolith-stack.zoomed-in {
+    width: 1600px;
+    max-width: 92vw;
+    transform: scale(0.75);
+    transform-origin: center center;
+    /* Instant transitions when entering zoomed state */
+    transition:
+      width 0ms,
+      max-width 0ms,
+      transform 0ms;
   }
 
   .slab-shadow {
     position: absolute; top: 12px; left: 12px; width: 100%; height: 100%;
-    background: var(--paper-ink); z-index: 0; opacity: 0.08;
-    transition: opacity 0.3s;
+    background: #1a1918; z-index: 0; opacity: 0.1;
+    transition: opacity 200ms ease-out 150ms;
   }
 
-  .monolith-stack.hide-chrome .slab-shadow {
+  .monolith-stack.zoomed-in .slab-shadow {
     opacity: 0;
+    transition: opacity 0ms;
   }
 
   .slab-main {
@@ -360,18 +357,21 @@
     border: 1px solid var(--paper-line);
     z-index: 1;
     display: flex; flex-direction: column;
-    box-shadow: 0 40px 80px -20px rgba(0,0,0,0.3);
-    transition: background 0.3s, border-color 0.3s, box-shadow 0.3s;
+    box-shadow: 0 40px 80px -20px rgba(0,0,0,0.15);
+    transition:
+      background 300ms ease-out 150ms,
+      border-color 300ms ease-out 150ms,
+      box-shadow 300ms ease-out 150ms;
   }
 
-  :global(.mode-phosphor) .slab-main {
-    box-shadow: 0 40px 80px -20px rgba(0,0,0,0.6);
-  }
-
-  .monolith-stack.hide-chrome .slab-main {
-    background: var(--digi-void);
+  .monolith-stack.zoomed-in .slab-main {
+    background: #09090b;
     border-color: transparent;
     box-shadow: none;
+    transition:
+      background 0ms,
+      border-color 0ms,
+      box-shadow 0ms;
   }
 
   /* === 3. HEADER === */
@@ -380,24 +380,33 @@
     border-bottom: 1px solid var(--paper-line);
     display: flex; justify-content: space-between; align-items: center;
     padding: 0 24px;
-    background: var(--paper-surface);
-    transition: opacity 0.3s, visibility 0.3s, background 0.3s, border-color 0.3s;
+    background: #fff;
+    opacity: 1;
+    transform: translateY(0);
+    /* Appears instantly before zoom-out */
+    transition:
+      opacity 100ms ease-out,
+      transform 100ms ease-out;
   }
 
-  .monolith-stack.hide-chrome .machine-header {
+  .monolith-stack.zoomed-in .machine-header {
     opacity: 0;
-    visibility: hidden;
+    transform: translateY(0);
+    /* Instant hide when entering zoomed state */
+    transition:
+      opacity 0ms,
+      transform 0ms;
   }
 
   .logo-type { font-family: var(--font-code); font-weight: 900; font-size: 14px; letter-spacing: 1px; color: var(--paper-ink); }
-  .dim { color: var(--paper-line); opacity: 0.6; }
-  .build-tag { font-family: var(--font-code); font-size: 10px; color: var(--paper-line); margin-top: 2px; }
+  .dim { color: #ccc; }
+  .build-tag { font-family: var(--font-code); font-size: 10px; color: #888; margin-top: 2px; }
   .tag-mock { color: var(--alert-amber); font-weight: 700; margin-left: 4px; }
 
   .status-zone { display: flex; align-items: center; gap: 8px; }
   .status-label { font-family: var(--font-code); font-size: 9px; font-weight: 700; letter-spacing: 1px; color: var(--paper-ink); }
-
-  .status-dot { width: 6px; height: 6px; background: var(--paper-line); border-radius: 50%; }
+  
+  .status-dot { width: 6px; height: 6px; background: #ccc; border-radius: 50%; }
   .status-dot.amber { background: #FFB300; box-shadow: 0 0 8px #FFB300; animation: blink 0.1s infinite; }
   .status-dot.cyan { background: #00F0FF; box-shadow: 0 0 8px #00F0FF; }
 
@@ -408,26 +417,45 @@
     display: grid;
     grid-template-columns: 1.6fr 1fr;
     min-height: 420px;
-    transition: background 0.3s;
+    /* Grid snaps to final layout quickly, background fades in */
+    transition:
+      background 400ms ease-out 150ms,
+      grid-template-columns 150ms ease-out;
   }
 
-  .monolith-stack.hide-chrome .machine-body {
-    background: var(--digi-void);
+  .monolith-stack.zoomed-in .machine-body {
+    background: #09090b;
+    grid-template-columns: 0fr 1fr;
+    /* Instant transition when entering zoomed state */
+    transition:
+      background 0ms,
+      grid-template-columns 0ms;
   }
 
   /* --- LEFT: INFO MANIFESTO --- */
   .col-left {
     padding: 32px;
     border-right: 1px solid var(--paper-line);
-    background: var(--paper-surface-dim);
+    background: #FDFDFD;
     display: flex;
     flex-direction: column;
-    transition: opacity 0.3s, visibility 0.3s, background 0.3s, border-color 0.3s;
+    min-width: 0;
+    opacity: 1;
+    transform: translateX(0);
+    /* Appears instantly before zoom-out */
+    transition:
+      opacity 100ms ease-out,
+      transform 100ms ease-out;
   }
 
-  .monolith-stack.hide-chrome .col-left {
+  .monolith-stack.zoomed-in .col-left {
     opacity: 0;
-    visibility: hidden;
+    transform: translateX(0);
+    overflow: hidden;
+    /* Instant hide when entering zoomed state */
+    transition:
+      opacity 0ms,
+      transform 0ms;
   }
 
   .manifest-container {
@@ -441,15 +469,14 @@
   
   .highlight { color: var(--arctic-cyan); -webkit-text-stroke: 1px var(--paper-ink); /* Stylistic */ }
   :global(.mode-archival) .highlight { color: #A53F2B; -webkit-text-stroke: 0; }
-  :global(.mode-phosphor) .highlight { -webkit-text-stroke: 0.5px var(--paper-ink); }
 
   .manifest-section p {
-    font-family: var(--font-ui); font-size: 13px; line-height: 1.6; color: var(--paper-ink); opacity: 0.8; margin: 0;
+    font-family: var(--font-ui); font-size: 13px; line-height: 1.6; color: #555; margin: 0;
     max-width: 90%;
   }
 
   .section-label {
-    font-family: var(--font-code); font-size: 9px; font-weight: 700; color: var(--paper-line);
+    font-family: var(--font-code); font-size: 9px; font-weight: 700; color: #999;
     margin-bottom: 8px; letter-spacing: 1px;
   }
 
@@ -458,13 +485,12 @@
   }
 
   .spec-card {
-    border: 1px solid var(--paper-line); background: var(--paper-surface);
+    border: 1px solid var(--paper-line); background: #fff;
     padding: 10px; border-radius: 2px;
-    transition: background 0.3s, border-color 0.3s;
   }
   .spec-card .icon { font-size: 14px; margin-right: 4px; }
   .spec-card strong { display: block; font-family: var(--font-code); font-size: 10px; font-weight: 700; margin-bottom: 4px; color: var(--paper-ink); }
-  .spec-card p { font-size: 10px; line-height: 1.4; color: var(--paper-ink); opacity: 0.7; }
+  .spec-card p { font-size: 10px; line-height: 1.4; color: #666; }
 
   .stack-line { display: flex; gap: 8px; flex-wrap: wrap; }
   .tech-pill {
@@ -475,29 +501,32 @@
 
   /* --- RIGHT: TERMINAL --- */
   .col-right {
-    background: var(--paper-surface-dim);
+    background: #FAFAFA;
     padding: 0;
     display: flex; flex-direction: column;
-    transition: background 0.3s;
+    min-width: 0;
+    transition: background 300ms ease-out 150ms;
   }
 
-  .monolith-stack.hide-chrome .col-right {
-    background: var(--digi-void);
+  .monolith-stack.zoomed-in .col-right {
+    background: #09090b;
+    transition: background 0ms;
   }
 
   .terminal-frame {
     flex: 1;
-    background: var(--digi-void);
-    border-left: 1px solid var(--digi-line);
+    background: #09090b;
+    border-left: 1px solid #333;
     position: relative;
     overflow: hidden;
     display: flex; flex-direction: column;
     box-shadow: inset 0 0 40px rgba(0,0,0,0.5);
-    transition: border-color 0.3s, background 0.3s;
+    transition: border-color 200ms ease-out 150ms;
   }
 
-  .monolith-stack.hide-chrome .terminal-frame {
+  .monolith-stack.zoomed-in .terminal-frame {
     border-left-color: transparent;
+    transition: border-color 0ms;
   }
 
   .scanlines {
@@ -508,26 +537,41 @@
   }
 
   .terminal-header {
-    height: 32px; background: var(--digi-panel); border-bottom: 1px solid var(--digi-line);
+    height: 32px; background: #18181b; border-bottom: 1px solid #333;
     display: flex; justify-content: space-between; align-items: center;
     padding: 0 12px;
-    font-family: var(--font-code); font-size: 9px; color: var(--digi-text-dim);
-    transition: opacity 0.3s, visibility 0.3s, background 0.3s, border-color 0.3s;
+    font-family: var(--font-code); font-size: 9px; color: #666;
+    transition:
+      opacity 150ms ease-out,
+      height 150ms ease-out;
   }
 
-  .monolith-stack.hide-chrome .terminal-header {
+  .monolith-stack.zoomed-in .terminal-header {
     opacity: 0;
-    visibility: hidden;
+    height: 0;
+    overflow: hidden;
+    transition:
+      opacity 0ms,
+      height 0ms;
   }
-
+  
   .mock-warning { color: var(--alert-amber); font-weight: 700; animation: blink 1s infinite; }
 
   .terminal-content {
     flex: 1;
     padding: 20px;
-    font-family: var(--font-code); font-size: 11px; color: var(--digi-text-dim);
+    font-family: var(--font-code); font-size: 11px; color: #a1a1aa;
     overflow-y: hidden;
     display: flex; flex-direction: column; justify-content: flex-end;
+    transition: font-size 1400ms cubic-bezier(0.4, 0.0, 0.2, 1) 150ms;
+  }
+
+  /* Counter-scale text to maintain readability when container is scaled */
+  .monolith-stack.zoomed-in .terminal-content {
+    /* Container is scaled to 0.75, so increase font-size by 1/0.75 = 1.333 to compensate */
+    /* 11px * 1.333 = 14.67px */
+    font-size: 14.67px;
+    transition: font-size 0ms;
   }
 
   .line { margin-bottom: 6px; word-break: break-all; }
@@ -539,17 +583,26 @@
     height: 72px;
     border-top: 1px solid var(--paper-line);
     padding: 0;
-    transition: opacity 0.3s, visibility 0.3s, border-color 0.3s;
+    opacity: 1;
+    transform: translateY(0);
+    /* Appears instantly before zoom-out */
+    transition:
+      opacity 100ms ease-out,
+      transform 100ms ease-out;
   }
 
-  .monolith-stack.hide-chrome .machine-footer {
+  .monolith-stack.zoomed-in .machine-footer {
     opacity: 0;
-    visibility: hidden;
+    transform: translateY(0);
+    /* Instant hide when entering zoomed state */
+    transition:
+      opacity 0ms,
+      transform 0ms;
   }
 
   .trigger-plate {
     width: 100%; height: 100%;
-    background: var(--paper-surface);
+    background: #fff;
     border: none;
     position: relative;
     cursor: pointer;
@@ -557,16 +610,15 @@
     transition: background 0.2s;
   }
 
-  .trigger-plate:hover:not(:disabled) { background: var(--paper-surface-dim); }
+  .trigger-plate:hover:not(:disabled) { background: #fdfdfd; }
   .trigger-plate:disabled { cursor: default; }
 
   .capacitor-bar {
     position: absolute; top: 0; left: 0; height: 100%;
     background: var(--paper-ink);
     z-index: 1;
-    transition: background 0.3s;
   }
-
+  
   .trigger-plate:disabled .capacitor-bar { background: var(--arctic-lilac-lite); transition: background 0.4s; }
 
   .trigger-data {
@@ -577,7 +629,7 @@
     mix-blend-mode: difference;
     color: white;
   }
-
+  
   .trigger-plate { isolation: isolate; }
 
   .label-primary { font-family: var(--font-code); font-weight: 700; font-size: 14px; letter-spacing: 2px; }

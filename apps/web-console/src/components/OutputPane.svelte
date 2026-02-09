@@ -374,6 +374,9 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
+
+    /* [[FIX]] Add top padding to push content down relative to the sticky Agent Name on the left */
+    padding-top: 6px;
   }
 
   .log-item {
@@ -386,7 +389,8 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    margin-bottom: 2px;
+    /* [[FIX]] Increased bottom margin to separate headers from content */
+    margin-bottom: 6px;
   }
 
   .meta-tag { 

@@ -54,7 +54,7 @@
 <main class="mode-{$themeStore.toLowerCase()} {slowMotion ? 'slow-motion' : ''}">
     
     <!-- Global Texture Overlay -->
-    <div class="noise-overlay"></div>
+    <!-- <div class="noise-overlay"></div> -->
 
     {#if appState === 'HERO'}
       <Hero onenter={enterConsole} />

@@ -375,6 +375,9 @@ async def _execute_agent_logic(request: AgentRequest) -> AgentResponse:
             # Extract cache ID from LLM result (either consumed or newly created)
             cached_content_id=result.get("cached_content_id"),
 
+            # [[FIX]] Pass the tracked tools back to Kernel
+            executed_tools=result.get("executed_tools", []),
+
             latency_ms=latency_ms
         )
 

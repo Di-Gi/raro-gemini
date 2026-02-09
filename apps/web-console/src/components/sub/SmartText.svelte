@@ -3,12 +3,19 @@
 <script lang="ts">
   import CodeBlock from './CodeBlock.svelte';
   import DelegationCard from './DelegationCard.svelte';
+  import SystemTag from './SystemTag.svelte';
   import { parseMarkdown } from '$lib/markdown';
+
+  // 1. Define specific types for each block kind
+  type CodePart = { type: 'code'; lang: string; content: string };
+  type TagPart = { type: 'tag'; tagType: string; tagValue: string };
+  type TextPart = { type: 'text'; content: string };
+
+  // 2. Create a Union type
+  type ContentBlock = CodePart | TagPart | TextPart;
 
   let { text }: { text: string } = $props();
 
-  // Strip context attachment BEFORE rendering to prevent flash
-  // (Should already be stripped in OutputPane, but defensive layering)
   const ATTACHMENT_HEADER = "\n\n[AUTOMATED CONTEXT ATTACHMENT]";
   let cleanedText = $derived.by(() => {
     if (!text) return '';
@@ -16,18 +23,18 @@
     return splitIndex !== -1 ? text.substring(0, splitIndex) : text;
   });
 
-  function parseContent(input: string) {
-    const regex = /```([a-zA-Z0-9:_-]+)?\n([\s\S]*?)```/g;
-    const parts = [];
+  // 3. Explicitly type the return value of your parsers
+  function parseContent(input: string): ContentBlock[] {
+    const parts: ContentBlock[] = [];
+
+    const codeRegex = /```([a-zA-Z0-9:_-]+)?\n([\s\S]*?)```/g;
     let lastIndex = 0;
     let match;
 
-    while ((match = regex.exec(input)) !== null) {
+    while ((match = codeRegex.exec(input)) !== null) {
       if (match.index > lastIndex) {
-        parts.push({
-          type: 'text',
-          content: input.slice(lastIndex, match.index)
-        });
+        const textChunk = input.slice(lastIndex, match.index);
+        parts.push(...parseSystemTags(textChunk));
       }
 
       parts.push({
@@ -36,17 +43,48 @@
         content: match[2]
       });
 
-      lastIndex = regex.lastIndex;
+      lastIndex = codeRegex.lastIndex;
     }
 
     if (lastIndex < input.length) {
-      parts.push({
-        type: 'text',
-        content: input.slice(lastIndex)
-      });
+      const textChunk = input.slice(lastIndex);
+      parts.push(...parseSystemTags(textChunk));
     }
 
     return parts;
+  }
+
+  function parseSystemTags(textChunk: string): ContentBlock[] {
+    const tagRegex = /\[\s*(STATUS|BYPASS|SYSTEM|CONTEXT|OPERATIONAL)\s*:\s*(.*?)\s*\]/gi;
+    const subParts: ContentBlock[] = [];
+    let lastIndex = 0;
+    let match;
+
+    while ((match = tagRegex.exec(textChunk)) !== null) {
+        if (match.index > lastIndex) {
+            subParts.push({
+                type: 'text',
+                content: textChunk.slice(lastIndex, match.index)
+            });
+        }
+
+        subParts.push({
+            type: 'tag',
+            tagType: match[1],
+            tagValue: match[2]
+        });
+
+        lastIndex = tagRegex.lastIndex;
+    }
+
+    if (lastIndex < textChunk.length) {
+        subParts.push({
+            type: 'text',
+            content: textChunk.slice(lastIndex)
+        });
+    }
+
+    return subParts;
   }
 
   let blocks = $derived(parseContent(cleanedText));
@@ -55,17 +93,19 @@
 <div class="smart-text-wrapper">
   {#each blocks as block}
     {#if block.type === 'code'}
-      <!-- ROUTING LOGIC -->
+      <!-- Inside this IF, TS knows 'block' is a CodePart -->
       {#if block.lang === 'json:delegation'}
         <DelegationCard rawJson={block.content} />
       {:else}
-        <CodeBlock code={block.content} language={block.lang || 'text'} />
+        <CodeBlock code={block.content} language={block.lang} />
       {/if}
-    {:else}
-      <!-- 
-        Pass text segments through Marked.
-        The wrapper div handles the CSS for the generated HTML.
-      -->
+
+    {:else if block.type === 'tag'}
+        <!-- Inside this ELSE IF, TS knows 'block' is a TagPart -->
+        <SystemTag type={block.tagType} value={block.tagValue} />
+
+    {:else if block.type === 'text'}
+      <!-- Inside this ELSE IF, TS knows 'block' is a TextPart -->
       <div class="markdown-body">
         {@html parseMarkdown(block.content)}
       </div>

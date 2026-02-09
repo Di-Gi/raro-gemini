@@ -92,14 +92,56 @@ def inject_delegation_capability(base_prompt: str) -> str:
 You are authorized to modify the workflow graph.
 To edit the graph, output a JSON object wrapped in `json:delegation`.
 
-NEW NODE RULES:
-- You must follow the [IDENTITY CONTRACT]. New node IDs must start with 'research_', 'analyze_', 'coder_', or 'writer_'.
-- You cannot spawn 'master_' nodes.
+1. **Expansion**: Define `new_nodes` to handle complexity you cannot solve alone.
+2. **Pruning**: If your new nodes render existing future nodes redundant, list their IDs in `prune_nodes`.
+   - You can only prune nodes listed as [PENDING] in your graph context.
+
+[CRITICAL: GRAPH CONTINUITY & GRAFTING]
+When you inject new nodes, you must ensure the graph remains connected.
+If there is an existing downstream node (e.g., a final writer) that should wait for your new nodes:
+1. **DO NOT** prune it.
+2. **DO** redefine it in `new_nodes` with the SAME ID, but update its `depends_on` list to point to your new agents.
+   *This is called "Grafting". It overwrites the existing node's dependencies to ensure flow continuity.*
 
 Example Format:
 ```json:delegation
-{schema}
+{{
+  "reason": "Spawning specific researchers and updating the writer to wait for them.",
+  "strategy": "child",
+  "new_nodes": [
+    {{
+      "id": "research_new_A",
+      "role": "worker",
+      "prompt": "Search A...",
+      "tools": ["web_search"],
+      "depends_on": ["master_planner"]
+    }},
+    {{
+      "id": "research_new_B",
+      "role": "worker",
+      "prompt": "Search B...",
+      "tools": ["web_search"],
+      "depends_on": ["master_planner"]
+    }},
+    {{
+      "id": "writer_final", 
+      "role": "worker",
+      "prompt": "Compile the report from the new researchers.",
+      "tools": ["write_file"],
+      "depends_on": ["research_new_A", "research_new_B"] 
+    }}
+  ],
+  "prune_nodes": ["old_researcher_node"]
+}}
 ```
+*Note in the example above: 'writer_final' existed previously but is updated here to wait for A and B.*
+
+[IDENTITY CONTRACT]
+New node IDs must start with 'research_', 'analyze_', 'coder_', or 'writer_'.
+You cannot spawn 'master_' nodes.
+
+Schema:
+{schema}
 """
 
 # === SAFETY COMPILER PROMPT (Flow C) ===
@@ -209,11 +251,13 @@ Your Agent ID prefix determines your mandatory behavior. You are being monitored
 If you legitimately do not need your mandatory tool (e.g., formatting data already provided), you MUST start your response with `[BYPASS: JUSTIFICATION]` followed by your reasoning.
 
 [OUTPUT CATEGORIZATION]
-You must end every response with exactly one of these status tags:
+When you have completed the task and have NO MORE tool calls to make, end your response with exactly one of these status tags:
 - `[STATUS: SUCCESS]`: Task completed with valid data/results.
 - `[STATUS: NULL]`: Could not find information, tools failed, or context was insufficient.
 
-[CRITICAL]: If you output `[STATUS: NULL]`, the system will pause for human assistance. Use this if you are stuck.
+[CRITICAL]:
+1. DO NOT output `[STATUS: SUCCESS]` if you are about to call a tool. Only use it in the final text response.
+2. If you output `[STATUS: NULL]`, the system will pause for human assistance.
 """
 
     return instruction

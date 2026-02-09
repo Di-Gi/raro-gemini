@@ -93,14 +93,18 @@ pub struct WorkflowConfig {
 pub struct DelegationRequest {
     /// The intent/reason for this delegation (for logging/patterns)
     pub reason: String,
-    
+
     /// The new nodes to inject into the graph
     pub new_nodes: Vec<AgentNodeConfig>,
-    
+
     /// How these nodes relate to the delegating agent.
     /// Default: "child" (Parent -> New Nodes -> Original Children)
     #[serde(default = "default_strategy")]
     pub strategy: DelegationStrategy,
+
+    /// [NEW] Optional list of pending node IDs to remove from the graph
+    #[serde(default)]
+    pub prune_nodes: Vec<String>,
 }
 
 fn default_strategy() -> DelegationStrategy {
@@ -131,8 +135,12 @@ pub struct RemoteAgentResponse {
     pub output_tokens: usize,
     pub cache_hit: bool,
     pub latency_ms: f64,
-    pub cached_content_id: Option<String>, 
-    
+    pub cached_content_id: Option<String>,
+
+    // [[NEW]] List of tools actually executed by the Python service
+    #[serde(default)]
+    pub executed_tools: Vec<String>,
+
     // === NEW: The payload for dynamic graph changes ===
     pub delegation: Option<DelegationRequest>,
 }

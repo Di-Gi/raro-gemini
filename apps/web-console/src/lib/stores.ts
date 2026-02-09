@@ -1,6 +1,6 @@
 // [[RARO]]/apps/web-console/src/lib/stores.ts
 // Change Type: Modified
-// Purpose: Integrate Template System for initialization and graph switching
+// Purpose: Fix Ghost Card rendering and invocation state caching issues
 // Architectural Context: State Management
 // Dependencies: api, layout-engine, mock-api, templates
 
@@ -85,8 +85,22 @@ export function deriveToolsFromId(id: string): string[] {
     return Array.from(tools);
 }
 
+// Updated to support enriched topology data from backend
+interface TopologyNodeData {
+    id: string;
+    label?: string;
+    prompt?: string;
+    model?: string;
+    role?: 'orchestrator' | 'worker' | 'observer';
+    tools?: string[];
+    accepts_directive?: boolean;
+    allow_delegation?: boolean;
+    x?: number;
+    y?: number;
+}
+
 interface TopologySnapshot {
-    nodes: string[];
+    nodes: (string | TopologyNodeData)[]; // Support both legacy strings and new rich objects
     edges: { from: string; to: string }[];
 }
 
@@ -107,7 +121,7 @@ export const runtimeStore = writable<{ status: string; runId: string | null }>({
 
 // === THEME STORE ===
 export type ThemeMode = 'ARCHIVAL' | 'PHOSPHOR';
-export const themeStore = writable<ThemeMode>('ARCHIVAL');
+export const themeStore = writable<ThemeMode>('PHOSPHOR');
 
 export function toggleTheme() {
     themeStore.update(current => current === 'ARCHIVAL' ? 'PHOSPHOR' : 'ARCHIVAL');
@@ -531,28 +545,49 @@ function syncTopology(topology: TopologySnapshot) {
         structureChanged = true;
     }
 
-    topology.nodes.forEach(nodeId => {
+    topology.nodes.forEach(nodeData => {
+        // Check if it's an object (Rich data) or string (Legacy support)
+        const nodeId = typeof nodeData === 'string' ? nodeData : nodeData.id;
+
         if (nodeMap.has(nodeId)) {
             // Existing node: Keep it, preserve state
             newNodes.push(nodeMap.get(nodeId)!);
         } else {
             // NEW NODE DETECTED (Delegation)
-            // Initialize at 0,0. The Layout Engine will move it immediately.
+            // Initialize at 0,0 or use provided position. The Layout Engine will move it if needed.
             structureChanged = true;
-            newNodes.push({
-                id: nodeId,
-                // Heuristic Labeling since Kernel currently sends IDs only in topology
-                label: nodeId.toUpperCase().substring(0, 12),
-                x: 0,
-                y: 0,
-                model: 'fast', // Default to fast for dynamically spawned agents
-                prompt: 'Dynamic Agent',
-                status: 'running', // Usually spawned active
-                role: 'worker',
-                acceptsDirective: false,  // Dynamically spawned agents don't accept directives by default
-                allowDelegation: false,   // Dynamically spawned agents don't delegate by default
-                tools: deriveToolsFromId(nodeId)  // Auto-provision tools based on ID
-            });
+
+            // If we have rich data from backend, use it; otherwise fall back to heuristics
+            if (typeof nodeData !== 'string') {
+                newNodes.push({
+                    id: nodeData.id,
+                    label: (nodeData.label || nodeData.id).toUpperCase().substring(0, 12),
+                    x: nodeData.x || 0,
+                    y: nodeData.y || 0,
+                    model: nodeData.model || 'fast',
+                    prompt: nodeData.prompt || 'Dynamic Agent',
+                    status: 'running', // Usually spawned active
+                    role: (nodeData.role as any) || 'worker',
+                    acceptsDirective: nodeData.accepts_directive ?? false,
+                    allowDelegation: nodeData.allow_delegation ?? false,
+                    tools: nodeData.tools || deriveToolsFromId(nodeData.id)
+                });
+            } else {
+                // Legacy string format - use heuristics
+                newNodes.push({
+                    id: nodeId,
+                    label: nodeId.toUpperCase().substring(0, 12),
+                    x: 0,
+                    y: 0,
+                    model: 'fast',
+                    prompt: 'Dynamic Agent',
+                    status: 'running',
+                    role: 'worker',
+                    acceptsDirective: false,
+                    allowDelegation: false,
+                    tools: deriveToolsFromId(nodeId)
+                });
+            }
         }
     });
 
@@ -649,17 +684,22 @@ export function deselectNode() {
 // Change type to union to allow MockSocket
 let ws: WebSocket | MockWebSocket | null = null;
 
+// FIX: Reset processing cache on new connection
+const processedInvocations = new Set<string>();
+
 export function connectRuntimeWebSocket(runId: string, manualMode: boolean = false, topology?: { nodes: string[]; edges: Array<{ from: string; to: string }> }) {
   if (ws) {
     ws.close();
   }
 
+  // Clear processed invocations cache to prevent "Hanging" on simulated re-runs
+  // If we don't do this, re-using IDs (common in mocks) causes the UI to ignore the new completion events
+  processedInvocations.clear();
+
   const url = getWebSocketURL(runId);
   console.log('[WS] Connecting to:', url);
 
   // ** MOCK SWITCHING **
-  // Force MockWebSocket if we are in manual simulation mode OR if the global mock flag is on.
-  // The Simulation pane relies on client-side logic found only in MockWebSocket.
   if (USE_MOCK || manualMode) {
     addLog('SYSTEM', `Initializing MOCK environment (Manual: ${manualMode})...`, 'DEBUG');
     ws = new MockWebSocket(url, manualMode, topology);
@@ -667,16 +707,13 @@ export function connectRuntimeWebSocket(runId: string, manualMode: boolean = fal
     ws = new WebSocket(url);
   }
 
-  // TypeScript note: MockWebSocket and WebSocket need matching signatures
-  // for the methods we use below. Since we defined them similarly in mock-api, this works.
-
   ws.onopen = () => {
     console.log('[WS] Connected successfully to:', url);
     addLog('KERNEL', `Connected to runtime stream: ${runId}`, 'NET_OK');
     runtimeStore.set({ status: 'RUNNING', runId });
   };
 
-  ws.onmessage = (event: any) => { // Use 'any' or generic event type
+  ws.onmessage = (event: any) => { 
     console.log('[WS] Message received:', event.data.substring(0, 200));
     try {
       const data = JSON.parse(event.data);
@@ -684,11 +721,9 @@ export function connectRuntimeWebSocket(runId: string, manualMode: boolean = fal
         
         // === APPROVAL DETECTION ===
         const currentState = get(runtimeStore);
-        // FIXED: Normalize to uppercase and check for underscore format
         const newStateStr = (data.state.status || '').toUpperCase();
 
         if (newStateStr === 'AWAITING_APPROVAL' && currentState.status !== 'AWAITING_APPROVAL') {
-          // Check if we already logged this approval request to avoid duplicates
           const logsList = get(logs);
           const hasPending = logsList.some(l => l.metadata === 'INTERVENTION');
 
@@ -696,14 +731,13 @@ export function connectRuntimeWebSocket(runId: string, manualMode: boolean = fal
             addLog(
               'CORTEX',
               'SAFETY_PATTERN_TRIGGERED',
-              'INTERVENTION', // Metadata tag
+              'INTERVENTION', 
               false,
-              'approval-req-' + Date.now() // Custom ID
+              'approval-req-' + Date.now()
             );
           }
         }
 
-        // CRITICAL FIX: Pass topology to syncState
         syncState(data.state, data.signatures, data.topology);
 
         if (data.state.status) {
@@ -711,21 +745,36 @@ export function connectRuntimeWebSocket(runId: string, manualMode: boolean = fal
         }
       }
 
-        // Intermediate log events
-          else if (data.type === 'log_event') {
-            const agentId = data.agent_id ? data.agent_id.toUpperCase() : 'SYSTEM';
-            const p = data.payload;
+      // ] Handle Real-Time Agent Events for Instant Feedback
+      // This ensures the "Ghost Card" appears immediately, even if state_update is delayed
+      else if (data.type === 'agent_started') {
+          const agentId = data.agent_id;
+          if (agentId) updateNodeStatus(agentId, 'running');
+      }
+      else if (data.type === 'agent_completed') {
+          const agentId = data.agent_id;
+          if (agentId) updateNodeStatus(agentId, 'complete');
+      }
+      else if (data.type === 'agent_failed') {
+          const agentId = data.agent_id;
+          if (agentId) updateNodeStatus(agentId, 'failed');
+      }
 
-            addLog(
-              agentId,
-              p.message,
-              p.metadata || 'INFO',
-              false,
-              undefined,
-              p.category,
-              p.extra // Pass extra data if mock sends it (e.g. duration)
-            );
-          }
+      // Intermediate log events
+      else if (data.type === 'log_event') {
+        const agentId = data.agent_id ? data.agent_id.toUpperCase() : 'SYSTEM';
+        const p = data.payload;
+
+        addLog(
+          agentId,
+          p.message,
+          p.metadata || 'INFO',
+          false,
+          undefined,
+          p.category,
+          p.extra 
+        );
+      }
 
       else if (data.error) {
         addLog('KERNEL', `Runtime error: ${data.error}`, 'ERR');
@@ -739,13 +788,11 @@ export function connectRuntimeWebSocket(runId: string, manualMode: boolean = fal
     console.log('[WS] Connection closed:', e.code, e.reason);
     addLog('KERNEL', 'Connection closed.', 'NET_END');
     
-    // 1. Force Global Status to COMPLETED (if not failed)
     runtimeStore.update(s => {
         if (s.status !== 'FAILED') return { ...s, status: 'COMPLETED' };
         return s;
     });
 
-    // 2. Force Finalize Edges
     pipelineEdges.update(edges => {
       return edges.map(e => ({
         ...e,
@@ -766,15 +813,12 @@ export function connectRuntimeWebSocket(runId: string, manualMode: boolean = fal
 
 // === STATE SYNCHRONIZATION LOGIC ===
 
-const processedInvocations = new Set<string>();
-
 function syncState(state: any, signatures: Record<string, string> = {}, topology?: TopologySnapshot) {
-    // 1. Sync Topology FIRST (Create/update nodes/edges from Kernel's authoritative view)
+    // 1. Sync Topology FIRST
     if (topology) {
         syncTopology(topology);
     }
 
-    // Normalize status to handle lowercase from Rust serialization
     const rawStatus = state.status ? state.status.toLowerCase() : 'running';
     const isRunComplete = rawStatus === 'completed' || rawStatus === 'failed';
 
@@ -796,13 +840,8 @@ function syncState(state: any, signatures: Record<string, string> = {}, topology
             const toStarted = state.active_agents.includes(e.to) || state.completed_agents.includes(e.to);
 
             const hasDataFlowed = fromComplete && toStarted;
-
-            // Active: Flowing but not done
             const active = hasDataFlowed && !isRunComplete;
-
-            // Finalized: Flowed and now done
             const finalized = hasDataFlowed && isRunComplete;
-
             const sig = signatures[e.from];
 
             return {
@@ -827,7 +866,6 @@ function syncState(state: any, signatures: Record<string, string> = {}, topology
 
     // 5. Sync Logs
     if (state.invocations && Array.isArray(state.invocations)) {
-        // Extract the fetching logic to a helper function
         async function fetchAndPopulateArtifact(runId: string, inv: any) {
             const agentLabel = (inv.agent_id || 'UNKNOWN').toUpperCase();
             try {
@@ -842,12 +880,9 @@ function syncState(state: any, signatures: Record<string, string> = {}, topology
                     if (typeof artifact === 'string') {
                         outputText = artifact;
                     } else if (typeof artifact === 'object') {
-                        // 1. Try to find actual human-readable content
                         if (artifact.result) outputText = artifact.result;
                         else if (artifact.output) outputText = artifact.output;
                         else if (artifact.text) outputText = artifact.text;
-
-                        // 2. Intercept Metadata-only objects
                         else if ('artifact_stored' in artifact || 'model' in artifact) {
                             outputText = '';
                         }
@@ -856,7 +891,6 @@ function syncState(state: any, signatures: Record<string, string> = {}, topology
                         }
                     }
 
-                    // 3. Ensure File Generation Tags are present
                     if (artifact.files_generated && Array.isArray(artifact.files_generated) && artifact.files_generated.length > 0) {
                         const filename = artifact.files_generated[0];
                         const isImage = /\.(png|jpg|jpeg|svg|webp)$/i.test(filename);
@@ -868,7 +902,6 @@ function syncState(state: any, signatures: Record<string, string> = {}, topology
                         }
                     }
 
-                    // 4. Final Safety Fallback
                     if (!outputText || outputText.trim() === '') {
                         outputText = "Task execution completed successfully.";
                     }
@@ -896,7 +929,6 @@ function syncState(state: any, signatures: Record<string, string> = {}, topology
             try {
                 if (inv.status === 'success') {
                     if (inv.artifact_id) {
-                        // CHECK: Does a log for this agent already exist from the live stream?
                         const currentLogs = get(logs);
                         const existingLiveLog = currentLogs.find(l =>
                             l.role === agentLabel &&
@@ -904,10 +936,8 @@ function syncState(state: any, signatures: Record<string, string> = {}, topology
                         );
 
                         if (existingLiveLog) {
-                            // OPTION A: If live logs exist, just update without creating "Loading" placeholder
                             await fetchAndPopulateArtifact(state.run_id, inv);
                         } else {
-                            // OPTION B: No live logs yet (e.g. simple agent), use standard behavior
                             addLog(agentLabel, 'Initiating output retrieval...', 'LOADING', false, inv.id);
                             await fetchAndPopulateArtifact(state.run_id, inv);
                         }
@@ -934,7 +964,6 @@ function escapeHtml(unsafe: string) {
 
 // === SIMULATION CONTROL FUNCTIONS ===
 
-// Store original topology snapshot for restoration after simulation
 let originalTopologySnapshot: {
     nodes: AgentNode[];
     edges: PipelineEdge[];
@@ -954,26 +983,21 @@ function initSimulation() {
     const simId = `sim-${Date.now()}`;
     const topology = getCurrentTopology();
 
-    // Capture original state for restoration (deep clone)
     originalTopologySnapshot = {
         nodes: JSON.parse(JSON.stringify(get(agentNodes))),
         edges: JSON.parse(JSON.stringify(get(pipelineEdges)))
     };
 
-    // Reset UI State
     logs.set([]);
     runtimeStore.set({ status: 'IDLE', runId: simId });
 
-    // Connect in Manual Mode with current topology
     connectRuntimeWebSocket(simId, true, topology);
     addLog('SIMULATOR', 'Debug session initialized with current pipeline topology.', 'READY');
 }
 
 export function stepSimulation() {
-    // Auto-initialize if needed
     if (!activeSocket) {
         initSimulation();
-        // Give it a moment to initialize, then step
         setTimeout(() => {
             if (activeSocket) activeSocket.nextStep();
         }, 100);
@@ -985,10 +1009,8 @@ export function stepSimulation() {
 let autoRunTimer: any = null;
 
 export function runSimulation() {
-    // Auto-initialize if needed
     if (!activeSocket) {
         initSimulation();
-        // Give it a moment to initialize
         setTimeout(() => autoStepLoop(), 100);
     } else {
         autoStepLoop();
@@ -1000,20 +1022,17 @@ function autoStepLoop() {
 
     activeSocket.nextStep();
 
-    // Schedule next step (with delay for visual feedback)
     autoRunTimer = setTimeout(() => {
-        // Check if simulation is complete
         const state = get(runtimeStore);
         if (state.status === 'COMPLETED' || state.status === 'FAILED') {
             clearTimeout(autoRunTimer);
             return;
         }
         autoStepLoop();
-    }, 800); // 800ms delay between steps for visibility
+    }, 800); 
 }
 
 export function resetSimulation() {
-    // Clear auto-run timer if active
     if (autoRunTimer) {
         clearTimeout(autoRunTimer);
         autoRunTimer = null;
@@ -1024,15 +1043,15 @@ export function resetSimulation() {
         ws = null;
     }
 
-    // Restore original topology if we have a snapshot
+    // [[FIX]] Clear the processed invocations cache
+    processedInvocations.clear();
+
     if (originalTopologySnapshot) {
-        // Reset all node statuses to 'idle'
         const restoredNodes = originalTopologySnapshot.nodes.map(node => ({
             ...node,
             status: 'idle' as const
         }));
 
-        // Reset all edge states
         const restoredEdges = originalTopologySnapshot.edges.map(edge => ({
             ...edge,
             active: false,
@@ -1044,10 +1063,8 @@ export function resetSimulation() {
         agentNodes.set(restoredNodes);
         pipelineEdges.set(restoredEdges);
 
-        // Clear the snapshot after restoration
         originalTopologySnapshot = null;
     } else {
-        // Fallback: If no snapshot exists, just reset statuses of current nodes
         agentNodes.update(nodes => nodes.map(n => ({ ...n, status: 'idle' as const })));
         pipelineEdges.update(edges => edges.map(e => ({
             ...e,

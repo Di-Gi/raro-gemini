@@ -47,6 +47,21 @@
             <div class="content reasoning">"{data.reason || 'No reason provided'}"</div>
         </div>
 
+        <!-- [NEW] PRUNING BLOCK -->
+        {#if data.prune_nodes && data.prune_nodes.length > 0}
+            <div class="section">
+                <div class="label" style="color: #d32f2f;">PRUNING NODES ({data.prune_nodes.length})</div>
+                <div class="node-list">
+                    {#each data.prune_nodes as nodeId}
+                        <div class="node-chip prune">
+                            <div class="chip-role">REMOVED</div>
+                            <div class="chip-id strike">{nodeId}</div>
+                        </div>
+                    {/each}
+                </div>
+            </div>
+        {/if}
+
         {#if data.new_nodes && Array.isArray(data.new_nodes)}
             <div class="section">
                 <div class="label">INJECTING NODES ({data.new_nodes.length})</div>
@@ -197,6 +212,22 @@
   .chip-model {
     padding: 4px 8px;
     font-size: 9px;
+    color: var(--paper-line);
+  }
+
+  /* Pruning-specific styles */
+  .node-chip.prune {
+    border-color: #d32f2f;
+    opacity: 0.7;
+  }
+
+  .node-chip.prune .chip-role {
+    background: #d32f2f;
+    color: white;
+  }
+
+  .chip-id.strike {
+    text-decoration: line-through;
     color: var(--paper-line);
   }
 

@@ -62,6 +62,9 @@ class DelegationRequest(BaseModel):
     strategy: DelegationStrategy = Field(DelegationStrategy.CHILD)
     new_nodes: List[AgentNodeConfig] = Field(..., description="Sub-agents to be spliced into the graph")
 
+    # [NEW] Optional list of pending node IDs to remove from the graph
+    prune_nodes: List[str] = Field(default_factory=list, description="IDs of pending nodes to remove/replace")
+
 # ============================================================================
 # Safety Patterns
 # ============================================================================
@@ -132,6 +135,8 @@ class AgentResponse(BaseModel):
     output: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     delegation: Optional[DelegationRequest] = None
+    # List of tool names successfully executed during this run loop
+    executed_tools: List[str] = Field(default_factory=list)
 
 # Integration: Central source of truth for all Pydantic validation across the service.
 # Notes: Added run_id to AgentRequest to support RFS integration.

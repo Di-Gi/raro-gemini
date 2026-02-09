@@ -256,10 +256,11 @@ async def _prepare_gemini_request(
     # Build User Message
     user_parts: List[Dict[str, Any]] = []
 
-    # 3. User Directive (if provided) - This is the runtime task
+    # 3. User Directive (if provided) - This is the runtime task + context
+    # Changed to clearer label to distinguish from system constitution
     if user_directive:
         user_parts.append({
-            "text": f"[OPERATOR DIRECTIVE]\n{user_directive}\n\n"
+            "text": f"[INCOMING TRANSMISSION]\n{user_directive}\n\n"
         })
 
     # === CONTEXT CACHING: File Handling & Auto-Creation ===
@@ -509,6 +510,9 @@ async def call_gemini_with_context(
         _seen_files = set()  # Track files to prevent duplicates during retries
         machine_context_buffer = []  # Accumulate machine-only context (e.g., read_file)
         puppet_turn_used = False  # Track if current turn used puppet mock
+
+        # [[NEW]] Track unique tools executed
+        executed_tools_set = set()
         # --- FIX END ---
 
         logger.debug(f"Agent {safe_agent_id}: Starting manual tool loop")
@@ -580,6 +584,9 @@ async def call_gemini_with_context(
             tool_outputs_text = ""
 
             for tool_name, tool_args in function_calls:
+                # [[NEW]] Track execution
+                executed_tools_set.add(tool_name)
+
                 # === EMIT: TOOL CALL START ===
                 args_str = json.dumps(tool_args)
                 emit_telemetry(
@@ -714,7 +721,9 @@ async def call_gemini_with_context(
             "cache_hit": cache_hit,
             "files_generated": all_files_generated,
             "cached_content_id": final_cache_id,
-            "machine_data_context": machine_context  # Machine-only data for downstream agents
+            "machine_data_context": machine_context,  # Machine-only data for downstream agents
+            # [[NEW]] Return the set as a list
+            "executed_tools": list(executed_tools_set)
         }
 
     except Exception as e:

@@ -82,6 +82,27 @@ impl DAG {
         }
     }
 
+    /// Remove a node and all connected edges
+    /// Used for pruning redundant nodes during delegation
+    pub fn remove_node(&mut self, node_id: &str) -> Result<(), DAGError> {
+        if !self.nodes.contains(node_id) {
+            return Err(DAGError::InvalidNode(node_id.to_string()));
+        }
+
+        // 1. Remove the node from the set
+        self.nodes.remove(node_id);
+
+        // 2. Remove outgoing edges (this node as source)
+        self.edges.remove(node_id);
+
+        // 3. Remove incoming edges (this node as target in other keys)
+        for targets in self.edges.values_mut() {
+            targets.retain(|target| target != node_id);
+        }
+
+        Ok(())
+    }
+
     /// Get all direct children (dependents) of a node
     pub fn get_children(&self, node_id: &str) -> Vec<String> {
         self.edges.get(node_id).cloned().unwrap_or_default()

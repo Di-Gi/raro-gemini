@@ -567,21 +567,56 @@ export class MockWebSocket {
 
     private processDynamicChain(currentId: string, finalDependentId: string) {
         // Always delegate when this method is called (demonstrates dynamic topology feature)
-        const shouldDelegate = true; 
-        
+        const shouldDelegate = true;
+
         if (shouldDelegate) {
-            const newAgentId = `${currentId}_sub_A`;
-            const reason = "Search failed; spawning specialist.";
+            const newAgentIdA = `${currentId}_sub_A`;
+            const newAgentIdB = `${currentId}_sub_B`;
+            const reason = "Search failed; spawning parallel specialists.";
 
             // This delay simulates the LLM generation time
             this.addStep(1000, undefined, () => {
-                const output = generateDelegationArtifact(reason, currentId, newAgentId);
+                // Generate delegation artifact with TWO new nodes
+                const payload = {
+                    reason: reason,
+                    strategy: "parallel_child",
+                    new_nodes: [
+                        {
+                            id: newAgentIdA,
+                            role: "worker",
+                            model: "gemini-2.5-flash",
+                            prompt: `Search for internal documentation (fallback endpoint)`,
+                            tools: ["web_search"],
+                            depends_on: [currentId]
+                        },
+                        {
+                            id: newAgentIdB,
+                            role: "worker",
+                            model: "gemini-2.5-flash",
+                            prompt: `Search for external references and API specs`,
+                            tools: ["web_search"],
+                            depends_on: [currentId]
+                        }
+                    ]
+                };
+
+                const output = `I need to delegate sub-tasks to handle this request properly.
+
+\`\`\`json:delegation
+${JSON.stringify(payload, null, 2)}
+\`\`\`
+
+Delegating parallel execution to ${newAgentIdA} and ${newAgentIdB}...`;
+
                 SESSION_ARTIFACTS[currentId] = { result: output };
+
+                // Emit the delegation artifact so frontend can display DelegationCard
+                this.emitLog(currentId, 'DELEGATION', output, 'REASONING');
 
                 this.activeAgents = this.activeAgents.filter(id => id !== currentId);
                 this.completedAgents.push(currentId);
                 this.totalTokens += 500;
-                
+
                 this.invocations.push({
                     id: `inv-${currentId}`,
                     agent_id: currentId,
@@ -591,23 +626,69 @@ export class MockWebSocket {
                     artifact_id: `mock-art-${currentId}`
                 });
 
-                // Update Topology
-                this.topology.nodes.push(newAgentId);
-                this.topology.edges.push({ from: currentId, to: newAgentId });
-                // Rewire: n2 -> n4 becomes n2 -> sub -> n4
+                // Update Topology - Add BOTH agents
+                this.topology.nodes.push(newAgentIdA, newAgentIdB);
+                this.topology.edges.push({ from: currentId, to: newAgentIdA });
+                this.topology.edges.push({ from: currentId, to: newAgentIdB });
+                // Rewire: n2 -> n4 becomes n2 -> [sub_A, sub_B] -> n4
                 this.topology.edges = this.topology.edges.filter(e => !(e.from === currentId && e.to === finalDependentId));
-                this.topology.edges.push({ from: newAgentId, to: finalDependentId });
+                this.topology.edges.push({ from: newAgentIdA, to: finalDependentId });
+                this.topology.edges.push({ from: newAgentIdB, to: finalDependentId });
 
                 this.signatures[currentId] = `hash_${currentId}`;
             });
 
-            // Start New Agent
+            // === AGENT A: Internal Documentation Search ===
+            // Start Agent A first
             this.addStep(500, undefined, () => {
-                this.activeAgents.push(newAgentId);
-                this.emitLog(newAgentId, 'THOUGHT', 'I have been spawned to handle the missing documentation.', 'INIT');
+                this.activeAgents.push(newAgentIdA);
+                this.emitLog(newAgentIdA, 'THOUGHT', 'I have been spawned to search internal documentation.', 'INIT');
             });
 
-            this.simulateAgentCompletion(newAgentId, 2000, 600, true);
+            this.addStep(600, undefined, () => {
+                this.emitLog(newAgentIdA, 'THOUGHT', 'I will search for the documentation using an alternative endpoint.', 'REASONING');
+            });
+
+            this.addStep(400, undefined, () => {
+                this.emitLog(newAgentIdA, 'TOOL_CALL', 'web_search({"query": "internal_docs_v2", "endpoint": "fallback"})', 'IO_REQ');
+            });
+
+            this.addStep(1500, undefined, () => {
+                const searchResult = `Search completed successfully.\n\nFound 3 relevant documents:\n1. Architecture Overview (v2.1) - Updated Jan 2025\n2. API Reference Guide - Complete specs\n3. Integration Patterns - Best practices\n\nAll documentation has been retrieved and is ready for analysis.`;
+                this.emitLog(newAgentIdA, 'TOOL_RESULT', searchResult, 'IO_OK');
+
+                SESSION_ARTIFACTS[newAgentIdA] = {
+                    result: `Successfully retrieved internal documentation via fallback endpoint.\n\n${searchResult}\n\nThe delegation strategy resolved the connection timeout issue.`
+                };
+            });
+
+            this.simulateAgentCompletion(newAgentIdA, 800, 600, true);
+
+            // === AGENT B: External References Search ===
+            // Start Agent B after A completes
+            this.addStep(500, undefined, () => {
+                this.activeAgents.push(newAgentIdB);
+                this.emitLog(newAgentIdB, 'THOUGHT', 'I have been spawned to search external references.', 'INIT');
+            });
+
+            this.addStep(600, undefined, () => {
+                this.emitLog(newAgentIdB, 'THOUGHT', 'Searching for external API specifications and references.', 'REASONING');
+            });
+
+            this.addStep(400, undefined, () => {
+                this.emitLog(newAgentIdB, 'TOOL_CALL', 'web_search({"query": "API specifications v2", "source": "external"})', 'IO_REQ');
+            });
+
+            this.addStep(1600, undefined, () => {
+                const searchResult = `External search completed.\n\nFound 5 relevant resources:\n1. REST API Specifications (OpenAPI 3.0)\n2. GraphQL Schema Documentation\n3. Webhook Integration Guide\n4. Authentication Flow Diagrams\n5. Rate Limiting Best Practices\n\nAll external references have been collected successfully.`;
+                this.emitLog(newAgentIdB, 'TOOL_RESULT', searchResult, 'IO_OK');
+
+                SESSION_ARTIFACTS[newAgentIdB] = {
+                    result: `Successfully retrieved external API specifications and references.\n\n${searchResult}\n\nParallel search strategy enabled comprehensive coverage.`
+                };
+            });
+
+            this.simulateAgentCompletion(newAgentIdB, 900, 650, true);
 
         } else {
             SESSION_ARTIFACTS[currentId] = { 
