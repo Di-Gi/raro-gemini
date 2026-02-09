@@ -717,7 +717,7 @@ impl RARORuntime {
                             id: Uuid::new_v4().to_string(),
                             agent_id: agent_id.clone(),
                             model_variant: match payload.model.as_str() {
-                                "gemini-2.5-flash" => ModelVariant::Fast,
+                                "gemini-3-flash-preview" => ModelVariant::Fast,
                                 _ => ModelVariant::Reasoning,
                             },
                             thought_signature: None,

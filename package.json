@@ -1,6 +1,6 @@
 {
   "name": "raro-monorepo",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Reconfigurable Agentic Runtime Operator - Gemini 3 Hackathon Project",
   "private": true,
   "workspaces": [

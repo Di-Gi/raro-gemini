@@ -27,9 +27,9 @@ class Settings(BaseSettings):
     
     # === MODEL AUTHORITY ===
     # Change specific versions here to propagate across the entire system.
-    MODEL_FAST: str = "gemini-2.5-flash-lite"
-    MODEL_REASONING: str = "gemini-2.5-flash-lite"
-    MODEL_THINKING: str = "gemini-2.5-flash-lite"
+    MODEL_FAST: str = "gemini-3-flash-preview"
+    MODEL_REASONING: str = "gemini-3-pro-preview"
+    MODEL_THINKING: str = "gemini-3-flash-preview"
     # THE MAPPING LAYER
     # The system sends keys (left), we use values (right).
     MODEL_ALIASES: Dict[str, str] = {

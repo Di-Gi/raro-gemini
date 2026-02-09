@@ -1,1 +1,0 @@
-- add available tools to node cards in pipeline stage == allow modifying in node editor

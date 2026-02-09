@@ -41,7 +41,7 @@ const generateDelegationArtifact = (reason: string, parentId: string, newAgentId
             {
                 id: newAgentId,
                 role: "worker",
-                model: "gemini-2.5-flash",
+                model: "gemini-3-flash-preview",
                 prompt: `Dynamically delegated task from ${parentId}`,
                 tools: ["web_search"],
                 depends_on: [parentId]
@@ -584,7 +584,7 @@ export class MockWebSocket {
                         {
                             id: newAgentIdA,
                             role: "worker",
-                            model: "gemini-2.5-flash",
+                            model: "gemini-3-flash-preview",
                             prompt: `Search for internal documentation (fallback endpoint)`,
                             tools: ["web_search"],
                             depends_on: [currentId]
@@ -592,7 +592,7 @@ export class MockWebSocket {
                         {
                             id: newAgentIdB,
                             role: "worker",
-                            model: "gemini-2.5-flash",
+                            model: "gemini-3-flash-preview",
                             prompt: `Search for external references and API specs`,
                             tools: ["web_search"],
                             depends_on: [currentId]

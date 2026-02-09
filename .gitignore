@@ -8,6 +8,9 @@ STRUCTURE
 CONTENT.*
 .structure.*
 storage/
+hackathon/
+guidance/
+backups/
 # Python
 __pycache__/
 *.py[cod]
