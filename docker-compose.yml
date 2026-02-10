@@ -5,31 +5,23 @@
 
 services:
   # 1. THE BRAIN: Rust Kernel Server
-  # Orchestrates the DAG and manages state.
   kernel:
     build:
       context: ./apps/kernel-server
       dockerfile: Dockerfile
     container_name: raro-kernel
+    restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
       - RUST_LOG=raro_kernel=debug,tower_http=trace
       - KERNEL_PORT=3000
-
-      # === ROUTING CONFIGURATION ===
-      # Point back to real agents (Probe intercepts at the Agent level now)
       - AGENT_HOST=agents
       - AGENT_PORT=8000
-
       - REDIS_URL=redis://redis:6379
-
-      # === PUPPET MODE ===
-      # Enable puppet mode to pause execution before each agent invocation
-      # Set to "true" to enable interactive debugging
       - PUPPET_MODE=${PUPPET_MODE:-false}
     volumes:
-      - ./storage:/app/storage # <--- SHARED MOUNT FOR RFS
+      - ./storage:/app/storage
     networks:
       - raro-net
     healthcheck:
@@ -44,33 +36,26 @@ services:
         condition: service_healthy
 
   # 2. THE MUSCLE: Python Agent Service
-  # Executes Gemini 3 inference and handles heavy lifting.
   agents:
     build:
       context: ./apps/agent-service
       dockerfile: Dockerfile
     container_name: raro-agents
+    restart: unless-stopped
     ports:
-      - "8000:8000" # Exposed for direct debugging if needed
+      - "8000:8000"
     environment:
       - PYTHONUNBUFFERED=1
-      # API Key must be set in your local .env file
       - GEMINI_API_KEY=${GEMINI_API_KEY}
       - E2B_API_KEY=${E2B_API_KEY}
       - TAVILY_API_KEY=${TAVILY_API_KEY}
       - REDIS_URL=redis://redis:6379
-      - LOG_LEVEL=${LOG_LEVEL:-DEBUG}  # Default to DEBUG, override with env var
-      # ACTIVATE DEBUG INTERCEPTION
+      - LOG_LEVEL=${LOG_LEVEL:-DEBUG}
       - DEBUG_PROBE_URL=http://debug-probe:8080
     volumes:
-      - ./storage:/app/storage # <--- SHARED MOUNT FOR RFS
+      - ./storage:/app/storage
     networks:
       - raro-net
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
     depends_on:
       debug-probe:
         condition: service_started
@@ -78,26 +63,26 @@ services:
         condition: service_healthy
 
   # 3. THE INSPECTOR: Debug Probe
-  # Passive receiver that visualizes the exact prompts sent from Agent Service.
   debug-probe:
     build:
       context: ./apps/debug-probe
       dockerfile: Dockerfile
     container_name: raro-debug-probe
+    restart: unless-stopped
     ports:
-      - "8081:8080" # UI Dashboard accessible at localhost:8081
+      - "8081:8080"
     networks:
       - raro-net
 
   # 3.5 THE PUPPET MASTER: Debug Puppet
-  # Active injector that allows mocking agent responses for testing.
   debug-puppet:
     build:
       context: ./apps/debug-puppet
       dockerfile: Dockerfile
     container_name: raro-debug-puppet
+    restart: unless-stopped
     ports:
-      - "8082:8081" # UI Dashboard accessible at localhost:8082
+      - "8082:8081"
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
@@ -111,22 +96,18 @@ services:
         condition: service_healthy
 
   # 4. THE FACE: Svelte Web Console
-  # Reactive UI for visualization and control.
   web-console:
     build:
       context: ./apps/web-console
-      dockerfile: Dockerfile.dev  # Use dev Dockerfile with hot reload
+      dockerfile: Dockerfile.dev
     container_name: raro-web
+    restart: unless-stopped
     ports:
       - "5173:5173"
     environment:
-      # - VITE_KERNEL_URL=http://kernel:3000
-      # - VITE_AGENT_URL=http://agents:8000
-      # FORCE DISABLE MOCK IN DOCKER
       - VITE_USE_MOCK_API=false 
       - DOCKER_ENV=true
     volumes:
-      # Hot reload: mount source code
       - ./apps/web-console/src:/app/src
       - ./apps/web-console/vite.config.ts:/app/vite.config.ts
     depends_on:
@@ -135,10 +116,11 @@ services:
     networks:
       - raro-net
 
-  # Redis for caching (Optional)
+  # Redis for caching
   redis:
     image: redis:7-alpine
     container_name: raro-redis
+    restart: unless-stopped
     ports:
       - "6379:6379"
     networks:
@@ -149,10 +131,11 @@ services:
       timeout: 5s
       retries: 5
 
-  # PostgreSQL for persistence (Optional)
+  # PostgreSQL for persistence
   postgres:
     image: postgres:16-alpine
     container_name: raro-postgres
+    restart: unless-stopped
     ports:
       - "5432:5432"
     environment:
@@ -172,8 +155,10 @@ services:
   # THE REVERSE PROXY
   nginx:
     image: nginx:alpine
+    container_name: raro-nginx
+    restart: always
     ports:
-      - "80:80" # Maps VM port 80 to Container port 80
+      - "80:80"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
