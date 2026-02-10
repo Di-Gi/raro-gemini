@@ -760,6 +760,23 @@ export function connectRuntimeWebSocket(runId: string, manualMode: boolean = fal
           if (agentId) updateNodeStatus(agentId, 'failed');
       }
 
+      // === HANDLER FOR INTERVENTIONS ===
+      else if (data.type === 'intervention_event') {
+        const p = data.payload;
+        // Inject a log entry with metadata='INTERVENTION'
+        // This tells OutputPane.svelte to render the ApprovalCard
+        addLog(
+          'CORTEX',
+          p.reason || 'Manual Intervention Required',
+          'INTERVENTION',
+          false,
+          'approval-' + Date.now()
+        );
+
+        // Force local state update to ensure UI controls lock appropriately
+        runtimeStore.update(s => ({ ...s, status: 'AWAITING_APPROVAL' }));
+      }
+
       // Intermediate log events
       else if (data.type === 'log_event') {
         const agentId = data.agent_id ? data.agent_id.toUpperCase() : 'SYSTEM';

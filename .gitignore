@@ -12,6 +12,8 @@ hackathon/
 guidance/
 backups/
 *.bak
+patches/
+apps\web-console\patches\
 # Python
 __pycache__/
 *.py[cod]
